@@ -47,10 +47,11 @@ Shows the workspace path, database location, and current counts of mappings and 
 ### Import mappings from CSV
 
 ```bash
-uv run normflow import --workspace <path> mappings.csv --source-column source --target-column target
+uv run normflow import --workspace <path> --source-column source --target-column target mappings.csv
 ```
 
 Reads a CSV file with a header row. Each row becomes a `raw_text → normalized_text` mapping in the database.
+- `--source-column` and `--target-column` are required.
 - Duplicate sources (already in the database) are skipped.
 - Empty rows and whitespace are handled gracefully.
 
@@ -71,7 +72,7 @@ uv run normflow suggest --workspace <path> "raw text value"
 Queries the mapping library for an exact match on the raw text. Returns JSON with suggestions, method used, and confidence score.
 
 ```bash
-uv run normflow suggest --workspace <path> "colour" --limit 5
+uv run normflow suggest --workspace <path> "colour" --limit 10
 ```
 
 ### Show version
@@ -84,14 +85,16 @@ uv run normflow version
 
 ```
 src/normflow/
-├── __init__.py       # Package entry, __version__
-├── __main__.py       # python -m normflow
-├── cli.py            # Typer CLI: version, init, info, import, export, suggest
+├── __init__.py        # Package entry, __version__
+├── __main__.py        # python -m normflow
+├── cli.py             # Typer CLI: version, init, info, import, export, suggest
+├── csv_ops.py         # CSV import/export operations
 ├── suggest_service.py # Exact-match suggestion service
-├── models.py         # SQLModel domain models
-└── workspace.py      # Workspace init and info operations
+├── models.py          # SQLModel domain models
+└── workspace.py       # Workspace init and info operations
 tests/
-└── test_cli.py       # CLI tests
+├── test_cli.py                # CLI tests
+└── test_workspace_service.py  # Workspace service tests
 ```
 
 ## Roadmap
