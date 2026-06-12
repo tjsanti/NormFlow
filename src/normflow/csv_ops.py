@@ -3,10 +3,10 @@
 import csv
 from pathlib import Path
 
-from sqlmodel import Session, select
+from sqlmodel import select
 
 from .models import ExampleMapping
-from .workspace import __make_engine
+from .workspace import WorkspaceService
 
 
 def import_mappings(
@@ -19,19 +19,12 @@ def import_mappings(
 
     Returns (imported, skipped) counts.
     """
-    ws = Path(workspace_path).expanduser().resolve()
-    db_path = ws / "normflow.db"
-
-    if not db_path.exists():
-        msg = f"Not a NormFlow workspace: no database found at {db_path}"
-        raise ValueError(msg)
+    ws = WorkspaceService(workspace_path)
 
     csv_file = Path(csv_path).expanduser().resolve()
     if not csv_file.exists():
         msg = f"CSV file not found: {csv_file}"
         raise FileNotFoundError(msg)
-
-    engine = __make_engine(str(db_path))
 
     # Read CSV
     with open(csv_file, newline="", encoding="utf-8") as f:
@@ -50,7 +43,7 @@ def import_mappings(
 
         rows = list(reader)
 
-    with Session(engine) as session:
+    with ws.session() as session:
         imported = 0
         skipped = 0
         for row in rows:
@@ -87,16 +80,9 @@ def export_mappings(
 
     Returns the number of mappings exported.
     """
-    ws = Path(workspace_path).expanduser().resolve()
-    db_path = ws / "normflow.db"
+    ws = WorkspaceService(workspace_path)
 
-    if not db_path.exists():
-        msg = f"Not a NormFlow workspace: no database found at {db_path}"
-        raise ValueError(msg)
-
-    engine = __make_engine(str(db_path))
-
-    with Session(engine) as session:
+    with ws.session() as session:
         mappings = session.exec(select(ExampleMapping)).all()
         count = len(mappings)
 

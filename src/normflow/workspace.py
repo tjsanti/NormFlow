@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-from sqlalchemy import text
-
 from sqlmodel import Session, select
 
 from .models import ExampleMapping, Suggestion
@@ -28,7 +26,7 @@ def init_workspace(path: str) -> Path:
 
     # Create database with tables
     db_path = ws / "normflow.db"
-    engine = __make_engine(str(db_path))
+    engine = _make_engine(str(db_path))
     with engine.connect() as conn:
         conn.exec_driver_sql(
             """
@@ -63,16 +61,9 @@ def init_workspace(path: str) -> Path:
 
 def workspace_info(path: str) -> dict:
     """Return info about an existing project workspace."""
-    ws = Path(path).expanduser().resolve()
-    db_path = ws / "normflow.db"
+    ws = WorkspaceService(path)
 
-    if not db_path.exists():
-        msg = f"Not a NormFlow workspace: no database found at {db_path}"
-        raise ValueError(msg)
-
-    engine = __make_engine(str(db_path))
-
-    with Session(engine) as session:
+    with ws.session() as session:
         mapping_count = session.exec(
             select(ExampleMapping)
         ).all().__len__()
@@ -81,14 +72,37 @@ def workspace_info(path: str) -> dict:
         ).all().__len__()
 
     return {
-        "workspace": str(ws),
-        "database": str(db_path),
+        "workspace": str(ws._path),
+        "database": str(ws._db_path),
         "mappings": mapping_count,
         "suggestions": suggestion_count,
     }
 
 
-def __make_engine(db_url: str):
-    from sqlmodel import SQLModel, create_engine
+class WorkspaceService:
+    """Work with an existing project workspace.
+
+    Validates the workspace exists and provides database sessions.
+    """
+
+    def __init__(self, path: str):
+        self._path = Path(path).expanduser().resolve()
+        self._db_path = self._path / "normflow.db"
+        self.validate()
+
+    def validate(self) -> None:
+        """Raise ValueError if not a valid workspace."""
+        if not self._db_path.exists():
+            msg = f"Not a NormFlow workspace: no database found at {self._db_path}"
+            raise ValueError(msg)
+
+    def session(self):
+        """Context manager for database sessions."""
+        engine = _make_engine(str(self._db_path))
+        return Session(engine)
+
+
+def _make_engine(db_url: str):
+    from sqlmodel import create_engine
 
     return create_engine(f"sqlite:///{db_url}")

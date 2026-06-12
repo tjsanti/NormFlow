@@ -4,12 +4,12 @@ import json
 import tempfile
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlmodel import Session
 from typer.testing import CliRunner
 
 from normflow.cli import app
 from normflow.models import ExampleMapping
+from normflow.workspace import WorkspaceService
 
 
 runner = CliRunner()
@@ -159,9 +159,9 @@ def test_export_writes_csv():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        # Insert mappings directly via the DB
-        engine = __make_engine(str(ws_path / "normflow.db"))
-        with Session(engine) as session:
+        # Insert mappings directly via the service
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
             session.add(ExampleMapping(raw_text="hello", normalized_text="world"))
             session.add(ExampleMapping(raw_text="foo", normalized_text="bar"))
             session.commit()
@@ -188,8 +188,8 @@ def test_export_custom_columns():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        engine = __make_engine(str(ws_path / "normflow.db"))
-        with Session(engine) as session:
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
             session.add(ExampleMapping(raw_text="hello", normalized_text="world"))
             session.commit()
 
@@ -244,8 +244,8 @@ def test_suggest_exact_match_found():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        engine = __make_engine(str(ws_path / "normflow.db"))
-        with Session(engine) as session:
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -270,8 +270,8 @@ def test_suggest_no_match_found():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        engine = __make_engine(str(ws_path / "normflow.db"))
-        with Session(engine) as session:
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -293,8 +293,8 @@ def test_suggest_limit_respected():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        engine = __make_engine(str(ws_path / "normflow.db"))
-        with Session(engine) as session:
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -315,8 +315,8 @@ def test_suggest_limit_default():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        engine = __make_engine(str(ws_path / "normflow.db"))
-        with Session(engine) as session:
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -338,7 +338,3 @@ def test_suggest_invalid_workspace():
             ["suggest", "--workspace", tmpdir, "colour"],
         )
         assert result.exit_code != 0
-
-
-def __make_engine(db_url: str):
-    return create_engine(f"sqlite:///{db_url}")

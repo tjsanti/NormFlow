@@ -1,12 +1,10 @@
 """Suggestion service: generate normalization suggestions for raw text."""
 
-from pathlib import Path
-
 from pydantic import BaseModel, Field
-from sqlmodel import Session, select
+from sqlmodel import select
 
 from .models import ExampleMapping
-from .workspace import __make_engine
+from .workspace import WorkspaceService
 
 
 class SuggestionItem(BaseModel):
@@ -37,18 +35,11 @@ def suggest_exact(
     Future slices can add more retrieval strategies while keeping
     the same return type.
     """
-    ws = Path(workspace_path).expanduser().resolve()
-    db_path = ws / "normflow.db"
-
-    if not db_path.exists():
-        msg = f"Not a NormFlow workspace: no database found at {db_path}"
-        raise ValueError(msg)
-
-    engine = __make_engine(str(db_path))
+    ws = WorkspaceService(workspace_path)
 
     suggestions: list[SuggestionItem] = []
 
-    with Session(engine) as session:
+    with ws.session() as session:
         mapping = session.exec(
             select(ExampleMapping).where(ExampleMapping.raw_text == raw_text)
         ).first()
