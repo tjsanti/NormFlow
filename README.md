@@ -24,7 +24,7 @@ uv sync
 ### Initialize a project workspace
 
 ```bash
-uv run normflow init <path>
+uv run normflow init --workspace <path>
 ```
 
 Creates a project directory with:
@@ -39,10 +39,28 @@ Creates a project directory with:
 ### Check workspace status
 
 ```bash
-uv run normflow info <path>
+uv run normflow info --workspace <path>
 ```
 
 Shows the workspace path, database location, and current counts of mappings and suggestions.
+
+### Import mappings from CSV
+
+```bash
+uv run normflow import --workspace <path> mappings.csv --source-column source --target-column target
+```
+
+Reads a CSV file with a header row. Each row becomes a `raw_text → normalized_text` mapping in the database.
+- Duplicate sources (already in the database) are skipped.
+- Empty rows and whitespace are handled gracefully.
+
+### Export mappings to CSV
+
+```bash
+uv run normflow export --workspace <path> mappings.csv [--source-column raw_text] [--target-column normalized_text]
+```
+
+Writes all current mappings to a CSV file. Column names default to `raw_text` and `normalized_text` but can be overridden with `--source-column` and `--target-column`.
 
 ### Show version
 
@@ -66,7 +84,7 @@ tests/
 ## Roadmap
 
 - [x] Project skeleton (this release)
-- [ ] Import/export mappings (CSV)
+- [x] Import/export mappings (CSV)
 - [ ] Exact matching suggestions
 - [ ] Semantic search with embeddings
 - [ ] LLM fallback
