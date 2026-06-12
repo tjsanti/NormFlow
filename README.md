@@ -4,7 +4,7 @@ CLI-first, human-in-the-loop text normalization workbench.
 
 Import approved `raw_text → normalized_text` mappings, get suggestions for new records, review and edit them, then feed accepted changes back into your mapping library.
 
-**Current state:** Project skeleton — workspace initialization and CLI scaffolding.
+**Current state:** Workspace init, CSV import/export, and exact-match suggestions.
 
 ## Prerequisites
 
@@ -62,6 +62,18 @@ uv run normflow export --workspace <path> mappings.csv [--source-column raw_text
 
 Writes all current mappings to a CSV file. Column names default to `raw_text` and `normalized_text` but can be overridden with `--source-column` and `--target-column`.
 
+### Get normalization suggestions
+
+```bash
+uv run normflow suggest --workspace <path> "raw text value"
+```
+
+Queries the mapping library for an exact match on the raw text. Returns JSON with suggestions, method used, and confidence score.
+
+```bash
+uv run normflow suggest --workspace <path> "colour" --limit 5
+```
+
 ### Show version
 
 ```bash
@@ -74,7 +86,8 @@ uv run normflow version
 src/normflow/
 ├── __init__.py       # Package entry, __version__
 ├── __main__.py       # python -m normflow
-├── cli.py            # Typer CLI: version, init, info
+├── cli.py            # Typer CLI: version, init, info, import, export, suggest
+├── suggest_service.py # Exact-match suggestion service
 ├── models.py         # SQLModel domain models
 └── workspace.py      # Workspace init and info operations
 tests/
@@ -85,7 +98,7 @@ tests/
 
 - [x] Project skeleton (this release)
 - [x] Import/export mappings (CSV)
-- [ ] Exact matching suggestions
+- [x] Exact matching suggestions
 - [ ] Semantic search with embeddings
 - [ ] LLM fallback
 - [ ] Human review workflow (accept/edit/reject)

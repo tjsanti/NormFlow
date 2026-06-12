@@ -1,5 +1,6 @@
 """Tests for the NormFlow CLI."""
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -231,6 +232,112 @@ def test_import_export_round_trip():
         )
         assert result2.exit_code == 0
         assert "0 new" in result2.stdout
+
+
+# ---- suggest tests ----
+
+
+def test_suggest_exact_match_found():
+    """`normflow suggest` should return a suggestion when exact match exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        engine = __make_engine(str(ws_path / "normflow.db"))
+        with Session(engine) as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.commit()
+
+        result = runner.invoke(
+            app,
+            ["suggest", "--workspace", str(ws_path), "colour"],
+        )
+        assert result.exit_code == 0
+
+        data = json.loads(result.stdout)
+        assert data["raw_text"] == "colour"
+        assert len(data["suggestions"]) == 1
+        assert data["suggestions"][0]["suggested_text"] == "color"
+        assert data["suggestions"][0]["method"] == "exact"
+        assert data["suggestions"][0]["confidence"] == 1.0
+
+
+def test_suggest_no_match_found():
+    """`normflow suggest` should return empty suggestions when no match exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        engine = __make_engine(str(ws_path / "normflow.db"))
+        with Session(engine) as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.commit()
+
+        result = runner.invoke(
+            app,
+            ["suggest", "--workspace", str(ws_path), "colr"],
+        )
+        assert result.exit_code == 0
+
+        data = json.loads(result.stdout)
+        assert data["raw_text"] == "colr"
+        assert data["suggestions"] == []
+
+
+def test_suggest_limit_respected():
+    """`normflow suggest --limit 0` should return empty suggestions even when match exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        engine = __make_engine(str(ws_path / "normflow.db"))
+        with Session(engine) as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.commit()
+
+        result = runner.invoke(
+            app,
+            ["suggest", "--workspace", str(ws_path), "colour", "--limit", "0"],
+        )
+        assert result.exit_code == 0
+
+        data = json.loads(result.stdout)
+        assert data["suggestions"] == []
+
+
+def test_suggest_limit_default():
+    """`normflow suggest` with default limit should return the match."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        engine = __make_engine(str(ws_path / "normflow.db"))
+        with Session(engine) as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.commit()
+
+        result = runner.invoke(
+            app,
+            ["suggest", "--workspace", str(ws_path), "colour", "--limit", "5"],
+        )
+        assert result.exit_code == 0
+
+        data = json.loads(result.stdout)
+        assert len(data["suggestions"]) == 1
+
+
+def test_suggest_invalid_workspace():
+    """`normflow suggest` should error on non-workspace path."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = runner.invoke(
+            app,
+            ["suggest", "--workspace", tmpdir, "colour"],
+        )
+        assert result.exit_code != 0
 
 
 def __make_engine(db_url: str):

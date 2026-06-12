@@ -1,5 +1,6 @@
 """NormFlow CLI — Typer application."""
 
+
 from pathlib import Path
 
 from rich.console import Console
@@ -8,6 +9,7 @@ import typer
 
 from . import __version__
 from .csv_ops import import_mappings, export_mappings
+from .suggest_service import suggest_exact
 from .workspace import init_workspace, workspace_info
 
 app = typer.Typer(
@@ -78,5 +80,20 @@ def export_cmd(
         count = export_mappings(workspace, csv_path, source_column, target_column)
         console.print(f"[green]Exported {count} mappings to {csv_path}[/green]")
     except (ValueError, FileNotFoundError) as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from None
+
+
+@app.command()
+def suggest(
+    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
+    raw_text: str = typer.Argument(..., help="The raw text value to find suggestions for."),
+    limit: int = typer.Option(5, "--limit", help="Maximum number of suggestions to return."),
+) -> None:
+    """Return normalization suggestions for a single raw text value."""
+    try:
+        result = suggest_exact(workspace, raw_text, limit)
+        print(result.model_dump_json(indent=2))
+    except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1) from None
