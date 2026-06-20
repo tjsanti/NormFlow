@@ -338,3 +338,248 @@ def test_suggest_invalid_workspace():
             ["suggest", "--workspace", tmpdir, "colour"],
         )
         assert result.exit_code != 0
+
+
+# ---- suggest batch tests ----
+
+
+def test_suggest_batch_basic():
+    """`normflow suggest batch` should output CSV with normalized_text column."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        csv_path = ws_path / "input.csv"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        # Seed mappings
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.add(ExampleMapping(raw_text="centre", normalized_text="center"))
+            session.commit()
+
+        # Input CSV with a raw text column
+        _write_csv(csv_path, "id,item", "1,colour", "2,centre", "3,unknown")
+
+        result = runner.invoke(
+            app,
+            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "item"],
+        )
+        assert result.exit_code == 0
+
+        lines = result.stdout.strip().split("\n")
+        header = lines[0]
+        assert "id" in header
+        assert "item" in header
+        assert "normalized_text" in header
+
+        # colour -> color, centre -> center, unknown -> blank
+        assert "color" in result.stdout
+        assert "center" in result.stdout
+
+
+def test_suggest_batch_no_match_blank():
+    """Rows with no match should have blank normalized_text."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        csv_path = ws_path / "input.csv"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.commit()
+
+        _write_csv(csv_path, "text", "colour", "nope")
+
+        result = runner.invoke(
+            app,
+            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text"],
+        )
+        assert result.exit_code == 0
+
+        lines = result.stdout.strip().split("\n")
+        # header + 2 data rows
+        assert len(lines) == 3
+        # second data row (nope) has blank normalized_text
+        last_line = lines[2]
+        assert "nope" in last_line
+
+
+def test_suggest_batch_custom_output_column():
+    """--output-column should rename the suggestion column."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        csv_path = ws_path / "input.csv"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.commit()
+
+        _write_csv(csv_path, "text", "colour")
+
+        result = runner.invoke(
+            app,
+            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text", "--output-column", "mapping"],
+        )
+        assert result.exit_code == 0
+        assert "mapping" in result.stdout
+        assert "normalized_text" not in result.stdout
+
+
+def test_suggest_batch_output_to_file():
+    """--output should write CSV to the specified file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        csv_path = ws_path / "input.csv"
+        out_path = ws_path / "output.csv"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.commit()
+
+        _write_csv(csv_path, "text", "colour")
+
+        result = runner.invoke(
+            app,
+            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text", "--output", str(out_path)],
+        )
+        assert result.exit_code == 0
+        assert out_path.exists()
+        assert "color" in out_path.read_text()
+
+
+def test_suggest_batch_excludes_entirely_blank_rows():
+    """Rows where every column is blank should be excluded from output."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        csv_path = ws_path / "input.csv"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.commit()
+
+        # Row 1: valid, Row 2: all blank, Row 3: valid
+        csv_path.write_text("id,text\n1,colour\n,,\n3,centre\n")
+
+        result = runner.invoke(
+            app,
+            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text"],
+        )
+        assert result.exit_code == 0
+
+        lines = result.stdout.strip().split("\n")
+        # header + 2 data rows (blank row excluded)
+        assert len(lines) == 3
+
+
+def test_suggest_batch_includes_partial_rows_skips_processing():
+    """Rows with some data but blank raw text column should appear in output with blank suggestion."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        csv_path = ws_path / "input.csv"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.commit()
+
+        # Row 1: valid, Row 2: has id but blank text, Row 3: valid
+        csv_path.write_text("id,text\n1,colour\n2,\n3,centre\n")
+
+        result = runner.invoke(
+            app,
+            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text"],
+        )
+        assert result.exit_code == 0
+
+        lines = result.stdout.strip().split("\n")
+        # header + 3 data rows (partial row included)
+        assert len(lines) == 4
+        # middle row has id=2
+        assert "2" in lines[2]
+
+
+def test_suggest_batch_preserves_extra_columns():
+    """All original columns should be preserved in the output."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        csv_path = ws_path / "input.csv"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.commit()
+
+        _write_csv(csv_path, "id,category,text,notes", "1,UK,colour,primary")
+
+        result = runner.invoke(
+            app,
+            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text"],
+        )
+        assert result.exit_code == 0
+
+        header = result.stdout.strip().split("\n")[0]
+        assert "id" in header
+        assert "category" in header
+        assert "text" in header
+        assert "notes" in header
+        assert "normalized_text" in header
+
+
+def test_suggest_batch_invalid_workspace():
+    """`normflow suggest batch` should error on non-workspace path."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        csv_path = Path(tmpdir) / "input.csv"
+        _write_csv(csv_path, "text", "hello")
+
+        result = runner.invoke(
+            app,
+            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text"],
+        )
+        assert result.exit_code != 0
+
+
+def test_suggest_batch_missing_column():
+    """`normflow suggest batch` should error when column is not in CSV."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        csv_path = ws_path / "input.csv"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+        _write_csv(csv_path, "id,text", "1,hello")
+
+        result = runner.invoke(
+            app,
+            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "missing"],
+        )
+        assert result.exit_code != 0
+
+
+def test_suggest_batch_missing_input_file():
+    """`normflow suggest batch` should error when input file does not exist."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        result = runner.invoke(
+            app,
+            ["suggest-batch", "--workspace", str(ws_path), "nonexistent.csv", "--column", "text"],
+        )
+        assert result.exit_code != 0
