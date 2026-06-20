@@ -4,7 +4,7 @@ CLI-first, human-in-the-loop text normalization workbench.
 
 Import approved `raw_text → normalized_text` mappings, get suggestions for new records, review and edit them, then feed accepted changes back into your mapping library.
 
-**Current state:** Workspace init, CSV import/export, and exact-match suggestions.
+**Current state:** Workspace init, CSV import/export, exact-match suggestions, and batch CSV suggestions.
 
 ## Prerequisites
 
@@ -75,6 +75,23 @@ Queries the mapping library for an exact match on the raw text. Returns JSON wit
 uv run normflow suggest --workspace <path> "colour" --limit 10
 ```
 
+### Batch-suggest normalizations for a CSV
+
+```bash
+uv run normflow suggest-batch --workspace <path> records.csv --column name
+```
+
+Reads every row from a CSV, looks up exact-match suggestions for the specified column, and outputs a CSV with the original columns plus a `normalized_text` column containing the top suggestion (blank if no match).
+
+- `--column` is required — the CSV column holding the raw texts to normalize.
+- `--output-column` (default: `normalized_text`) sets the name of the suggestion column in the output.
+- `--output` writes the result to a file instead of stdout.
+- Entirely blank rows are excluded; partial rows are included with a blank suggestion.
+
+```bash
+uv run normflow suggest-batch --workspace <path> records.csv --column product_name --output results.csv
+```
+
 ### Show version
 
 ```bash
@@ -87,9 +104,9 @@ uv run normflow version
 src/normflow/
 ├── __init__.py        # Package entry, __version__
 ├── __main__.py        # python -m normflow
-├── cli.py             # Typer CLI: version, init, info, import, export, suggest
+├── cli.py             # Typer CLI: version, init, info, import, export, suggest, suggest-batch
 ├── csv_ops.py         # CSV import/export operations
-├── suggest_service.py # Exact-match suggestion service
+├── suggest_service.py # Exact-match and batch suggestion service
 ├── models.py          # SQLModel domain models
 └── workspace.py       # Workspace init and info operations
 tests/
@@ -102,6 +119,7 @@ tests/
 - [x] Project skeleton (this release)
 - [x] Import/export mappings (CSV)
 - [x] Exact matching suggestions
+- [x] Batch CSV suggestions
 - [ ] Semantic search with embeddings
 - [ ] LLM fallback
 - [ ] Human review workflow (accept/edit/reject)
