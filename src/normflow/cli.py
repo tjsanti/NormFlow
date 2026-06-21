@@ -10,6 +10,7 @@ import typer
 
 from . import __version__
 from .csv_ops import import_mappings, export_mappings
+from .review_service import list_pending, accept_suggestion, edit_suggestion
 from .suggest_service import suggest_exact, suggest_batch
 from .workspace import init_workspace, workspace_info
 
@@ -120,3 +121,69 @@ def suggest_batch_cmd(
     except (ValueError, FileNotFoundError) as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1) from None
+
+
+# ---- review command group ----
+
+review_app = typer.Typer(
+    name="review",
+    help="Review normalization suggestions.",
+)
+
+
+@review_app.command(name="list")
+def list_suggestions(
+    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
+    json: bool = typer.Option(False, "--json", help="Output as JSON instead of a table."),
+) -> None:
+    """List pending suggestions awaiting review."""
+    try:
+        items = list_pending(workspace)
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from None
+
+    if json:
+        import json as _json
+        print(_json.dumps(items, indent=2))
+    else:
+        from rich.table import Table
+        table = Table()
+        table.add_column("ID", style="cyan")
+        table.add_column("raw_text")
+        table.add_column("suggested_text")
+        for item in items:
+            table.add_row(str(item["id"]), item["raw_text"], item["suggested_text"])
+        console.print(table)
+
+
+@review_app.command()
+def accept(
+    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
+    record_id: int = typer.Option(..., "--record-id", help="ID of the suggestion to accept."),
+) -> None:
+    """Accept a suggestion, inserting it into the mapping library."""
+    try:
+        accept_suggestion(workspace, record_id)
+        console.print(f"[green]Suggestion {record_id} accepted.[/green]")
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from None
+
+
+@review_app.command()
+def edit(
+    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
+    record_id: int = typer.Option(..., "--record-id", help="ID of the suggestion to edit."),
+    normalized_text: str = typer.Option(..., "--normalized-text", help="Edited normalized text to store."),
+) -> None:
+    """Accept a suggestion with an edit, inserting the edited text into the mapping library."""
+    try:
+        edit_suggestion(workspace, record_id, normalized_text)
+        console.print(f"[green]Suggestion {record_id} accepted with edit.[/green]")
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from None
+
+
+app.add_typer(review_app, name="review")

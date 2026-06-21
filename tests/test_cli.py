@@ -583,3 +583,169 @@ def test_suggest_batch_missing_input_file():
             ["suggest-batch", "--workspace", str(ws_path), "nonexistent.csv", "--column", "text"],
         )
         assert result.exit_code != 0
+
+
+# ---- review tests ----
+
+
+def _seed_suggestions(ws_path: Path, suggestions: list[tuple[str, str, str]]) -> None:
+    """Seed Suggestion rows. Each tuple is (raw_text, suggested_text, status)."""
+    from normflow.models import Suggestion
+    from normflow.workspace import WorkspaceService
+
+    ws = WorkspaceService(str(ws_path))
+    with ws.session() as session:
+        for raw_text, suggested_text, status in suggestions:
+            session.add(Suggestion(
+                raw_text=raw_text,
+                suggested_text=suggested_text,
+                status=status,
+            ))
+        session.commit()
+
+
+def test_review_list_shows_pending_suggestions():
+    """`normflow review list` should show only pending suggestions."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        _seed_suggestions(ws_path, [
+            ("o2 sensor", "O2 Sensor", "pending"),
+            ("oxygen sensor", "Oxygen Sensor", "pending"),
+            ("old part", "Old Part", "accepted"),
+        ])
+
+        result = runner.invoke(
+            app,
+            ["review", "list", "--workspace", str(ws_path)],
+        )
+        assert result.exit_code == 0
+        assert "o2 sensor" in result.stdout
+        assert "oxygen sensor" in result.stdout
+        # accepted suggestion should not appear
+        assert "old part" not in result.stdout
+
+
+def test_review_list_empty_when_no_pending():
+    """`normflow review list` should show empty when no pending suggestions."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        result = runner.invoke(
+            app,
+            ["review", "list", "--workspace", str(ws_path)],
+        )
+        assert result.exit_code == 0
+
+
+def test_review_list_json_output():
+    """`normflow review list --json` should return valid JSON array."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        _seed_suggestions(ws_path, [
+            ("o2 sensor", "O2 Sensor", "pending"),
+        ])
+
+        result = runner.invoke(
+            app,
+            ["review", "list", "--workspace", str(ws_path), "--json"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["raw_text"] == "o2 sensor"
+        assert data[0]["suggested_text"] == "O2 Sensor"
+
+
+def test_review_accept_inserts_mapping():
+    """`normflow review accept` should mark accepted and insert a mapping."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        _seed_suggestions(ws_path, [
+            ("o2 sensor", "O2 Sensor", "pending"),
+        ])
+
+        result = runner.invoke(
+            app,
+            ["review", "accept", "--workspace", str(ws_path), "--record-id", "1"],
+        )
+        assert result.exit_code == 0
+
+        # Verify mapping was inserted
+        info_result = runner.invoke(
+            app,
+            ["info", "--workspace", str(ws_path)],
+        )
+        assert "Mappings:   1" in info_result.stdout
+
+
+def test_review_edit_inserts_mapping_with_custom_text():
+    """`normflow review edit` should mark accepted_edited and insert mapping with edited text."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        _seed_suggestions(ws_path, [
+            ("o2 sensor", "O2 Sensor", "pending"),
+        ])
+
+        result = runner.invoke(
+            app,
+            ["review", "edit", "--workspace", str(ws_path), "--record-id", "1", "--normalized-text", "Oxygen Sensor"],
+        )
+        assert result.exit_code == 0
+
+        # Verify mapping was inserted with edited text
+        info_result = runner.invoke(
+            app,
+            ["info", "--workspace", str(ws_path)],
+        )
+        assert "Mappings:   1" in info_result.stdout
+
+        # Verify the mapping has the custom text
+        ws = WorkspaceService(str(ws_path))
+        with ws.session() as session:
+            from sqlmodel import select
+            from normflow.models import ExampleMapping
+            mapping = session.exec(
+                select(ExampleMapping).where(ExampleMapping.raw_text == "o2 sensor")
+            ).first()
+        assert mapping is not None
+        assert mapping.normalized_text == "Oxygen Sensor"
+
+
+def test_review_accept_already_reviewed_fails():
+    """`normflow review accept` should fail when suggestion is already reviewed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        _seed_suggestions(ws_path, [
+            ("o2 sensor", "O2 Sensor", "accepted"),
+        ])
+
+        result = runner.invoke(
+            app,
+            ["review", "accept", "--workspace", str(ws_path), "--record-id", "1"],
+        )
+        assert result.exit_code != 0
+
+
+def test_review_edit_invalid_record_id_fails():
+    """`normflow review edit` should fail when record id does not exist."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_path = Path(tmpdir) / "proj"
+        runner.invoke(app, ["init", "--workspace", str(ws_path)])
+
+        result = runner.invoke(
+            app,
+            ["review", "edit", "--workspace", str(ws_path), "--record-id", "999", "--normalized-text", "Something"],
+        )
+        assert result.exit_code != 0

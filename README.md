@@ -4,7 +4,7 @@ CLI-first, human-in-the-loop text normalization workbench.
 
 Import approved `raw_text → normalized_text` mappings, get suggestions for new records, review and edit them, then feed accepted changes back into your mapping library.
 
-**Current state:** Workspace init, CSV import/export, exact-match suggestions, and batch CSV suggestions.
+**Current state:** Workspace init, CSV import/export, exact-match suggestions, batch CSV suggestions, and human review workflow (accept/edit).
 
 ## Prerequisites
 
@@ -92,6 +92,35 @@ Reads every row from a CSV, looks up exact-match suggestions for the specified c
 uv run normflow suggest-batch --workspace <path> records.csv --column product_name --output results.csv
 ```
 
+### Review suggestions
+
+List pending suggestions awaiting review:
+
+```bash
+uv run normflow review list --workspace <path>
+```
+
+Shows a table of pending suggestions with their ID, raw text, and suggested normalized text. Add `--json` for machine-readable output.
+
+Accept a suggestion as-is:
+
+```bash
+uv run normflow review accept --workspace <path> --record-id 1
+```
+
+Marks the suggestion as accepted and inserts `raw_text → suggested_text` into the mapping library.
+
+Accept a suggestion with an edit:
+
+```bash
+uv run normflow review edit --workspace <path> --record-id 1 --normalized-text "Oxygen Sensor"
+```
+
+Marks the suggestion as accepted with edits and inserts `raw_text → normalized_text` (your edited text) into the mapping library.
+
+- Once a suggestion is reviewed, it cannot be reviewed again — commands fail clearly if the record is already accepted.
+- If a suggestion is not a good fit, edit it to the text you want rather than rejecting it.
+
 ### Show version
 
 ```bash
@@ -104,9 +133,10 @@ uv run normflow version
 src/normflow/
 ├── __init__.py        # Package entry, __version__
 ├── __main__.py        # python -m normflow
-├── cli.py             # Typer CLI: version, init, info, import, export, suggest, suggest-batch
+├── cli.py             # Typer CLI: version, init, info, import, export, suggest, suggest-batch, review
 ├── csv_ops.py         # CSV import/export operations
 ├── suggest_service.py # Exact-match and batch suggestion service
+├── review_service.py  # Accept, edit, and list pending suggestions
 ├── models.py          # SQLModel domain models
 └── workspace.py       # Workspace init and info operations
 tests/
@@ -122,5 +152,5 @@ tests/
 - [x] Batch CSV suggestions
 - [ ] Semantic search with embeddings
 - [ ] LLM fallback
-- [ ] Human review workflow (accept/edit/reject)
+- [x] Human review workflow (accept/edit)
 - [ ] TypeScript web UI
