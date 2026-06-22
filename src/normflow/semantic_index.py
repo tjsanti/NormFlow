@@ -5,6 +5,7 @@ them in a FAISS IndexFlatIP (cosine similarity via normalized vectors).
 """
 
 import pickle
+import shutil
 from pathlib import Path
 
 import faiss
@@ -13,16 +14,16 @@ from sentence_transformers import SentenceTransformer
 
 from .workspace import WorkspaceService
 
+# ponytail: 90MB model — module-level singleton, not per-instance
+_MODEL = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
 
 class SemanticIndex:
     """Build, persist, and query a FAISS index over workspace mappings."""
 
-    MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-
     def __init__(self, workspace_path: str):
         self._workspace_path = Path(workspace_path).expanduser().resolve()
         self._index_dir = self._workspace_path / ".normflow" / "faiss_index"
-        self._model = SentenceTransformer(self.MODEL_NAME)
 
     # ------------------------------------------------------------------
     # Persistence helpers
@@ -50,7 +51,6 @@ class SemanticIndex:
 
     def clear(self):
         """Remove the persisted index files."""
-        import shutil
         if self._index_dir.exists():
             shutil.rmtree(self._index_dir)
 
@@ -86,13 +86,13 @@ class SemanticIndex:
 
         if not raw_texts:
             # Nothing to index — create empty index
-            dim = self._model.get_sentence_embedding_dimension()
+            dim = _MODEL.get_sentence_embedding_dimension()
             index = faiss.IndexFlatIP(dim)
             self._save(index, table)
             return 0
 
         # Embed, normalize, and store
-        embeddings = self._model.encode(raw_texts, normalize_embeddings=True)
+        embeddings = _MODEL.encode(raw_texts, normalize_embeddings=True)
         embeddings = np.asarray(embeddings, dtype="float32")
 
         dim = embeddings.shape[1]
@@ -126,7 +126,7 @@ class SemanticIndex:
 
         index, table = loaded
 
-        query_embedding = self._model.encode(
+        query_embedding = _MODEL.encode(
             [query_text], normalize_embeddings=True
         )
         query_vec = np.asarray(query_embedding, dtype="float32")

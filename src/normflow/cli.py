@@ -1,10 +1,10 @@
 """NormFlow CLI — Typer application."""
 
+import json
 from pathlib import Path
-from typing import Optional
 
 from rich.console import Console
-from typer import Context
+from rich.table import Table
 
 import typer
 
@@ -22,13 +22,8 @@ app = typer.Typer(
 
 console = Console()
 
-
-def __resolve_workspace(ctx: typer.Context) -> Path | None:
-    """Resolve and validate the workspace path from the --workspace flag."""
-    ws_path = ctx.params.get("workspace")
-    if not ws_path:
-        return None
-    return Path(ws_path).expanduser().resolve()
+# ponytail: shared workspace option to avoid repeating help text
+_ws_opt = typer.Option(..., "--workspace", "-w", help="Path to the NormFlow project workspace.")
 
 
 @app.command()
@@ -45,7 +40,7 @@ def init(workspace: str = typer.Option(..., "--workspace", help="Path to initial
 
 
 @app.command()
-def info(workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace.")) -> None:
+def info(workspace: str = _ws_opt) -> None:
     """Show information about a NormFlow project workspace."""
     info = workspace_info(workspace)
     console.print(f"Workspace:  {info['workspace']}")
@@ -56,10 +51,10 @@ def info(workspace: str = typer.Option(..., "--workspace", help="Path to the Nor
 
 @app.command(name="import")
 def import_cmd(
-    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
     csv_path: str = typer.Argument(..., help="Path to the CSV file to import."),
     source_column: str = typer.Option(..., "--source-column", help="CSV header name for raw_text values."),
     target_column: str = typer.Option(..., "--target-column", help="CSV header name for normalized_text values."),
+    workspace: str = _ws_opt,
 ) -> None:
     """Import mappings from a CSV file into the workspace database."""
     try:
@@ -72,10 +67,10 @@ def import_cmd(
 
 @app.command(name="export")
 def export_cmd(
-    workspace: str = typer.Option(..., "--workspace", help="Path to export mappings to."),
     csv_path: str = typer.Argument(..., help="Path to export mappings to."),
     source_column: str = typer.Option("raw_text", "--source-column", help="CSV header name for raw_text column."),
     target_column: str = typer.Option("normalized_text", "--target-column", help="CSV header name for normalized_text column."),
+    workspace: str = _ws_opt,
 ) -> None:
     """Export mappings from the workspace database to a CSV file."""
     try:
@@ -88,11 +83,11 @@ def export_cmd(
 
 @app.command(name="suggest")
 def suggest_cmd(
-    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
     raw_text: str = typer.Argument(..., help="The raw text value to find suggestions for."),
     limit: int = typer.Option(1, "--limit", help="Maximum number of suggestions to return."),
     no_semantic: bool = typer.Option(False, "--no-semantic", help="Disable semantic matching fallback."),
     semantic_threshold: float = typer.Option(0.85, "--semantic-threshold", help="Minimum cosine similarity for semantic matches."),
+    workspace: str = _ws_opt,
 ) -> None:
     """Return normalization suggestions for a single raw text value."""
     try:
@@ -109,13 +104,13 @@ def suggest_cmd(
 
 @app.command(name="suggest-batch")
 def suggest_batch_cmd(
-    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
     csv_path: str = typer.Argument(..., help="Path to the CSV file with raw text records."),
     column: str = typer.Option(..., "--column", help="CSV column that holds the raw texts needing mapping."),
     output_column: str = typer.Option("normalized_text", "--output-column", help="Name for the output suggestion column."),
     output: str = typer.Option(None, "--output", help="Path to write the output CSV (defaults to stdout)."),
     no_semantic: bool = typer.Option(False, "--no-semantic", help="Disable semantic matching fallback."),
     semantic_threshold: float = typer.Option(0.85, "--semantic-threshold", help="Minimum cosine similarity for semantic matches."),
+    workspace: str = _ws_opt,
 ) -> None:
     """Batch-suggest normalizations for all rows in a CSV file."""
     try:
@@ -145,8 +140,8 @@ review_app = typer.Typer(
 
 @review_app.command(name="list")
 def list_suggestions(
-    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
-    json: bool = typer.Option(False, "--json", help="Output as JSON instead of a table."),
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON instead of a table."),
+    workspace: str = _ws_opt,
 ) -> None:
     """List pending suggestions awaiting review."""
     try:
@@ -155,11 +150,9 @@ def list_suggestions(
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1) from None
 
-    if json:
-        import json as _json
-        print(_json.dumps(items, indent=2))
+    if as_json:
+        print(json.dumps(items, indent=2))
     else:
-        from rich.table import Table
         table = Table()
         table.add_column("ID", style="cyan")
         table.add_column("raw_text")
@@ -171,8 +164,8 @@ def list_suggestions(
 
 @review_app.command()
 def accept(
-    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
     record_id: int = typer.Option(..., "--record-id", help="ID of the suggestion to accept."),
+    workspace: str = _ws_opt,
 ) -> None:
     """Accept a suggestion, inserting it into the mapping library."""
     try:
@@ -185,9 +178,9 @@ def accept(
 
 @review_app.command()
 def edit(
-    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
     record_id: int = typer.Option(..., "--record-id", help="ID of the suggestion to edit."),
     normalized_text: str = typer.Option(..., "--normalized-text", help="Edited normalized text to store."),
+    workspace: str = _ws_opt,
 ) -> None:
     """Accept a suggestion with an edit, inserting the edited text into the mapping library."""
     try:
@@ -210,9 +203,7 @@ index_app = typer.Typer(
 
 
 @index_app.command(name="build")
-def index_build(
-    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
-) -> None:
+def index_build(workspace: str = _ws_opt) -> None:
     """Build or rebuild the FAISS semantic search index from current mappings."""
     try:
         from .semantic_index import SemanticIndex
@@ -225,9 +216,7 @@ def index_build(
 
 
 @index_app.command(name="clear")
-def index_clear(
-    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
-) -> None:
+def index_clear(workspace: str = _ws_opt) -> None:
     """Remove the persisted FAISS index."""
     try:
         from .semantic_index import SemanticIndex

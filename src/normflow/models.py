@@ -1,6 +1,6 @@
 """SQLModel domain models for NormFlow."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlmodel import Field, SQLModel
 
@@ -20,4 +20,4 @@ class Suggestion(SQLModel, table=True):
     raw_text: str = Field(index=True)
     suggested_text: str
     status: str = Field(default="pending")  # pending | accepted | rejected
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -44,22 +44,19 @@ def import_mappings(
         rows = list(reader)
 
     with ws.session() as session:
+        # ponytail: load existing raw_texts into set — O(1) lookup vs O(n) queries
+        existing = session.exec(select(ExampleMapping.raw_text)).all()
+
         imported = 0
         skipped = 0
         for row in rows:
             raw_text = row[source_column].strip()
             normalized_text = row[target_column].strip()
 
-            # Skip empty rows
             if not raw_text or not normalized_text:
                 continue
 
-            # Check for duplicate (same raw_text)
-            existing = session.exec(
-                select(ExampleMapping).where(ExampleMapping.raw_text == raw_text)
-            ).first()
-
-            if existing:
+            if raw_text in existing:
                 skipped += 1
             else:
                 session.add(ExampleMapping(raw_text=raw_text, normalized_text=normalized_text))

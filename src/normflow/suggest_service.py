@@ -3,7 +3,6 @@
 import csv
 import io
 from pathlib import Path
-from typing import Iterable
 
 from pydantic import BaseModel, Field
 from sqlmodel import select
@@ -79,10 +78,6 @@ def suggest(
     return SuggestionResult(raw_text=raw_text, suggestions=suggestions)
 
 
-# Backward-compatible alias for existing callers
-suggest_exact = suggest
-
-
 def suggest_batch(
     workspace_path: str,
     csv_path: str,
@@ -100,8 +95,6 @@ def suggest_batch(
     Entirely blank rows (every column empty) are excluded from output.
     Rows with some data but blank raw text are included with blank suggestion.
     """
-    ws = WorkspaceService(workspace_path)
-
     input_file = Path(csv_path).expanduser().resolve()
     if not input_file.exists():
         msg = f"CSV file not found: {input_file}"
