@@ -46,7 +46,7 @@ def workspace(tmp_path: Path) -> Path:
 class TestSemanticIndexBuild:
     """SemanticIndex.build() creates an index from mappings."""
 
-    @patch("normflow.semantic_index.SentenceTransformer")
+    @patch("normflow.mapping_service.SentenceTransformer")
     def test_build_creates_index_with_correct_size(self, mock_model_cls, workspace):
         from normflow.semantic_index import SemanticIndex
 
@@ -61,7 +61,7 @@ class TestSemanticIndexBuild:
 
         assert idx.exists()
 
-    @patch("normflow.semantic_index.SentenceTransformer")
+    @patch("normflow.mapping_service.SentenceTransformer")
     def test_build_persists_to_disk(self, mock_model_cls, workspace):
         from normflow.semantic_index import SemanticIndex
 
@@ -78,7 +78,7 @@ class TestSemanticIndexBuild:
         index_dir = workspace / ".normflow" / "faiss_index"
         assert index_dir.exists()
 
-    @patch("normflow.semantic_index.SentenceTransformer")
+    @patch("normflow.mapping_service.SentenceTransformer")
     def test_build_skips_empty_raw_text(self, mock_model_cls, workspace):
         from normflow.semantic_index import SemanticIndex
 
@@ -105,7 +105,7 @@ class TestSemanticIndexBuild:
 class TestSemanticIndexLoad:
     """SemanticIndex.load() restores a persisted index."""
 
-    @patch("normflow.semantic_index.SentenceTransformer")
+    @patch("normflow.mapping_service.SentenceTransformer")
     def test_load_returns_index(self, mock_model_cls, workspace):
         from normflow.semantic_index import SemanticIndex
 
@@ -143,7 +143,7 @@ class TestSemanticIndexLoad:
 class TestSemanticIndexSearch:
     """SemanticIndex.search() returns results above threshold."""
 
-    @patch("normflow.semantic_index.SentenceTransformer")
+    @patch("normflow.mapping_service.SentenceTransformer")
     def test_search_returns_close_matches(self, mock_model_cls, workspace):
         from normflow.semantic_index import SemanticIndex
 
@@ -167,7 +167,7 @@ class TestSemanticIndexSearch:
             assert "score" in r
             assert r["score"] >= 0.5
 
-    @patch("normflow.semantic_index.SentenceTransformer")
+    @patch("normflow.mapping_service.SentenceTransformer")
     def test_search_filters_by_threshold(self, mock_model_cls, workspace):
         from normflow.semantic_index import SemanticIndex
 
@@ -186,7 +186,7 @@ class TestSemanticIndexSearch:
         # All cosine scores are 0, so nothing passes threshold
         assert len(results) == 0
 
-    @patch("normflow.semantic_index.SentenceTransformer")
+    @patch("normflow.mapping_service.SentenceTransformer")
     def test_search_respects_limit(self, mock_model_cls, workspace):
         from normflow.semantic_index import SemanticIndex
 
@@ -203,7 +203,7 @@ class TestSemanticIndexSearch:
 
         assert len(results) <= 2
 
-    @patch("normflow.semantic_index.SentenceTransformer")
+    @patch("normflow.mapping_service.SentenceTransformer")
     def test_search_returns_results_sorted_by_score_desc(self, mock_model_cls, workspace):
         from normflow.semantic_index import SemanticIndex
 
@@ -235,7 +235,7 @@ class TestSemanticIndexSearch:
 class TestSemanticIndexClear:
     """SemanticIndex.clear() removes persisted index."""
 
-    @patch("normflow.semantic_index.SentenceTransformer")
+    @patch("normflow.mapping_service.SentenceTransformer")
     def test_clear_removes_index(self, mock_model_cls, workspace):
         from normflow.semantic_index import SemanticIndex
 

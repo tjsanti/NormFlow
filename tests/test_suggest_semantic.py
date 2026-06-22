@@ -31,9 +31,9 @@ def _seed_mappings(ws_path: Path, pairs: list[tuple[str, str]]) -> None:
 class TestSuggestSemanticFallback:
     """suggest_exact falls through to semantic when exact match fails."""
 
-    @patch("normflow.semantic_index._MODEL")
+    @patch("normflow.mapping_service._MODEL")
     def test_semantic_fallback_when_no_exact_match(self, mock_model):
-        from normflow.suggest_service import suggest
+        from normflow.mapping_service import MappingService
 
         mock_model.encode.side_effect = lambda texts, **kw: [
             [0.577, 0.577, 0.577] for _ in texts
@@ -51,15 +51,17 @@ class TestSuggestSemanticFallback:
             idx.build()
 
             # Query something that has no exact match
-            result = suggest(str(ws_path), "colr", semantic=True, semantic_threshold=0.5)
+            suggestions = MappingService(str(ws_path)).lookup(
+                "colr", semantic=True, threshold=0.5,
+            )
 
-            assert len(result.suggestions) > 0
-            assert result.suggestions[0].method == "semantic"
-            assert result.suggestions[0].confidence < 1.0
+            assert len(suggestions) > 0
+            assert suggestions[0].method == "semantic"
+            assert suggestions[0].confidence < 1.0
 
-    @patch("normflow.semantic_index._MODEL")
+    @patch("normflow.mapping_service._MODEL")
     def test_exact_match_takes_priority(self, mock_model):
-        from normflow.suggest_service import suggest
+        from normflow.mapping_service import MappingService
 
         mock_model.encode.side_effect = lambda texts, **kw: [
             [0.577, 0.577, 0.577] for _ in texts
@@ -77,26 +79,26 @@ class TestSuggestSemanticFallback:
             idx.build()
 
             # Exact match query
-            result = suggest(str(ws_path), "colour", semantic=True)
+            suggestions = MappingService(str(ws_path)).lookup("colour", semantic=True)
 
-            assert len(result.suggestions) == 1
-            assert result.suggestions[0].method == "exact"
-            assert result.suggestions[0].confidence == 1.0
+            assert len(suggestions) == 1
+            assert suggestions[0].method == "exact"
+            assert suggestions[0].confidence == 1.0
 
     def test_no_semantic_flag_returns_empty_on_miss(self):
-        from normflow.suggest_service import suggest
+        from normflow.mapping_service import MappingService
 
         with tempfile.TemporaryDirectory() as tmpdir:
             ws_path = Path(tmpdir) / "proj"
             init_workspace(str(ws_path))
             _seed_mappings(ws_path, [("colour", "color")])
 
-            result = suggest(str(ws_path), "colr", semantic=False)
+            suggestions = MappingService(str(ws_path)).lookup("colr", semantic=False)
 
-            assert result.suggestions == []
+            assert suggestions == []
 
     def test_no_index_returns_empty_on_miss(self):
-        from normflow.suggest_service import suggest
+        from normflow.mapping_service import MappingService
 
         with tempfile.TemporaryDirectory() as tmpdir:
             ws_path = Path(tmpdir) / "proj"
@@ -104,13 +106,13 @@ class TestSuggestSemanticFallback:
             _seed_mappings(ws_path, [("colour", "color")])
 
             # Don't build index — semantic should degrade gracefully
-            result = suggest(str(ws_path), "colr", semantic=True)
+            suggestions = MappingService(str(ws_path)).lookup("colr", semantic=True)
 
-            assert result.suggestions == []
+            assert suggestions == []
 
-    @patch("normflow.semantic_index._MODEL")
+    @patch("normflow.mapping_service._MODEL")
     def test_threshold_filters_results(self, mock_model):
-        from normflow.suggest_service import suggest
+        from normflow.mapping_service import MappingService
 
         # Build: returns [0,1,0] for each mapping; Search: returns [1,0,0] for query
         # Cosine between [1,0,0] and [0,1,0] = 0 (orthogonal)
@@ -133,10 +135,12 @@ class TestSuggestSemanticFallback:
             idx = SemanticIndex(str(ws_path))
             idx.build()
 
-            result = suggest(str(ws_path), "colr", semantic=True, semantic_threshold=0.85)
+            suggestions = MappingService(str(ws_path)).lookup(
+                "colr", semantic=True, threshold=0.85,
+            )
 
             # Cosine = 0, below threshold, so no results
-            assert result.suggestions == []
+            assert suggestions == []
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +151,7 @@ class TestSuggestSemanticFallback:
 class TestSuggestCLI:
     """CLI suggest command with semantic flags."""
 
-    @patch("normflow.semantic_index._MODEL")
+    @patch("normflow.mapping_service._MODEL")
     def test_suggest_returns_semantic_suggestion(self, mock_model):
         mock_model.encode.side_effect = lambda texts, **kw: [
             [0.577, 0.577, 0.577] for _ in texts
@@ -205,7 +209,7 @@ class TestSuggestCLI:
 class TestIndexCLI:
     """CLI index build/clear commands."""
 
-    @patch("normflow.semantic_index._MODEL")
+    @patch("normflow.mapping_service._MODEL")
     def test_index_build_succeeds(self, mock_model):
         mock_model.encode.side_effect = lambda texts, **kw: [
             [0.1 * i, 0.2 * i, 0.3 * i] for i in range(len(texts))
@@ -221,7 +225,7 @@ class TestIndexCLI:
             assert result.exit_code == 0
             assert "2" in result.stdout  # shows count
 
-    @patch("normflow.semantic_index._MODEL")
+    @patch("normflow.mapping_service._MODEL")
     def test_index_clear_succeeds(self, mock_model):
         mock_model.encode.side_effect = lambda texts, **kw: [
             [0.1 * i, 0.2 * i, 0.3 * i] for i in range(len(texts))

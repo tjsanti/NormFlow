@@ -9,10 +9,8 @@ from rich.table import Table
 import typer
 
 from . import __version__
-from .csv_ops import import_mappings, export_mappings
-from .review_service import list_pending, accept_suggestion, edit_suggestion
-from .suggest_service import suggest, suggest_batch
-from .workspace import init_workspace, workspace_info
+from .mapping_service import MappingService
+from .workspace import init_workspace
 
 app = typer.Typer(
     name="normflow",
@@ -22,8 +20,12 @@ app = typer.Typer(
 
 console = Console()
 
-# ponytail: shared workspace option to avoid repeating help text
 _ws_opt = typer.Option(..., "--workspace", "-w", help="Path to the NormFlow project workspace.")
+
+
+def _ms(workspace: str) -> MappingService:
+    """Get a MappingService for the workspace."""
+    return MappingService(workspace)
 
 
 @app.command()
@@ -42,7 +44,7 @@ def init(workspace: str = typer.Option(..., "--workspace", help="Path to initial
 @app.command()
 def info(workspace: str = _ws_opt) -> None:
     """Show information about a NormFlow project workspace."""
-    info = workspace_info(workspace)
+    info = _ms(workspace).workspace_info()
     console.print(f"Workspace:  {info['workspace']}")
     console.print(f"Database:   {info['database']}")
     console.print(f"Mappings:   {info['mappings']}")
@@ -58,7 +60,7 @@ def import_cmd(
 ) -> None:
     """Import mappings from a CSV file into the workspace database."""
     try:
-        imported, skipped = import_mappings(workspace, csv_path, source_column, target_column)
+        imported, skipped = _ms(workspace).import_mappings(csv_path, source_column, target_column)
         console.print(f"[green]Imported {imported} new mappings. {skipped} skipped.[/green]")
     except (ValueError, FileNotFoundError) as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -74,7 +76,7 @@ def export_cmd(
 ) -> None:
     """Export mappings from the workspace database to a CSV file."""
     try:
-        count = export_mappings(workspace, csv_path, source_column, target_column)
+        count = _ms(workspace).export_mappings(csv_path, source_column, target_column)
         console.print(f"[green]Exported {count} mappings to {csv_path}[/green]")
     except (ValueError, FileNotFoundError) as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -91,12 +93,11 @@ def suggest_cmd(
 ) -> None:
     """Return normalization suggestions for a single raw text value."""
     try:
-        result = suggest(
-            workspace, raw_text, limit=limit,
-            semantic=not no_semantic,
-            semantic_threshold=semantic_threshold,
+        items = _ms(workspace).lookup(
+            raw_text, semantic=not no_semantic, threshold=semantic_threshold, limit=limit,
         )
-        print(result.model_dump_json(indent=2))
+        import json
+        print(json.dumps({"raw_text": raw_text, "suggestions": [s.model_dump() for s in items]}, indent=2))
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1) from None
@@ -114,10 +115,8 @@ def suggest_batch_cmd(
 ) -> None:
     """Batch-suggest normalizations for all rows in a CSV file."""
     try:
-        result_csv = suggest_batch(
-            workspace, csv_path, column, output_column,
-            semantic=not no_semantic,
-            semantic_threshold=semantic_threshold,
+        result_csv = _ms(workspace).lookup_batch(
+            csv_path, column, output_column, semantic=not no_semantic, threshold=semantic_threshold,
         )
         if output:
             out_path = Path(output).expanduser().resolve()
@@ -145,7 +144,7 @@ def list_suggestions(
 ) -> None:
     """List pending suggestions awaiting review."""
     try:
-        items = list_pending(workspace)
+        items = _ms(workspace).list_pending_suggestions()
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1) from None
@@ -169,7 +168,7 @@ def accept(
 ) -> None:
     """Accept a suggestion, inserting it into the mapping library."""
     try:
-        accept_suggestion(workspace, record_id)
+        _ms(workspace).accept_suggestion(record_id)
         console.print(f"[green]Suggestion {record_id} accepted.[/green]")
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -184,7 +183,7 @@ def edit(
 ) -> None:
     """Accept a suggestion with an edit, inserting the edited text into the mapping library."""
     try:
-        edit_suggestion(workspace, record_id, normalized_text)
+        _ms(workspace).edit_suggestion(record_id, normalized_text)
         console.print(f"[green]Suggestion {record_id} accepted with edit.[/green]")
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -206,9 +205,7 @@ index_app = typer.Typer(
 def index_build(workspace: str = _ws_opt) -> None:
     """Build or rebuild the FAISS semantic search index from current mappings."""
     try:
-        from .semantic_index import SemanticIndex
-        idx = SemanticIndex(workspace)
-        count = idx.build()
+        count = _ms(workspace).build_index()
         console.print(f"[green]Index built with {count} entries.[/green]")
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -219,9 +216,7 @@ def index_build(workspace: str = _ws_opt) -> None:
 def index_clear(workspace: str = _ws_opt) -> None:
     """Remove the persisted FAISS index."""
     try:
-        from .semantic_index import SemanticIndex
-        idx = SemanticIndex(workspace)
-        idx.clear()
+        _ms(workspace).clear_index()
         console.print("[green]Index cleared.[/green]")
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")

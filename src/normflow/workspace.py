@@ -1,11 +1,13 @@
-"""Workspace operations: init and info."""
+"""Workspace operations: init and info.
 
-from functools import lru_cache
+WorkspaceService is a thin shim over MappingService for backward compat.
+"""
+
 from pathlib import Path
 
-from sqlmodel import SQLModel, Session, create_engine, select
+from sqlmodel import SQLModel, Session
 
-from .models import ExampleMapping, Suggestion
+from .mapping_service import MappingService, _make_engine
 
 
 def init_workspace(path: str) -> Path:
@@ -18,51 +20,27 @@ def init_workspace(path: str) -> Path:
 
     db_path = ws / "normflow.db"
     engine = _make_engine(str(db_path))
+
+    # Import models from mapping_service to create tables
+    from .mapping_service import _ExampleMapping, _Suggestion
+
     SQLModel.metadata.create_all(engine)
 
     return ws
 
 
-def workspace_info(path: str) -> dict:
-    """Return info about an existing project workspace."""
-    ws = WorkspaceService(path)
-
-    with ws.session() as session:
-        from sqlmodel import func
-        mapping_count = session.exec(
-            select(func.count(ExampleMapping.id))
-        ).one()
-        suggestion_count = session.exec(
-            select(func.count(Suggestion.id))
-        ).one()
-
-    return {
-        "workspace": str(ws._path),
-        "database": str(ws._db_path),
-        "mappings": mapping_count,
-        "suggestions": suggestion_count,
-    }
-
-
 class WorkspaceService:
-    """Work with an existing project workspace."""
+    """Thin shim over MappingService for backward compat."""
 
     def __init__(self, path: str):
-        self._path = Path(path).expanduser().resolve()
-        self._db_path = self._path / "normflow.db"
-        self._engine = _make_engine(str(self._db_path))
-        self.validate()
+        self._ms = MappingService(path)
+        self._path = self._ms._path
+        self._db_path = self._ms._db_path
+        self._engine = self._ms._engine
 
     def validate(self) -> None:
-        if not self._db_path.exists():
-            msg = f"Not a NormFlow workspace: no database found at {self._db_path}"
-            raise ValueError(msg)
+        self._ms.validate()
 
     def session(self):
         """Context manager for database sessions."""
         return Session(self._engine)
-
-
-@lru_cache(maxsize=32)
-def _make_engine(db_url: str):
-    return create_engine(f"sqlite:///{db_url}")
