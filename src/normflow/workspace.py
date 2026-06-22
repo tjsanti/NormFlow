@@ -23,6 +23,7 @@ def init_workspace(path: str) -> Path:
     (ws / "input").mkdir(exist_ok=True)
     (ws / "output").mkdir(exist_ok=True)
     (ws / "samples").mkdir(exist_ok=True)
+    (ws / ".normflow").mkdir(exist_ok=True)
 
     # Create database with tables
     db_path = ws / "normflow.db"

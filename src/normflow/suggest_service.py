@@ -27,18 +27,19 @@ class SuggestionResult(BaseModel):
     suggestions: list[SuggestionItem]
 
 
-def suggest_exact(
+def suggest(
     workspace_path: str,
     raw_text: str,
-    limit: int = 5,
+    limit: int = 1,
+    semantic: bool = True,
+    semantic_threshold: float = 0.85,
 ) -> SuggestionResult:
-    """Look up exact-match suggestions from the mapping library.
+    """Look up suggestions from the mapping library.
 
-    Queries ExampleMapping by raw_text. Returns at most one result
-    (enforced by limit), wrapped in the suggest output shape.
+    First tries exact match. If no exact match and *semantic* is True,
+    falls through to semantic search using the FAISS index.
 
-    Future slices can add more retrieval strategies while keeping
-    the same return type.
+    Returns at most *limit* suggestions.
     """
     ws = WorkspaceService(workspace_path)
 
@@ -56,10 +57,30 @@ def suggest_exact(
                 confidence=1.0,
             ))
 
-    # Apply limit (no-op for exact match, but establishes the contract)
+    # If no exact match and semantic is enabled, try semantic search
+    if not suggestions and semantic:
+        from .semantic_index import SemanticIndex
+
+        idx = SemanticIndex(workspace_path)
+        if idx.exists():
+            semantic_results = idx.search(
+                raw_text, limit=limit, threshold=semantic_threshold
+            )
+            for sr in semantic_results:
+                suggestions.append(SuggestionItem(
+                    suggested_text=sr["normalized_text"],
+                    method="semantic",
+                    confidence=sr["score"],
+                ))
+
+    # Apply limit
     suggestions = suggestions[:limit]
 
     return SuggestionResult(raw_text=raw_text, suggestions=suggestions)
+
+
+# Backward-compatible alias for existing callers
+suggest_exact = suggest
 
 
 def suggest_batch(
@@ -67,10 +88,12 @@ def suggest_batch(
     csv_path: str,
     column: str,
     output_column: str = "normalized_text",
+    semantic: bool = True,
+    semantic_threshold: float = 0.85,
 ) -> str:
     """Suggest normalizations for every row in a CSV file.
 
-    Reads the CSV, calls suggest_exact for each row's raw text,
+    Reads the CSV, calls suggest for each row's raw text,
     and returns a CSV string with original columns plus the
     output_column holding the top suggestion (blank if no match).
 
@@ -116,7 +139,10 @@ def suggest_batch(
         out_row = dict(row)
 
         if raw_text:
-            result = suggest_exact(workspace_path, raw_text, limit=1)
+            result = suggest(
+                workspace_path, raw_text, limit=1,
+                semantic=semantic, semantic_threshold=semantic_threshold,
+            )
             if result.suggestions:
                 out_row[output_column] = result.suggestions[0].suggested_text
             else:

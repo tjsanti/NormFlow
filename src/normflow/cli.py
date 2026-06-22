@@ -11,7 +11,7 @@ import typer
 from . import __version__
 from .csv_ops import import_mappings, export_mappings
 from .review_service import list_pending, accept_suggestion, edit_suggestion
-from .suggest_service import suggest_exact, suggest_batch
+from .suggest_service import suggest, suggest_batch
 from .workspace import init_workspace, workspace_info
 
 app = typer.Typer(
@@ -86,15 +86,21 @@ def export_cmd(
         raise typer.Exit(1) from None
 
 
-@app.command()
-def suggest(
+@app.command(name="suggest")
+def suggest_cmd(
     workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
     raw_text: str = typer.Argument(..., help="The raw text value to find suggestions for."),
-    limit: int = typer.Option(5, "--limit", help="Maximum number of suggestions to return."),
+    limit: int = typer.Option(1, "--limit", help="Maximum number of suggestions to return."),
+    no_semantic: bool = typer.Option(False, "--no-semantic", help="Disable semantic matching fallback."),
+    semantic_threshold: float = typer.Option(0.85, "--semantic-threshold", help="Minimum cosine similarity for semantic matches."),
 ) -> None:
     """Return normalization suggestions for a single raw text value."""
     try:
-        result = suggest_exact(workspace, raw_text, limit)
+        result = suggest(
+            workspace, raw_text, limit=limit,
+            semantic=not no_semantic,
+            semantic_threshold=semantic_threshold,
+        )
         print(result.model_dump_json(indent=2))
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -108,10 +114,16 @@ def suggest_batch_cmd(
     column: str = typer.Option(..., "--column", help="CSV column that holds the raw texts needing mapping."),
     output_column: str = typer.Option("normalized_text", "--output-column", help="Name for the output suggestion column."),
     output: str = typer.Option(None, "--output", help="Path to write the output CSV (defaults to stdout)."),
+    no_semantic: bool = typer.Option(False, "--no-semantic", help="Disable semantic matching fallback."),
+    semantic_threshold: float = typer.Option(0.85, "--semantic-threshold", help="Minimum cosine similarity for semantic matches."),
 ) -> None:
     """Batch-suggest normalizations for all rows in a CSV file."""
     try:
-        result_csv = suggest_batch(workspace, csv_path, column, output_column)
+        result_csv = suggest_batch(
+            workspace, csv_path, column, output_column,
+            semantic=not no_semantic,
+            semantic_threshold=semantic_threshold,
+        )
         if output:
             out_path = Path(output).expanduser().resolve()
             out_path.write_text(result_csv, encoding="utf-8")
@@ -187,3 +199,44 @@ def edit(
 
 
 app.add_typer(review_app, name="review")
+
+
+# ---- index command group ----
+
+index_app = typer.Typer(
+    name="index",
+    help="Manage the semantic search index.",
+)
+
+
+@index_app.command(name="build")
+def index_build(
+    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
+) -> None:
+    """Build or rebuild the FAISS semantic search index from current mappings."""
+    try:
+        from .semantic_index import SemanticIndex
+        idx = SemanticIndex(workspace)
+        count = idx.build()
+        console.print(f"[green]Index built with {count} entries.[/green]")
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from None
+
+
+@index_app.command(name="clear")
+def index_clear(
+    workspace: str = typer.Option(..., "--workspace", help="Path to the NormFlow project workspace."),
+) -> None:
+    """Remove the persisted FAISS index."""
+    try:
+        from .semantic_index import SemanticIndex
+        idx = SemanticIndex(workspace)
+        idx.clear()
+        console.print("[green]Index cleared.[/green]")
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from None
+
+
+app.add_typer(index_app, name="index")
