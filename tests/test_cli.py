@@ -8,8 +8,7 @@ from sqlmodel import Session
 from typer.testing import CliRunner
 
 from normflow.cli import app
-from normflow.models import ExampleMapping
-from normflow.workspace import WorkspaceService
+from normflow.mapping_service import ExampleMapping, MappingService
 
 
 runner = CliRunner()
@@ -160,8 +159,8 @@ def test_export_writes_csv():
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
         # Insert mappings directly via the service
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="hello", normalized_text="world"))
             session.add(ExampleMapping(raw_text="foo", normalized_text="bar"))
             session.commit()
@@ -188,8 +187,8 @@ def test_export_custom_columns():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="hello", normalized_text="world"))
             session.commit()
 
@@ -244,8 +243,8 @@ def test_suggest_exact_match_found():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -270,8 +269,8 @@ def test_suggest_no_match_found():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -293,8 +292,8 @@ def test_suggest_limit_respected():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -315,8 +314,8 @@ def test_suggest_limit_default():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -352,8 +351,8 @@ def test_suggest_batch_basic():
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
         # Seed mappings
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.add(ExampleMapping(raw_text="centre", normalized_text="center"))
             session.commit()
@@ -386,8 +385,8 @@ def test_suggest_batch_no_match_blank():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -415,8 +414,8 @@ def test_suggest_batch_custom_output_column():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -440,8 +439,8 @@ def test_suggest_batch_output_to_file():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -464,8 +463,8 @@ def test_suggest_batch_excludes_entirely_blank_rows():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -491,8 +490,8 @@ def test_suggest_batch_includes_partial_rows_skips_processing():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -520,8 +519,8 @@ def test_suggest_batch_preserves_extra_columns():
 
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
 
@@ -590,11 +589,10 @@ def test_suggest_batch_missing_input_file():
 
 def _seed_suggestions(ws_path: Path, suggestions: list[tuple[str, str, str]]) -> None:
     """Seed Suggestion rows. Each tuple is (raw_text, suggested_text, status)."""
-    from normflow.models import Suggestion
-    from normflow.workspace import WorkspaceService
+    from normflow.mapping_service import MappingService, Suggestion
 
-    ws = WorkspaceService(str(ws_path))
-    with ws.session() as session:
+    ms = MappingService(str(ws_path))
+    with ms.session() as session:
         for raw_text, suggested_text, status in suggestions:
             session.add(Suggestion(
                 raw_text=raw_text,
@@ -710,10 +708,9 @@ def test_review_edit_inserts_mapping_with_custom_text():
         assert "Mappings:   1" in info_result.stdout
 
         # Verify the mapping has the custom text
-        ws = WorkspaceService(str(ws_path))
-        with ws.session() as session:
+        ms = MappingService(str(ws_path))
+        with ms.session() as session:
             from sqlmodel import select
-            from normflow.models import ExampleMapping
             mapping = session.exec(
                 select(ExampleMapping).where(ExampleMapping.raw_text == "o2 sensor")
             ).first()

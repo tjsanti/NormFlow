@@ -1,10 +1,6 @@
 """NormFlow CLI — Typer application."""
 
-import json
 from pathlib import Path
-
-from rich.console import Console
-from rich.table import Table
 
 import typer
 
@@ -18,8 +14,6 @@ app = typer.Typer(
     add_completion=False,
 )
 
-console = Console()
-
 _ws_opt = typer.Option(..., "--workspace", "-w", help="Path to the NormFlow project workspace.")
 
 
@@ -31,24 +25,24 @@ def _ms(workspace: str) -> MappingService:
 @app.command()
 def version() -> None:
     """Show the NormFlow version."""
-    console.print(__version__)
+    print(__version__)
 
 
 @app.command()
 def init(workspace: str = typer.Option(..., "--workspace", help="Path to initialize as a NormFlow project.")) -> None:
     """Initialize a new NormFlow project workspace."""
     ws = init_workspace(workspace)
-    console.print(f"[green]Project initialized at: {ws}[/green]")
+    print(f"Project initialized at: {ws}")
 
 
 @app.command()
 def info(workspace: str = _ws_opt) -> None:
     """Show information about a NormFlow project workspace."""
     info = _ms(workspace).workspace_info()
-    console.print(f"Workspace:  {info['workspace']}")
-    console.print(f"Database:   {info['database']}")
-    console.print(f"Mappings:   {info['mappings']}")
-    console.print(f"Suggestions: {info['suggestions']}")
+    print(f"Workspace:  {info['workspace']}")
+    print(f"Database:   {info['database']}")
+    print(f"Mappings:   {info['mappings']}")
+    print(f"Suggestions: {info['suggestions']}")
 
 
 @app.command(name="import")
@@ -61,9 +55,9 @@ def import_cmd(
     """Import mappings from a CSV file into the workspace database."""
     try:
         imported, skipped = _ms(workspace).import_mappings(csv_path, source_column, target_column)
-        console.print(f"[green]Imported {imported} new mappings. {skipped} skipped.[/green]")
+        print(f"Imported {imported} new mappings. {skipped} skipped.")
     except (ValueError, FileNotFoundError) as e:
-        console.print(f"[red]Error: {e}[/red]")
+        print(f"Error: {e}")
         raise typer.Exit(1) from None
 
 
@@ -77,9 +71,9 @@ def export_cmd(
     """Export mappings from the workspace database to a CSV file."""
     try:
         count = _ms(workspace).export_mappings(csv_path, source_column, target_column)
-        console.print(f"[green]Exported {count} mappings to {csv_path}[/green]")
+        print(f"Exported {count} mappings to {csv_path}")
     except (ValueError, FileNotFoundError) as e:
-        console.print(f"[red]Error: {e}[/red]")
+        print(f"Error: {e}")
         raise typer.Exit(1) from None
 
 
@@ -96,10 +90,10 @@ def suggest_cmd(
         items = _ms(workspace).lookup(
             raw_text, semantic=not no_semantic, threshold=semantic_threshold, limit=limit,
         )
-        import json
-        print(json.dumps({"raw_text": raw_text, "suggestions": [s.model_dump() for s in items]}, indent=2))
+        import json as _json
+        print(_json.dumps({"raw_text": raw_text, "suggestions": [s.model_dump() for s in items]}, indent=2))
     except ValueError as e:
-        console.print(f"[red]Error: {e}[/red]")
+        print(f"Error: {e}")
         raise typer.Exit(1) from None
 
 
@@ -121,11 +115,11 @@ def suggest_batch_cmd(
         if output:
             out_path = Path(output).expanduser().resolve()
             out_path.write_text(result_csv, encoding="utf-8")
-            console.print(f"[green]Wrote suggestions to {out_path}[/green]")
+            print(f"Wrote suggestions to {out_path}")
         else:
             print(result_csv, end="")
     except (ValueError, FileNotFoundError) as e:
-        console.print(f"[red]Error: {e}[/red]")
+        print(f"Error: {e}")
         raise typer.Exit(1) from None
 
 
@@ -146,19 +140,15 @@ def list_suggestions(
     try:
         items = _ms(workspace).list_pending_suggestions()
     except ValueError as e:
-        console.print(f"[red]Error: {e}[/red]")
+        print(f"Error: {e}")
         raise typer.Exit(1) from None
 
     if as_json:
-        print(json.dumps(items, indent=2))
+        import json as _json
+        print(_json.dumps(items, indent=2))
     else:
-        table = Table()
-        table.add_column("ID", style="cyan")
-        table.add_column("raw_text")
-        table.add_column("suggested_text")
         for item in items:
-            table.add_row(str(item["id"]), item["raw_text"], item["suggested_text"])
-        console.print(table)
+            print(f"{item['id']}\t{item['raw_text']}\t{item['suggested_text']}")
 
 
 @review_app.command()
@@ -169,9 +159,9 @@ def accept(
     """Accept a suggestion, inserting it into the mapping library."""
     try:
         _ms(workspace).accept_suggestion(record_id)
-        console.print(f"[green]Suggestion {record_id} accepted.[/green]")
+        print(f"Suggestion {record_id} accepted.")
     except ValueError as e:
-        console.print(f"[red]Error: {e}[/red]")
+        print(f"Error: {e}")
         raise typer.Exit(1) from None
 
 
@@ -184,9 +174,9 @@ def edit(
     """Accept a suggestion with an edit, inserting the edited text into the mapping library."""
     try:
         _ms(workspace).edit_suggestion(record_id, normalized_text)
-        console.print(f"[green]Suggestion {record_id} accepted with edit.[/green]")
+        print(f"Suggestion {record_id} accepted with edit.")
     except ValueError as e:
-        console.print(f"[red]Error: {e}[/red]")
+        print(f"Error: {e}")
         raise typer.Exit(1) from None
 
 
@@ -206,9 +196,9 @@ def index_build(workspace: str = _ws_opt) -> None:
     """Build or rebuild the FAISS semantic search index from current mappings."""
     try:
         count = _ms(workspace).build_index()
-        console.print(f"[green]Index built with {count} entries.[/green]")
+        print(f"Index built with {count} entries.")
     except ValueError as e:
-        console.print(f"[red]Error: {e}[/red]")
+        print(f"Error: {e}")
         raise typer.Exit(1) from None
 
 
@@ -217,9 +207,9 @@ def index_clear(workspace: str = _ws_opt) -> None:
     """Remove the persisted FAISS index."""
     try:
         _ms(workspace).clear_index()
-        console.print("[green]Index cleared.[/green]")
+        print("Index cleared.")
     except ValueError as e:
-        console.print(f"[red]Error: {e}[/red]")
+        print(f"Error: {e}")
         raise typer.Exit(1) from None
 
 

@@ -1,36 +1,36 @@
-"""Unit tests for WorkspaceService."""
+"""Unit tests for MappingService."""
 
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from normflow.workspace import WorkspaceService, init_workspace
+from normflow.mapping_service import ExampleMapping, MappingService
+from normflow.workspace import init_workspace
 
 
 def test_raises_on_missing_database():
-    """WorkspaceService should raise ValueError immediately when the path has no normflow.db."""
+    """MappingService should raise ValueError immediately when the path has no normflow.db."""
     with tempfile.TemporaryDirectory() as tmpdir:
         with pytest.raises(ValueError, match="Not a NormFlow workspace"):
-            WorkspaceService(tmpdir)
+            MappingService(tmpdir)
 
 
 def test_accepts_initialized_workspace():
-    """WorkspaceService should accept a path that was just initialized."""
+    """MappingService should accept a path that was just initialized."""
     with tempfile.TemporaryDirectory() as tmpdir:
         init_workspace(tmpdir)
-        service = WorkspaceService(tmpdir)
+        service = MappingService(tmpdir)
         assert service._path.resolve() == Path(tmpdir).resolve()
 
 
 def test_session_can_write_and_read_mappings():
-    """WorkspaceService.session() should yield a session that can read/write mappings."""
+    """MappingService.session() should yield a session that can read/write mappings."""
     with tempfile.TemporaryDirectory() as tmpdir:
         init_workspace(tmpdir)
-        service = WorkspaceService(tmpdir)
+        service = MappingService(tmpdir)
 
         from sqlmodel import Session, select
-        from normflow.models import ExampleMapping
 
         # Write a mapping
         with service.session() as session:

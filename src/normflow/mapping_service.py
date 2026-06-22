@@ -10,7 +10,7 @@ import io
 import pickle
 import shutil
 from datetime import datetime, timezone
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 import faiss
@@ -24,7 +24,7 @@ from sqlmodel import Field as SField, SQLModel, Session, create_engine, func, se
 # ---------------------------------------------------------------------------
 
 
-class _ExampleMapping(SQLModel, table=True):
+class ExampleMapping(SQLModel, table=True):
     """A raw_text -> normalized_text mapping pair."""
 
     id: int | None = SField(default=None, primary_key=True)
@@ -32,7 +32,7 @@ class _ExampleMapping(SQLModel, table=True):
     normalized_text: str
 
 
-class _Suggestion(SQLModel, table=True):
+class Suggestion(SQLModel, table=True):
     """A system-generated candidate for a raw_text record."""
 
     id: int | None = SField(default=None, primary_key=True)
@@ -55,17 +55,12 @@ class SuggestionItem(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
-# ponytail: 90MB model — lazy singleton so test patches work before first use
-_MODEL = None
-
+@cache
 def _ensure_model():
-    global _MODEL
-    if _MODEL is None:
-        _MODEL = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-    return _MODEL
+    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 
-@lru_cache(maxsize=32)
+@cache
 def _make_engine(db_url: str):
     return create_engine(f"sqlite:///{db_url}")
 
@@ -89,7 +84,7 @@ class MappingService:
             msg = f"Not a NormFlow workspace: no database found at {self._db_path}"
             raise ValueError(msg)
 
-    def _session(self):
+    def session(self):
         """Context manager for database sessions."""
         return Session(self._engine)
 
@@ -98,12 +93,12 @@ class MappingService:
     # ------------------------------------------------------------------
 
     def workspace_info(self) -> dict:
-        with self._session() as session:
+        with self.session() as session:
             mapping_count = session.exec(
-                select(func.count(_ExampleMapping.id))
+                select(func.count(ExampleMapping.id))
             ).one()
             suggestion_count = session.exec(
-                select(func.count(_Suggestion.id))
+                select(func.count(Suggestion.id))
             ).one()
 
         return {
@@ -144,9 +139,9 @@ class MappingService:
 
             rows = list(reader)
 
-        with self._session() as session:
+        with self.session() as session:
             # ponytail: load existing raw_texts into set — O(1) lookup vs O(n) queries
-            existing = session.exec(select(_ExampleMapping.raw_text)).all()
+            existing = session.exec(select(ExampleMapping.raw_text)).all()
 
             imported = 0
             skipped = 0
@@ -160,7 +155,7 @@ class MappingService:
                 if raw_text in existing:
                     skipped += 1
                 else:
-                    session.add(_ExampleMapping(raw_text=raw_text, normalized_text=normalized_text))
+                    session.add(ExampleMapping(raw_text=raw_text, normalized_text=normalized_text))
                     imported += 1
 
             session.commit()
@@ -173,8 +168,8 @@ class MappingService:
         source_column: str = "raw_text",
         target_column: str = "normalized_text",
     ) -> int:
-        with self._session() as session:
-            mappings = session.exec(select(_ExampleMapping)).all()
+        with self.session() as session:
+            mappings = session.exec(select(ExampleMapping)).all()
             count = len(mappings)
 
         output_path = Path(csv_path).expanduser().resolve()
@@ -200,9 +195,9 @@ class MappingService:
     ) -> list[SuggestionItem]:
         suggestions: list[SuggestionItem] = []
 
-        with self._session() as session:
+        with self.session() as session:
             mapping = session.exec(
-                select(_ExampleMapping).where(_ExampleMapping.raw_text == raw_text)
+                select(ExampleMapping).where(ExampleMapping.raw_text == raw_text)
             ).first()
 
             if mapping:
@@ -285,9 +280,9 @@ class MappingService:
     # ------------------------------------------------------------------
 
     def list_pending_suggestions(self) -> list[dict]:
-        with self._session() as session:
+        with self.session() as session:
             suggestions = session.exec(
-                select(_Suggestion).where(_Suggestion.status == "pending")
+                select(Suggestion).where(Suggestion.status == "pending")
             ).all()
 
         return [
@@ -300,9 +295,9 @@ class MappingService:
         ]
 
     def _process_suggestion(self, record_id: int, status: str, normalized_text: str | None) -> None:
-        with self._session() as session:
+        with self.session() as session:
             suggestion = session.exec(
-                select(_Suggestion).where(_Suggestion.id == record_id)
+                select(Suggestion).where(Suggestion.id == record_id)
             ).first()
 
             if suggestion is None:
@@ -315,7 +310,7 @@ class MappingService:
 
             suggestion.status = status
             session.add(
-                _ExampleMapping(
+                ExampleMapping(
                     raw_text=suggestion.raw_text,
                     normalized_text=normalized_text if normalized_text is not None else suggestion.suggested_text,
                 )
@@ -377,7 +372,7 @@ class _SemanticIndex:
     def build(self, engine=None) -> int:
         eng = engine or _make_engine(str(self._workspace_path / "normflow.db"))
         with Session(eng) as session:
-            mappings = session.exec(select(_ExampleMapping)).all()
+            mappings = session.exec(select(ExampleMapping)).all()
 
         seen = set()
         raw_texts: list[str] = []
