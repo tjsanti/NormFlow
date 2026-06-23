@@ -7,17 +7,14 @@ model imports are internal.
 
 import csv
 import io
-import pickle
-import shutil
 from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
 
-import faiss
-import numpy as np
 from pydantic import BaseModel, Field
-from sentence_transformers import SentenceTransformer
 from sqlmodel import Field as SField, SQLModel, Session, create_engine, func, select
+
+from .semantic_index import SemanticIndex
 
 # ---------------------------------------------------------------------------
 # Internal models
@@ -53,11 +50,6 @@ class SuggestionItem(BaseModel):
     suggested_text: str
     method: str
     confidence: float = Field(ge=0.0, le=1.0)
-
-
-@cache
-def _ensure_model():
-    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 
 @cache
@@ -208,7 +200,7 @@ class MappingService:
                 ))
 
         if not suggestions and semantic:
-            idx = _SemanticIndex(str(self._path))
+            idx = SemanticIndex(str(self._path))
             if idx.exists():
                 semantic_results = idx.search(raw_text, limit=limit, threshold=threshold)
                 for sr in semantic_results:
@@ -328,103 +320,12 @@ class MappingService:
     # ------------------------------------------------------------------
 
     def build_index(self) -> int:
-        idx = _SemanticIndex(str(self._path))
-        return idx.build(self._engine)
+        with self.session() as session:
+            mappings = session.exec(select(ExampleMapping)).all()
+        mapping_pairs = [(m.raw_text, m.normalized_text) for m in mappings]
+        idx = SemanticIndex(str(self._path))
+        return idx.build(mapping_pairs)
 
     def clear_index(self) -> None:
-        idx = _SemanticIndex(str(self._path))
+        idx = SemanticIndex(str(self._path))
         idx.clear()
-
-
-# ---------------------------------------------------------------------------
-# Internal: SemanticIndex (uses MappingService engine to avoid double-open)
-# ---------------------------------------------------------------------------
-
-
-class _SemanticIndex:
-    """Build, persist, and query a FAISS index over workspace mappings."""
-
-    def __init__(self, workspace_path: str):
-        self._workspace_path = Path(workspace_path).expanduser().resolve()
-        self._index_dir = self._workspace_path / ".normflow" / "faiss_index"
-
-    def exists(self) -> bool:
-        return (self._index_dir / "index.faiss").exists()
-
-    def _save(self, index, mapping_table):
-        self._index_dir.mkdir(parents=True, exist_ok=True)
-        faiss.write_index(index, str(self._index_dir / "index.faiss"))
-        with open(self._index_dir / "mapping_table.pkl", "wb") as f:
-            pickle.dump(mapping_table, f)
-
-    def load(self):
-        if not self.exists():
-            return None
-        index = faiss.read_index(str(self._index_dir / "index.faiss"))
-        with open(self._index_dir / "mapping_table.pkl", "rb") as f:
-            mapping_table = pickle.load(f)  # noqa: S301
-        return index, mapping_table
-
-    def clear(self):
-        if self._index_dir.exists():
-            shutil.rmtree(self._index_dir)
-
-    def build(self, engine=None) -> int:
-        eng = engine or _make_engine(str(self._workspace_path / "normflow.db"))
-        with Session(eng) as session:
-            mappings = session.exec(select(ExampleMapping)).all()
-
-        seen = set()
-        raw_texts: list[str] = []
-        table: list[tuple[str, str]] = []
-
-        for m in mappings:
-            rt = m.raw_text.strip()
-            if not rt or rt in seen:
-                continue
-            seen.add(rt)
-            raw_texts.append(rt)
-            table.append((rt, m.normalized_text))
-
-        if not raw_texts:
-            dim = _ensure_model().get_sentence_embedding_dimension()
-            index = faiss.IndexFlatIP(dim)
-            self._save(index, table)
-            return 0
-
-        embeddings = _ensure_model().encode(raw_texts, normalize_embeddings=True)
-        embeddings = np.asarray(embeddings, dtype="float32")
-
-        dim = embeddings.shape[1]
-        index = faiss.IndexFlatIP(dim)
-        index.add(embeddings)
-
-        self._save(index, table)
-        return len(table)
-
-    def search(self, query_text: str, limit: int = 1, threshold: float = 0.85):
-        loaded = self.load()
-        if loaded is None:
-            return []
-
-        index, table = loaded
-
-        query_embedding = _ensure_model().encode([query_text], normalize_embeddings=True)
-        query_vec = np.asarray(query_embedding, dtype="float32")
-
-        scores, faiss_ids = index.search(query_vec, min(limit, index.ntotal))
-
-        results = []
-        for score, fid in zip(scores[0], faiss_ids[0]):
-            if fid < 0:
-                continue
-            if float(score) < threshold:
-                continue
-            raw_text, normalized_text = table[fid]
-            results.append({
-                "raw_text": raw_text,
-                "normalized_text": normalized_text,
-                "score": round(float(score), 4),
-            })
-
-        return results

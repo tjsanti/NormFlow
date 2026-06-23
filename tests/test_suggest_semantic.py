@@ -9,10 +9,12 @@ from typer.testing import CliRunner
 
 from tests.helpers import seed_mappings
 from normflow.cli import app
-from normflow.mapping_service import ExampleMapping, MappingService, _SemanticIndex
+from normflow.mapping_service import ExampleMapping, MappingService
+from normflow.semantic_index import SemanticIndex
 from normflow.workspace import init_workspace
 
 runner = CliRunner()
+_INDEX_PATCH = "normflow.semantic_index._ensure_model"
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +25,7 @@ runner = CliRunner()
 class TestSuggestSemanticFallback:
     """suggest_exact falls through to semantic when exact match fails."""
 
-    @patch("normflow.mapping_service._ensure_model")
+    @patch(_INDEX_PATCH)
     def test_semantic_fallback_when_no_exact_match(self, mock_ensure):
         mock_model = MagicMock()
         mock_model.encode.side_effect = lambda texts, **kw: [
@@ -37,11 +39,9 @@ class TestSuggestSemanticFallback:
             init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color")])
 
-            # Build the index
-            idx = _SemanticIndex(str(ws_path))
-            idx.build()
+            idx = SemanticIndex(str(ws_path))
+            idx.build([("colour", "color")])
 
-            # Query something that has no exact match
             suggestions = MappingService(str(ws_path)).lookup(
                 "colr", semantic=True, threshold=0.5,
             )
@@ -50,7 +50,7 @@ class TestSuggestSemanticFallback:
             assert suggestions[0].method == "semantic"
             assert suggestions[0].confidence < 1.0
 
-    @patch("normflow.mapping_service._ensure_model")
+    @patch(_INDEX_PATCH)
     def test_exact_match_takes_priority(self, mock_ensure):
         mock_model = MagicMock()
         mock_model.encode.side_effect = lambda texts, **kw: [
@@ -64,11 +64,9 @@ class TestSuggestSemanticFallback:
             init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color")])
 
-            # Build index
-            idx = _SemanticIndex(str(ws_path))
-            idx.build()
+            idx = SemanticIndex(str(ws_path))
+            idx.build([("colour", "color")])
 
-            # Exact match query
             suggestions = MappingService(str(ws_path)).lookup("colour", semantic=True)
 
             assert len(suggestions) == 1
@@ -91,16 +89,14 @@ class TestSuggestSemanticFallback:
             init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color")])
 
-            # Don't build index — semantic should degrade gracefully
+            # Don't build index -- semantic should degrade gracefully
             suggestions = MappingService(str(ws_path)).lookup("colr", semantic=True)
 
             assert suggestions == []
 
-    @patch("normflow.mapping_service._ensure_model")
+    @patch(_INDEX_PATCH)
     def test_threshold_filters_results(self, mock_ensure):
         mock_model = MagicMock()
-        # Build: returns [0,1,0] for each mapping; Search: returns [1,0,0] for query
-        # Cosine between [1,0,0] and [0,1,0] = 0 (orthogonal)
         call_count = [0]
         def encode_side_effect(texts, **kw):
             call_count[0] += 1
@@ -117,14 +113,13 @@ class TestSuggestSemanticFallback:
             init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color"), ("centre", "center")])
 
-            idx = _SemanticIndex(str(ws_path))
-            idx.build()
+            idx = SemanticIndex(str(ws_path))
+            idx.build([("colour", "color"), ("centre", "center")])
 
             suggestions = MappingService(str(ws_path)).lookup(
                 "colr", semantic=True, threshold=0.85,
             )
 
-            # Cosine = 0, below threshold, so no results
             assert suggestions == []
 
 
@@ -136,7 +131,7 @@ class TestSuggestSemanticFallback:
 class TestSuggestCLI:
     """CLI suggest command with semantic flags."""
 
-    @patch("normflow.mapping_service._ensure_model")
+    @patch(_INDEX_PATCH)
     def test_suggest_returns_semantic_suggestion(self, mock_ensure):
         mock_model = MagicMock()
         mock_model.encode.side_effect = lambda texts, **kw: [
@@ -150,11 +145,9 @@ class TestSuggestCLI:
             runner.invoke(app, ["init", "--workspace", str(ws_path)])
             seed_mappings(ws_path, [("colour", "color")])
 
-            # Build index
             result = runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])
             assert result.exit_code == 0
 
-            # Query with no exact match
             result = runner.invoke(
                 app,
                 ["suggest", "--workspace", str(ws_path), "colr", "--semantic-threshold", "0.5"],
@@ -196,7 +189,7 @@ class TestSuggestCLI:
 class TestIndexCLI:
     """CLI index build/clear commands."""
 
-    @patch("normflow.mapping_service._ensure_model")
+    @patch(_INDEX_PATCH)
     def test_index_build_succeeds(self, mock_ensure):
         mock_model = MagicMock()
         mock_model.encode.side_effect = lambda texts, **kw: [
@@ -212,9 +205,9 @@ class TestIndexCLI:
 
             result = runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])
             assert result.exit_code == 0
-            assert "2" in result.stdout  # shows count
+            assert "2" in result.stdout
 
-    @patch("normflow.mapping_service._ensure_model")
+    @patch(_INDEX_PATCH)
     def test_index_clear_succeeds(self, mock_ensure):
         mock_model = MagicMock()
         mock_model.encode.side_effect = lambda texts, **kw: [
@@ -228,11 +221,9 @@ class TestIndexCLI:
             runner.invoke(app, ["init", "--workspace", str(ws_path)])
             seed_mappings(ws_path, [("colour", "color")])
 
-            # Build then clear
             runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])
             result = runner.invoke(app, ["index", "clear", "--workspace", str(ws_path)])
             assert result.exit_code == 0
-            assert "cleared" in result.stdout.lower() or result.exit_code == 0
 
     def test_index_build_invalid_workspace(self):
         with tempfile.TemporaryDirectory() as tmpdir:
