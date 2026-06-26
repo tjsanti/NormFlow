@@ -1,6 +1,8 @@
 """NormFlow CLI — Typer application."""
-
+from dotenv import load_dotenv
 from pathlib import Path
+
+load_dotenv()
 
 import typer
 
@@ -82,13 +84,14 @@ def suggest_cmd(
     raw_text: str = typer.Argument(..., help="The raw text value to find suggestions for."),
     limit: int = typer.Option(1, "--limit", help="Maximum number of suggestions to return."),
     no_semantic: bool = typer.Option(False, "--no-semantic", help="Disable semantic matching fallback."),
+    no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM matching fallback."),
     semantic_threshold: float = typer.Option(0.85, "--semantic-threshold", help="Minimum cosine similarity for semantic matches."),
     workspace: str = _ws_opt,
 ) -> None:
     """Return normalization suggestions for a single raw text value."""
     try:
         items = _ms(workspace).lookup(
-            raw_text, semantic=not no_semantic, threshold=semantic_threshold, limit=limit,
+            raw_text, semantic=not no_semantic, llm=not no_llm, threshold=semantic_threshold, limit=limit,
         )
         import json as _json
         print(_json.dumps({"raw_text": raw_text, "suggestions": [s.model_dump() for s in items]}, indent=2))
@@ -104,13 +107,14 @@ def suggest_batch_cmd(
     output_column: str = typer.Option("normalized_text", "--output-column", help="Name for the output suggestion column."),
     output: str = typer.Option(None, "--output", help="Path to write the output CSV (defaults to stdout)."),
     no_semantic: bool = typer.Option(False, "--no-semantic", help="Disable semantic matching fallback."),
+    no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM matching fallback."),
     semantic_threshold: float = typer.Option(0.85, "--semantic-threshold", help="Minimum cosine similarity for semantic matches."),
     workspace: str = _ws_opt,
 ) -> None:
     """Batch-suggest normalizations for all rows in a CSV file."""
     try:
         result_csv = _ms(workspace).lookup_batch(
-            csv_path, column, output_column, semantic=not no_semantic, threshold=semantic_threshold,
+            csv_path, column, output_column, semantic=not no_semantic, llm=not no_llm, threshold=semantic_threshold,
         )
         if output:
             out_path = Path(output).expanduser().resolve()

@@ -24,3 +24,4 @@ normflow.db
 input/
 output/
 samples/
+.env

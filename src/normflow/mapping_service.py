@@ -14,6 +14,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from sqlmodel import Field as SField, SQLModel, Session, create_engine, func, select
 
+from .llm_matcher import suggest as llm_suggest
 from .semantic_index import SemanticIndex
 
 # ---------------------------------------------------------------------------
@@ -49,7 +50,7 @@ class SuggestionItem(BaseModel):
 
     suggested_text: str
     method: str
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 @cache
@@ -182,10 +183,12 @@ class MappingService:
         raw_text: str,
         *,
         semantic: bool = True,
+        llm: bool = True,
         threshold: float = 0.85,
         limit: int = 1,
     ) -> list[SuggestionItem]:
         suggestions: list[SuggestionItem] = []
+        idx: SemanticIndex | None = None
 
         with self.session() as session:
             mapping = session.exec(
@@ -202,13 +205,28 @@ class MappingService:
         if not suggestions and semantic:
             idx = SemanticIndex(str(self._path))
             if idx.exists():
-                semantic_results = idx.search(raw_text, limit=limit, threshold=threshold)
+                semantic_results = idx.search(raw_text, limit=1, threshold=threshold)
                 for sr in semantic_results:
                     suggestions.append(SuggestionItem(
                         suggested_text=sr["normalized_text"],
                         method="semantic",
                         confidence=sr["score"],
                     ))
+
+        if not suggestions and llm:
+            if idx is None:
+                idx = SemanticIndex(str(self._path))
+            if idx.exists():
+                examples = idx.search(raw_text, limit=3, threshold=0.0)
+                if examples:
+                    try:
+                        normalized = llm_suggest(raw_text, examples)
+                        suggestions.append(SuggestionItem(
+                            suggested_text=normalized,
+                            method="llm",
+                        ))
+                    except Exception:
+                        pass  # ponytail: silent fallback, user re-tries or edits manually
 
         return suggestions[:limit]
 
@@ -219,6 +237,7 @@ class MappingService:
         output_column: str = "normalized_text",
         *,
         semantic: bool = True,
+        llm: bool = True,
         threshold: float = 0.85,
     ) -> str:
         input_file = Path(csv_path).expanduser().resolve()
@@ -255,7 +274,7 @@ class MappingService:
             out_row = dict(row)
 
             if raw_text:
-                results = self.lookup(raw_text, semantic=semantic, threshold=threshold, limit=1)
+                results = self.lookup(raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=1)
                 if results:
                     out_row[output_column] = results[0].suggested_text
                 else:
