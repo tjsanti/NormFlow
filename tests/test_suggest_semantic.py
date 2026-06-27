@@ -117,7 +117,7 @@ class TestSuggestSemanticFallback:
             idx.build([("colour", "color"), ("centre", "center")])
 
             suggestions = MappingService(str(ws_path)).lookup(
-                "colr", semantic=True, threshold=0.85,
+                "colr", semantic=True, threshold=0.85, llm=False,
             )
 
             assert suggestions == []

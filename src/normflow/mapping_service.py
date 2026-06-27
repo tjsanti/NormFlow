@@ -11,11 +11,10 @@ from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
 
-from pydantic import BaseModel, Field
 from sqlmodel import Field as SField, SQLModel, Session, create_engine, func, select
 
-from .llm_matcher import suggest as llm_suggest
 from .semantic_index import SemanticIndex
+from .suggestion_lookup import SuggestionItem, SuggestionLookup
 
 # ---------------------------------------------------------------------------
 # Internal models
@@ -38,19 +37,6 @@ class Suggestion(SQLModel, table=True):
     suggested_text: str
     status: str = SField(default="pending")
     created_at: datetime = SField(default_factory=lambda: datetime.now(timezone.utc))
-
-
-# ---------------------------------------------------------------------------
-# Public types
-# ---------------------------------------------------------------------------
-
-
-class SuggestionItem(BaseModel):
-    """A single suggestion returned by lookup."""
-
-    suggested_text: str
-    method: str
-    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 @cache
@@ -80,6 +66,13 @@ class MappingService:
     def session(self):
         """Context manager for database sessions."""
         return Session(self._engine)
+
+    def _find_exact_mapping(self, raw_text: str) -> str | None:
+        with self.session() as session:
+            mapping = session.exec(
+                select(ExampleMapping).where(ExampleMapping.raw_text == raw_text)
+            ).first()
+        return mapping.normalized_text if mapping else None
 
     # ------------------------------------------------------------------
     # Workspace info
@@ -187,48 +180,10 @@ class MappingService:
         threshold: float = 0.85,
         limit: int = 1,
     ) -> list[SuggestionItem]:
-        suggestions: list[SuggestionItem] = []
-        idx: SemanticIndex | None = None
-
-        with self.session() as session:
-            mapping = session.exec(
-                select(ExampleMapping).where(ExampleMapping.raw_text == raw_text)
-            ).first()
-
-            if mapping:
-                suggestions.append(SuggestionItem(
-                    suggested_text=mapping.normalized_text,
-                    method="exact",
-                    confidence=1.0,
-                ))
-
-        if not suggestions and semantic:
-            idx = SemanticIndex(str(self._path))
-            if idx.exists():
-                semantic_results = idx.search(raw_text, limit=1, threshold=threshold)
-                for sr in semantic_results:
-                    suggestions.append(SuggestionItem(
-                        suggested_text=sr["normalized_text"],
-                        method="semantic",
-                        confidence=sr["score"],
-                    ))
-
-        if not suggestions and llm:
-            if idx is None:
-                idx = SemanticIndex(str(self._path))
-            if idx.exists():
-                examples = idx.search(raw_text, limit=3, threshold=0.0)
-                if examples:
-                    try:
-                        normalized = llm_suggest(raw_text, examples)
-                        suggestions.append(SuggestionItem(
-                            suggested_text=normalized,
-                            method="llm",
-                        ))
-                    except Exception:
-                        pass  # ponytail: silent fallback, user re-tries or edits manually
-
-        return suggestions[:limit]
+        return SuggestionLookup(
+            exact_lookup=self._find_exact_mapping,
+            index=SemanticIndex(str(self._path)),
+        ).lookup(raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=limit)
 
     def lookup_batch(
         self,
