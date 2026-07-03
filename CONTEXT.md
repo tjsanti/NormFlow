@@ -20,3 +20,7 @@ _Avoid_: Candidate, Proposal
 **Mapping**:
 A pair of strings — the messy original text and its approved clean version.
 _Avoid_: Normalization, Standardization, Standard
+
+**Batch Import**:
+The CSV workflow: user uploads a CSV of raw records, system matches each unique raw_text against the mapping library, and routes results: exact or semantic matches auto-commit to the library; LLM suggestions and no-matches are stored as pending Suggestions for human review. The original CSV is preserved in the workspace for export. On export, the original CSV is returned with a normalized_text column filled in.
+_Avoid_: Ingestion, Pipeline, ETL

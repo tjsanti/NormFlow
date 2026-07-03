@@ -31,6 +31,17 @@ def version() -> None:
 
 
 @app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
+    port: int = typer.Option(8000, "--port", help="Port to listen on."),
+) -> None:
+    """Start the NormFlow API server."""
+    import uvicorn
+    from .api import app as api_app
+    uvicorn.run(api_app, host=host, port=port)
+
+
+@app.command()
 def init(workspace: str = typer.Option(..., "--workspace", help="Path to initialize as a NormFlow project.")) -> None:
     """Initialize a new NormFlow project workspace."""
     ws = init_workspace(workspace)

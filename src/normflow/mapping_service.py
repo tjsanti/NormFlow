@@ -7,6 +7,7 @@ model imports are internal.
 
 import csv
 import io
+import shutil
 from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
@@ -98,12 +99,7 @@ class MappingService:
     # CSV import / export
     # ------------------------------------------------------------------
 
-    def import_mappings(
-        self,
-        csv_path: str,
-        source_column: str,
-        target_column: str,
-    ) -> tuple[int, int]:
+    def _read_csv(self, csv_path: str, required_columns: str | tuple[str, ...]) -> tuple[list[str], list[dict]]:
         csv_file = Path(csv_path).expanduser().resolve()
         if not csv_file.exists():
             msg = f"CSV file not found: {csv_file}"
@@ -116,14 +112,21 @@ class MappingService:
                 raise ValueError(msg)
 
             available = list(reader.fieldnames)
-            if source_column not in available:
-                msg = f"CSV does not contain a column named '{source_column}'. Available columns: {', '.join(available)}"
-                raise ValueError(msg)
-            if target_column not in available:
-                msg = f"CSV does not contain a column named '{target_column}'. Available columns: {', '.join(available)}"
-                raise ValueError(msg)
+            required = (required_columns,) if isinstance(required_columns, str) else required_columns
+            for column in required:
+                if column not in available:
+                    msg = f"CSV does not contain a column named '{column}'. Available columns: {', '.join(available)}"
+                    raise ValueError(msg)
 
-            rows = list(reader)
+            return available, list(reader)
+
+    def import_mappings(
+        self,
+        csv_path: str,
+        source_column: str,
+        target_column: str,
+    ) -> tuple[int, int]:
+        _, rows = self._read_csv(csv_path, (source_column, target_column))
 
         with self.session() as session:
             # ponytail: load existing raw_texts into set — O(1) lookup vs O(n) queries
@@ -195,25 +198,9 @@ class MappingService:
         llm: bool = True,
         threshold: float = 0.85,
     ) -> str:
-        input_file = Path(csv_path).expanduser().resolve()
-        if not input_file.exists():
-            msg = f"CSV file not found: {input_file}"
-            raise FileNotFoundError(msg)
+        available, rows = self._read_csv(csv_path, column)
 
-        with open(input_file, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            if reader.fieldnames is None:
-                msg = "CSV file is empty or has no header row"
-                raise ValueError(msg)
-
-            available = list(reader.fieldnames)
-            if column not in available:
-                msg = f"CSV does not contain a column named '{column}'. Available columns: {', '.join(available)}"
-                raise ValueError(msg)
-
-            rows = list(reader)
-
-        out_fieldnames = list(rows[0].keys()) if rows else []
+        out_fieldnames = list(rows[0].keys()) if rows else available
         if output_column not in out_fieldnames:
             out_fieldnames.append(output_column)
 
@@ -237,6 +224,107 @@ class MappingService:
             else:
                 out_row[output_column] = ""
 
+            writer.writerow(out_row)
+
+        return output.getvalue()
+
+    # ------------------------------------------------------------------
+    # Batch import → review
+    # ------------------------------------------------------------------
+
+    def _batch_csv_dir(self) -> Path:
+        d = self._path / ".batches"
+        d.mkdir(exist_ok=True)
+        return d
+
+    def _store_batch_csv(self, csv_path: str) -> None:
+        src = Path(csv_path).expanduser().resolve()
+        dst = self._batch_csv_dir() / "current.csv"
+        shutil.copy2(src, dst)
+
+    def import_records_for_review(
+        self,
+        csv_path: str,
+        column: str,
+        *,
+        semantic: bool = True,
+        llm: bool = True,
+        threshold: float = 0.85,
+    ) -> dict:
+        _, rows = self._read_csv(csv_path, column)
+
+        self._store_batch_csv(csv_path)
+
+        values = [row.get(column, "").strip() for row in rows]
+        unique_values = list(dict.fromkeys(raw_text for raw_text in values if raw_text))
+        skipped = len(values) - len(unique_values)
+
+        auto_committed = 0
+        pending = 0
+
+        with self.session() as session:
+            existing_raw = {r for r in session.exec(select(ExampleMapping.raw_text)).all()}
+            existing_suggestions = {r for r in session.exec(select(Suggestion.raw_text)).all()}
+
+            for raw_text in unique_values:
+                # Skip if already has a suggestion (from prior import)
+                if raw_text in existing_suggestions:
+                    skipped += 1
+                    continue
+
+                results = self.lookup(raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=1)
+
+                if results:
+                    result = results[0]
+                    if result.method in ("exact", "semantic"):
+                        # Auto-commit to library if not already there
+                        if raw_text not in existing_raw:
+                            session.add(ExampleMapping(raw_text=raw_text, normalized_text=result.suggested_text))
+                            existing_raw.add(raw_text)
+                        auto_committed += 1
+                    else:
+                        # LLM suggestion — store for review
+                        session.add(Suggestion(raw_text=raw_text, suggested_text=result.suggested_text))
+                        pending += 1
+                else:
+                    # No match — store empty suggestion for manual entry
+                    session.add(Suggestion(raw_text=raw_text, suggested_text=""))
+                    pending += 1
+
+            session.commit()
+
+        return {
+            "auto_committed": auto_committed,
+            "pending": pending,
+            "skipped": skipped,
+        }
+
+    def export_normalized_csv(
+        self,
+        source_column: str = "raw_text",
+        output_column: str = "normalized_text",
+    ) -> str:
+        batch_csv = self._batch_csv_dir() / "current.csv"
+        if not batch_csv.exists():
+            msg = "No batch CSV found. Import records first."
+            raise ValueError(msg)
+
+        # Build lookup from mappings
+        with self.session() as session:
+            mappings = {m.raw_text: m.normalized_text for m in session.exec(select(ExampleMapping)).all()}
+
+        with open(batch_csv, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            fieldnames = list((reader.fieldnames or [])) + [output_column]
+            rows = list(reader)
+
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            out_row = dict(row)
+            raw_text = row.get(source_column, "").strip()
+            out_row[output_column] = mappings.get(raw_text, "")
             writer.writerow(out_row)
 
         return output.getvalue()
