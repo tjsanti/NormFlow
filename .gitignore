@@ -25,3 +25,5 @@ input/
 output/
 samples/
 .env
+
+**/*.DS_Store
