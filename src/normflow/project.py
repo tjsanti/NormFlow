@@ -13,6 +13,10 @@ class InvalidProjectError(ValueError):
     """The nearest Project marker is not a usable NormFlow database."""
 
 
+class ProjectNestingError(ValueError):
+    """Initialization would nest one Project inside another."""
+
+
 @dataclass(frozen=True)
 class Project:
     """Canonical identity of a NormFlow Project."""
@@ -49,14 +53,23 @@ def _validate_database(database: Path) -> None:
         raise InvalidProjectError(msg)
 
 
+def project_at(root: str | Path) -> Project:
+    """Return the valid Project rooted at exactly ``root``."""
+    canonical_root = Path(root).expanduser().resolve()
+    database = canonical_root / "normflow.db"
+    if not (database.exists() or database.is_symlink()):
+        raise ProjectNotFoundError(f"No NormFlow Project found at {canonical_root}.")
+    _validate_database(database)
+    return Project(root=canonical_root, database=database)
+
+
 def resolve_project(start: str | Path) -> Project:
     """Return the nearest Project containing the canonical start location."""
     location = Path(start).expanduser().resolve()
     for candidate in (location, *location.parents):
         database = candidate / "normflow.db"
         if database.exists() or database.is_symlink():
-            _validate_database(database)
-            return Project(root=candidate, database=database)
+            return project_at(candidate)
 
     msg = (
         f"No NormFlow Project found from {location}. "

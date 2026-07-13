@@ -11,6 +11,7 @@ from tests.helpers import seed_mappings
 from normflow.cli import app
 from normflow.mapping_service import MappingService
 from normflow.semantic_index import SemanticIndex
+from normflow.workspace import init_workspace
 
 runner = CliRunner()
 
@@ -158,7 +159,7 @@ class TestSuggestLLMFallback:
         """CLI --no-llm flag prevents LLM fallback."""
         with tempfile.TemporaryDirectory() as tmpdir:
             ws_path = Path(tmpdir) / "proj"
-            runner.invoke(app, ["init", "--workspace", str(ws_path)])
+            init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color")])
 
             result = runner.invoke(

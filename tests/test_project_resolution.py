@@ -1,5 +1,6 @@
 """Public Project discovery behavior."""
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,10 @@ def test_resolve_project_returns_canonical_identity_at_project_root(tmp_path: Pa
 
 def test_resolve_project_selects_nearest_ancestor_marker(tmp_path: Path):
     outer = init_project(str(tmp_path / "outer"))
-    inner = init_project(str(outer / "folder" / "inner"))
+    # Model a legacy nested layout directly; current initialization rejects it.
+    inner = outer / "folder" / "inner"
+    inner.mkdir(parents=True)
+    shutil.copy2(outer / "normflow.db", inner / "normflow.db")
     starting_directory = inner / "input" / "records"
     starting_directory.mkdir(parents=True)
 

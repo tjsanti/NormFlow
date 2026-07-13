@@ -142,7 +142,7 @@ class TestSuggestCLI:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             ws_path = Path(tmpdir) / "proj"
-            runner.invoke(app, ["init", "--workspace", str(ws_path)])
+            init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color")])
 
             result = runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])
@@ -160,7 +160,7 @@ class TestSuggestCLI:
     def test_no_semantic_flag_disables_fallback(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             ws_path = Path(tmpdir) / "proj"
-            runner.invoke(app, ["init", "--workspace", str(ws_path)])
+            init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color")])
 
             result = runner.invoke(
@@ -174,7 +174,7 @@ class TestSuggestCLI:
     def test_default_limit_is_one(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             ws_path = Path(tmpdir) / "proj"
-            runner.invoke(app, ["init", "--workspace", str(ws_path)])
+            init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color")])
 
             result = runner.invoke(
@@ -200,7 +200,7 @@ class TestIndexCLI:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             ws_path = Path(tmpdir) / "proj"
-            runner.invoke(app, ["init", "--workspace", str(ws_path)])
+            init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color"), ("centre", "center")])
 
             result = runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])
@@ -218,7 +218,7 @@ class TestIndexCLI:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             ws_path = Path(tmpdir) / "proj"
-            runner.invoke(app, ["init", "--workspace", str(ws_path)])
+            init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color")])
 
             runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])

@@ -65,9 +65,13 @@ def ui(
 
 
 @app.command()
-def init(workspace: str = typer.Option(..., "--workspace", help="Path to initialize as a NormFlow project.")) -> None:
-    """Initialize a new NormFlow project workspace."""
-    ws = init_workspace(workspace)
+def init() -> None:
+    """Initialize the current directory as a NormFlow Project."""
+    try:
+        ws = init_workspace(Path.cwd())
+    except (ValueError, OSError) as exc:
+        print(f"Error: {exc}")
+        raise typer.Exit(1) from None
     print(f"Project initialized at: {ws}")
 
 
