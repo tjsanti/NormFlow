@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+from contextlib import chdir
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ from typer.testing import CliRunner
 
 from normflow.cli import app
 from normflow.mapping_service import ExampleMapping, MappingService
+from normflow.workspace import init_workspace as init_project
 
 
 runner = CliRunner()
@@ -20,6 +22,15 @@ def test_cli_help():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "normflow" in result.stdout
+
+
+def test_version_is_usable_outside_a_project(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["version"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip()
 
 
 def test_init_creates_workspace():
@@ -37,29 +48,75 @@ def test_init_creates_workspace():
         assert (ws_path / "samples").is_dir()
 
 
-def test_workspace_info():
-    """`normflow workspace info` should report correct counts after init."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "myproject"
+def test_project_info_discovers_project_from_current_directory(
+    tmp_path: Path, monkeypatch,
+):
+    """`normflow info` reports the Project selected by the current directory."""
+    project_root = init_project(str(tmp_path / "myproject"))
+    monkeypatch.chdir(project_root)
 
-        # Initialize
-        init_result = runner.invoke(app, ["init", "--workspace", str(ws_path)])
-        assert init_result.exit_code == 0
+    result = runner.invoke(app, ["info"])
 
-        # Info
-        info_result = runner.invoke(app, ["info", "--workspace", str(ws_path)])
-        assert info_result.exit_code == 0
-
-        assert "myproject" in info_result.stdout
-        assert "Mappings:   0" in info_result.stdout
-        assert "Review Items: 0" in info_result.stdout
+    assert result.exit_code == 0
+    assert f"Project:    {project_root}" in result.stdout
+    assert f"Database:   {project_root / 'normflow.db'}" in result.stdout
+    assert "Mappings:   0" in result.stdout
+    assert "Review Items: 0" in result.stdout
 
 
-def test_workspace_info_errors_on_invalid_path():
-    """`normflow info` should error when given a non-workspace path."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        result = runner.invoke(app, ["info", "--workspace", tmpdir])
-        assert result.exit_code != 0
+def test_project_info_discovers_project_from_nested_current_directory(
+    tmp_path: Path, monkeypatch,
+):
+    project_root = init_project(str(tmp_path / "myproject"))
+    nested = project_root / "input" / "incoming"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 0
+    assert f"Project:    {project_root}" in result.stdout
+
+
+def test_project_info_errors_outside_a_project(tmp_path: Path, monkeypatch):
+    starting_directory = tmp_path / "not-a-project"
+    starting_directory.mkdir()
+    monkeypatch.chdir(starting_directory)
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 1
+    assert str(starting_directory.resolve()) in result.stdout
+    assert "normflow init" in result.stdout
+
+
+def test_project_info_rejects_explicit_project_selection(tmp_path: Path, monkeypatch):
+    project_root = init_project(str(tmp_path / "myproject"))
+    monkeypatch.chdir(project_root)
+
+    workspace_result = runner.invoke(app, ["info", "--workspace", str(project_root)])
+    project_result = runner.invoke(app, ["info", "--project", str(project_root)])
+
+    assert workspace_result.exit_code == 2
+    assert project_result.exit_code == 2
+
+
+def test_project_info_reports_damaged_nearest_marker_without_parent_fallback(
+    tmp_path: Path, monkeypatch,
+):
+    outer = init_project(str(tmp_path / "outer"))
+    damaged_root = outer / "nested"
+    damaged_root.mkdir()
+    damaged_database = damaged_root / "normflow.db"
+    damaged_database.write_text("damaged", encoding="utf-8")
+    monkeypatch.chdir(damaged_root)
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 1
+    assert str(damaged_database) in result.stdout
+    assert str(outer / "normflow.db") not in result.stdout
+    assert "recover" in result.stdout.lower()
 
 
 def test_ui_launches_local_server_and_opens_browser():
@@ -716,10 +773,8 @@ def test_review_accept_inserts_mapping_and_removes_review_item():
         assert "Review Item 1 accepted." in result.stdout
 
         # Verify mapping was inserted
-        info_result = runner.invoke(
-            app,
-            ["info", "--workspace", str(ws_path)],
-        )
+        with chdir(ws_path):
+            info_result = runner.invoke(app, ["info"])
         assert "Mappings:   1" in info_result.stdout
         assert "Review Items: 0" in info_result.stdout
 
@@ -742,10 +797,8 @@ def test_review_edit_and_accept_inserts_mapping_with_custom_text():
         assert "Review Item 1 accepted with edit." in result.stdout
 
         # Verify mapping was inserted with edited text
-        info_result = runner.invoke(
-            app,
-            ["info", "--workspace", str(ws_path)],
-        )
+        with chdir(ws_path):
+            info_result = runner.invoke(app, ["info"])
         assert "Mappings:   1" in info_result.stdout
 
         # Verify the mapping has the custom text

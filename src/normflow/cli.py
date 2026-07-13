@@ -8,6 +8,7 @@ import typer
 
 from . import __version__
 from .mapping_service import MappingService
+from .project import resolve_project
 from .workspace import init_workspace
 
 app = typer.Typer(
@@ -71,13 +72,19 @@ def init(workspace: str = typer.Option(..., "--workspace", help="Path to initial
 
 
 @app.command()
-def info(workspace: str = _ws_opt) -> None:
-    """Show information about a NormFlow project workspace."""
-    info = _ms(workspace).workspace_info()
-    print(f"Workspace:  {info['workspace']}")
-    print(f"Database:   {info['database']}")
-    print(f"Mappings:   {info['mappings']}")
-    print(f"Review Items: {info['review_items']}")
+def info() -> None:
+    """Show information about the active NormFlow Project."""
+    try:
+        project = resolve_project(Path.cwd())
+        statistics = MappingService(str(project.root)).workspace_info()
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        raise typer.Exit(1) from None
+
+    print(f"Project:    {project.root}")
+    print(f"Database:   {project.database}")
+    print(f"Mappings:   {statistics['mappings']}")
+    print(f"Review Items: {statistics['review_items']}")
 
 
 @app.command(name="import")
