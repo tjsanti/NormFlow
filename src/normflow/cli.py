@@ -8,7 +8,8 @@ import typer
 
 from . import __version__
 from .mapping_service import MappingService
-from .workspace import init_workspace
+from .project import resolve_project
+from .project_service import init_project
 
 app = typer.Typer(
     name="normflow",
@@ -16,12 +17,10 @@ app = typer.Typer(
     add_completion=False,
 )
 
-_ws_opt = typer.Option(..., "--workspace", "-w", help="Path to the NormFlow project workspace.")
-
-
-def _ms(workspace: str) -> MappingService:
-    """Get a MappingService for the workspace."""
-    return MappingService(workspace)
+def _project_service() -> MappingService:
+    """Return the service for the Project selected by the process directory."""
+    project = resolve_project(Path.cwd())
+    return MappingService(str(project.root))
 
 
 @app.command()
@@ -31,31 +30,71 @@ def version() -> None:
 
 
 @app.command()
-def serve(
-    host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
-    port: int = typer.Option(8000, "--port", help="Port to listen on."),
+def ui(
+    no_open: bool = typer.Option(False, "--no-open", help="Do not open the default browser."),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        min=1,
+        max=65535,
+        help="Local port to use (defaults to a free port).",
+    ),
 ) -> None:
-    """Start the NormFlow API server."""
+    """Launch the browser UI for the active Project."""
+    import socket
     import uvicorn
-    from .api import app as api_app
-    uvicorn.run(api_app, host=host, port=port)
+    import webbrowser
+
+    from .api import create_app
+
+    try:
+        project = resolve_project(Path.cwd())
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        raise typer.Exit(1) from None
+
+    requested_port = port or 0
+    try:
+        with socket.socket() as local_socket:
+            local_socket.bind(("127.0.0.1", requested_port))
+            selected_port = port or local_socket.getsockname()[1]
+    except OSError as exc:
+        description = f"port {port}" if port is not None else "a local port"
+        print(f"Error: {description} is unavailable: {exc}")
+        raise typer.Exit(1) from None
+
+    url = f"http://127.0.0.1:{selected_port}"
+    print(url)
+    if not no_open:
+        webbrowser.open(url)
+    uvicorn.run(create_app(project), host="127.0.0.1", port=selected_port)
 
 
 @app.command()
-def init(workspace: str = typer.Option(..., "--workspace", help="Path to initialize as a NormFlow project.")) -> None:
-    """Initialize a new NormFlow project workspace."""
-    ws = init_workspace(workspace)
-    print(f"Project initialized at: {ws}")
+def init() -> None:
+    """Initialize the current directory as a NormFlow Project."""
+    try:
+        project_root = init_project(Path.cwd())
+    except (ValueError, OSError) as exc:
+        print(f"Error: {exc}")
+        raise typer.Exit(1) from None
+    print(f"Project initialized at: {project_root}")
 
 
 @app.command()
-def info(workspace: str = _ws_opt) -> None:
-    """Show information about a NormFlow project workspace."""
-    info = _ms(workspace).workspace_info()
-    print(f"Workspace:  {info['workspace']}")
-    print(f"Database:   {info['database']}")
-    print(f"Mappings:   {info['mappings']}")
-    print(f"Suggestions: {info['suggestions']}")
+def info() -> None:
+    """Show information about the active NormFlow Project."""
+    try:
+        project = resolve_project(Path.cwd())
+        statistics = MappingService(str(project.root)).project_info()
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        raise typer.Exit(1) from None
+
+    print(f"Project:    {project.root}")
+    print(f"Database:   {project.database}")
+    print(f"Mappings:   {statistics['mappings']}")
+    print(f"Review Items: {statistics['review_items']}")
 
 
 @app.command(name="import")
@@ -63,11 +102,12 @@ def import_cmd(
     csv_path: str = typer.Argument(..., help="Path to the CSV file to import."),
     source_column: str = typer.Option(..., "--source-column", help="CSV header name for raw_text values."),
     target_column: str = typer.Option(..., "--target-column", help="CSV header name for normalized_text values."),
-    workspace: str = _ws_opt,
 ) -> None:
-    """Import mappings from a CSV file into the workspace database."""
+    """Import Mappings from a CSV file into the active Project."""
     try:
-        imported, skipped = _ms(workspace).import_mappings(csv_path, source_column, target_column)
+        imported, skipped = _project_service().import_mappings(
+            csv_path, source_column, target_column,
+        )
         print(f"Imported {imported} new mappings. {skipped} skipped.")
     except (ValueError, FileNotFoundError) as e:
         print(f"Error: {e}")
@@ -79,11 +119,12 @@ def export_cmd(
     csv_path: str = typer.Argument(..., help="Path to export mappings to."),
     source_column: str = typer.Option("raw_text", "--source-column", help="CSV header name for raw_text column."),
     target_column: str = typer.Option("normalized_text", "--target-column", help="CSV header name for normalized_text column."),
-    workspace: str = _ws_opt,
 ) -> None:
-    """Export mappings from the workspace database to a CSV file."""
+    """Export Mappings from the active Project to a CSV file."""
     try:
-        count = _ms(workspace).export_mappings(csv_path, source_column, target_column)
+        count = _project_service().export_mappings(
+            csv_path, source_column, target_column,
+        )
         print(f"Exported {count} mappings to {csv_path}")
     except (ValueError, FileNotFoundError) as e:
         print(f"Error: {e}")
@@ -97,11 +138,10 @@ def suggest_cmd(
     no_semantic: bool = typer.Option(False, "--no-semantic", help="Disable semantic matching fallback."),
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM matching fallback."),
     semantic_threshold: float = typer.Option(0.85, "--semantic-threshold", help="Minimum cosine similarity for semantic matches."),
-    workspace: str = _ws_opt,
 ) -> None:
-    """Return normalization suggestions for a single raw text value."""
+    """Return Suggestions for a single raw text value."""
     try:
-        items = _ms(workspace).lookup(
+        items = _project_service().lookup(
             raw_text, semantic=not no_semantic, llm=not no_llm, threshold=semantic_threshold, limit=limit,
         )
         import json as _json
@@ -120,11 +160,10 @@ def suggest_batch_cmd(
     no_semantic: bool = typer.Option(False, "--no-semantic", help="Disable semantic matching fallback."),
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM matching fallback."),
     semantic_threshold: float = typer.Option(0.85, "--semantic-threshold", help="Minimum cosine similarity for semantic matches."),
-    workspace: str = _ws_opt,
 ) -> None:
-    """Batch-suggest normalizations for all rows in a CSV file."""
+    """Suggest normalized text for every row in a CSV file."""
     try:
-        result_csv = _ms(workspace).lookup_batch(
+        result_csv = _project_service().lookup_batch(
             csv_path, column, output_column, semantic=not no_semantic, llm=not no_llm, threshold=semantic_threshold,
         )
         if output:
@@ -142,18 +181,17 @@ def suggest_batch_cmd(
 
 review_app = typer.Typer(
     name="review",
-    help="Review normalization suggestions.",
+    help="Review pending normalization work.",
 )
 
 
 @review_app.command(name="list")
-def list_suggestions(
+def list_review_items(
     as_json: bool = typer.Option(False, "--json", help="Output as JSON instead of a table."),
-    workspace: str = _ws_opt,
 ) -> None:
-    """List pending suggestions awaiting review."""
+    """List pending Review Items."""
     try:
-        items = _ms(workspace).list_pending_suggestions()
+        items = _project_service().list_review_items()
     except ValueError as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from None
@@ -168,28 +206,26 @@ def list_suggestions(
 
 @review_app.command()
 def accept(
-    record_id: int = typer.Option(..., "--record-id", help="ID of the suggestion to accept."),
-    workspace: str = _ws_opt,
+    record_id: int = typer.Option(..., "--record-id", help="ID of the Review Item to accept."),
 ) -> None:
-    """Accept a suggestion, inserting it into the mapping library."""
+    """Accept a Review Item, inserting it into the Mapping library."""
     try:
-        _ms(workspace).accept_suggestion(record_id)
-        print(f"Suggestion {record_id} accepted.")
+        _project_service().accept_review_item(record_id)
+        print(f"Review Item {record_id} accepted.")
     except ValueError as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from None
 
 
 @review_app.command()
-def edit(
-    record_id: int = typer.Option(..., "--record-id", help="ID of the suggestion to edit."),
+def edit_and_accept(
+    record_id: int = typer.Option(..., "--record-id", help="ID of the Review Item to edit and accept."),
     normalized_text: str = typer.Option(..., "--normalized-text", help="Edited normalized text to store."),
-    workspace: str = _ws_opt,
 ) -> None:
-    """Accept a suggestion with an edit, inserting the edited text into the mapping library."""
+    """Edit and accept a Review Item."""
     try:
-        _ms(workspace).edit_suggestion(record_id, normalized_text)
-        print(f"Suggestion {record_id} accepted with edit.")
+        _project_service().edit_and_accept_review_item(record_id, normalized_text)
+        print(f"Review Item {record_id} accepted with edit.")
     except ValueError as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from None
@@ -207,10 +243,10 @@ index_app = typer.Typer(
 
 
 @index_app.command(name="build")
-def index_build(workspace: str = _ws_opt) -> None:
-    """Build or rebuild the FAISS semantic search index from current mappings."""
+def index_build() -> None:
+    """Build or rebuild the FAISS semantic search index from current Mappings."""
     try:
-        count = _ms(workspace).build_index()
+        count = _project_service().build_index()
         print(f"Index built with {count} entries.")
     except ValueError as e:
         print(f"Error: {e}")
@@ -218,10 +254,10 @@ def index_build(workspace: str = _ws_opt) -> None:
 
 
 @index_app.command(name="clear")
-def index_clear(workspace: str = _ws_opt) -> None:
+def index_clear() -> None:
     """Remove the persisted FAISS index."""
     try:
-        _ms(workspace).clear_index()
+        _project_service().clear_index()
         print("Index cleared.")
     except ValueError as e:
         print(f"Error: {e}")

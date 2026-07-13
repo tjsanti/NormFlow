@@ -8,7 +8,7 @@ import pytest
 from normflow.mapping_service import ExampleMapping, MappingService
 from normflow.semantic_index import SemanticIndex
 from tests.helpers import seed_mappings
-from normflow.workspace import init_workspace
+from normflow.project_service import init_project
 
 SEED_PAIRS = [
     ("colour", "color"),
@@ -22,11 +22,11 @@ _INDEX_PATCH = "normflow.semantic_index._ensure_model"
 
 
 @pytest.fixture
-def workspace(tmp_path: Path) -> Path:
-    """Create a workspace with seed mappings."""
-    ws = init_workspace(str(tmp_path))
-    seed_mappings(ws, SEED_PAIRS)
-    return ws
+def project(tmp_path: Path) -> Path:
+    """Create a project with seed mappings."""
+    project = init_project(str(tmp_path))
+    seed_mappings(project, SEED_PAIRS)
+    return project
 
 
 # ---------------------------------------------------------------------------
@@ -38,34 +38,34 @@ class TestSemanticIndexBuild:
     """SemanticIndex.build() creates an index from mapping pairs."""
 
     @patch(_INDEX_PATCH)
-    def test_build_creates_index(self, mock_ensure, workspace):
+    def test_build_creates_index(self, mock_ensure, project):
         mock = MagicMock()
         mock.encode.side_effect = lambda texts, **kw: [
             [0.1 * i, 0.2 * i, 0.3 * i] for i in range(len(texts))
         ]
         mock_ensure.return_value = mock
 
-        idx = SemanticIndex(str(workspace))
+        idx = SemanticIndex(str(project))
         idx.build(SEED_PAIRS)
 
         assert idx.exists()
 
     @patch(_INDEX_PATCH)
-    def test_build_persists_to_disk(self, mock_ensure, workspace):
+    def test_build_persists_to_disk(self, mock_ensure, project):
         mock = MagicMock()
         mock.encode.side_effect = lambda texts, **kw: [
             [0.1 * i, 0.2 * i, 0.3 * i] for i in range(len(texts))
         ]
         mock_ensure.return_value = mock
 
-        idx = SemanticIndex(str(workspace))
+        idx = SemanticIndex(str(project))
         idx.build(SEED_PAIRS)
 
-        index_dir = workspace / ".normflow" / "faiss_index"
+        index_dir = project / ".normflow" / "faiss_index"
         assert index_dir.exists()
 
     @patch(_INDEX_PATCH)
-    def test_build_skips_empty_raw_text(self, mock_ensure, workspace):
+    def test_build_skips_empty_raw_text(self, mock_ensure, project):
         mock = MagicMock()
         mock.encode.side_effect = lambda texts, **kw: [
             [0.1 * i, 0.2 * i, 0.3 * i] for i in range(len(texts))
@@ -77,7 +77,7 @@ class TestSemanticIndexBuild:
             ("   ", "something2"),
         ]
 
-        idx = SemanticIndex(str(workspace))
+        idx = SemanticIndex(str(project))
         count = idx.build(pairs)
 
         # Only 5 valid mappings indexed (not the 2 blank ones)
@@ -88,29 +88,29 @@ class TestSemanticIndexLoad:
     """SemanticIndex.load() restores a persisted index."""
 
     @patch(_INDEX_PATCH)
-    def test_load_returns_index(self, mock_ensure, workspace):
+    def test_load_returns_index(self, mock_ensure, project):
         mock = MagicMock()
         mock.encode.side_effect = lambda texts, **kw: [
             [0.1 * i, 0.2 * i, 0.3 * i] for i in range(len(texts))
         ]
         mock_ensure.return_value = mock
 
-        idx = SemanticIndex(str(workspace))
+        idx = SemanticIndex(str(project))
         idx.build(SEED_PAIRS)
 
-        idx2 = SemanticIndex(str(workspace))
+        idx2 = SemanticIndex(str(project))
         loaded = idx2.load()
 
         assert loaded is not None
 
-    def test_load_returns_none_when_no_index(self, workspace):
-        idx = SemanticIndex(str(workspace))
+    def test_load_returns_none_when_no_index(self, project):
+        idx = SemanticIndex(str(project))
         loaded = idx.load()
 
         assert loaded is None
 
-    def test_exists_false_when_no_index(self, workspace):
-        idx = SemanticIndex(str(workspace))
+    def test_exists_false_when_no_index(self, project):
+        idx = SemanticIndex(str(project))
         assert idx.exists() is False
 
 
@@ -118,7 +118,7 @@ class TestSemanticIndexSearch:
     """SemanticIndex.search() returns results above threshold."""
 
     @patch(_INDEX_PATCH)
-    def test_search_returns_close_matches(self, mock_ensure, workspace):
+    def test_search_returns_close_matches(self, mock_ensure, project):
         mock = MagicMock()
         # All vectors are the same direction -- cosine similarity = 1.0
         mock.encode.side_effect = lambda texts, **kw: [
@@ -126,7 +126,7 @@ class TestSemanticIndexSearch:
         ]
         mock_ensure.return_value = mock
 
-        idx = SemanticIndex(str(workspace))
+        idx = SemanticIndex(str(project))
         idx.build(SEED_PAIRS)
 
         results = idx.search("colour", limit=3, threshold=0.5)
@@ -139,7 +139,7 @@ class TestSemanticIndexSearch:
             assert r["score"] >= 0.5
 
     @patch(_INDEX_PATCH)
-    def test_search_filters_by_threshold(self, mock_ensure, workspace):
+    def test_search_filters_by_threshold(self, mock_ensure, project):
         mock = MagicMock()
         # Query vector [1,0,0], stored vectors [0,1,0] -- cosine = 0
         mock.encode.side_effect = lambda texts, **kw: [
@@ -147,7 +147,7 @@ class TestSemanticIndexSearch:
         ]
         mock_ensure.return_value = mock
 
-        idx = SemanticIndex(str(workspace))
+        idx = SemanticIndex(str(project))
         idx.build(SEED_PAIRS)
 
         results = idx.search("something", limit=5, threshold=0.85)
@@ -155,14 +155,14 @@ class TestSemanticIndexSearch:
         assert len(results) == 0
 
     @patch(_INDEX_PATCH)
-    def test_search_respects_limit(self, mock_ensure, workspace):
+    def test_search_respects_limit(self, mock_ensure, project):
         mock = MagicMock()
         mock.encode.side_effect = lambda texts, **kw: [
             [0.577, 0.577, 0.577] for _ in texts
         ]
         mock_ensure.return_value = mock
 
-        idx = SemanticIndex(str(workspace))
+        idx = SemanticIndex(str(project))
         idx.build(SEED_PAIRS)
 
         results = idx.search("something", limit=2, threshold=0.0)
@@ -170,7 +170,7 @@ class TestSemanticIndexSearch:
         assert len(results) <= 2
 
     @patch(_INDEX_PATCH)
-    def test_search_returns_results_sorted_by_score_desc(self, mock_ensure, workspace):
+    def test_search_returns_results_sorted_by_score_desc(self, mock_ensure, project):
         mock = MagicMock()
         call_count = [0]
         def encode_side_effect(texts, **kw):
@@ -184,7 +184,7 @@ class TestSemanticIndexSearch:
         mock.encode.side_effect = encode_side_effect
         mock_ensure.return_value = mock
 
-        idx = SemanticIndex(str(workspace))
+        idx = SemanticIndex(str(project))
         idx.build(SEED_PAIRS)
 
         results = idx.search("something", limit=5, threshold=0.0)
@@ -197,14 +197,14 @@ class TestSemanticIndexClear:
     """SemanticIndex.clear() removes persisted index."""
 
     @patch(_INDEX_PATCH)
-    def test_clear_removes_index(self, mock_ensure, workspace):
+    def test_clear_removes_index(self, mock_ensure, project):
         mock = MagicMock()
         mock.encode.side_effect = lambda texts, **kw: [
             [0.1 * i, 0.2 * i, 0.3 * i] for i in range(len(texts))
         ]
         mock_ensure.return_value = mock
 
-        idx = SemanticIndex(str(workspace))
+        idx = SemanticIndex(str(project))
         idx.build(SEED_PAIRS)
         assert idx.exists()
 

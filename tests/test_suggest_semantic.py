@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+from contextlib import chdir
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,9 +12,31 @@ from tests.helpers import seed_mappings
 from normflow.cli import app
 from normflow.mapping_service import ExampleMapping, MappingService
 from normflow.semantic_index import SemanticIndex
-from normflow.workspace import init_workspace
+from normflow.project_service import init_project as _init_project
 
-runner = CliRunner()
+_active_project: Path | None = None
+
+
+def init_project(path: str | Path) -> Path:
+    global _active_project
+    _active_project = _init_project(path)
+    return _active_project
+
+
+class ProjectCliRunner(CliRunner):
+    def invoke(self, cli, args=None, **kwargs):
+        if (
+            args
+            and args[0] in {"suggest", "index"}
+            and _active_project is not None
+            and _active_project.is_dir()
+        ):
+            with chdir(_active_project):
+                return super().invoke(cli, args, **kwargs)
+        return super().invoke(cli, args, **kwargs)
+
+
+runner = ProjectCliRunner()
 _INDEX_PATCH = "normflow.semantic_index._ensure_model"
 
 
@@ -35,14 +58,14 @@ class TestSuggestSemanticFallback:
         mock_ensure.return_value = mock_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            ws_path = Path(tmpdir) / "proj"
-            init_workspace(str(ws_path))
-            seed_mappings(ws_path, [("colour", "color")])
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
 
-            idx = SemanticIndex(str(ws_path))
+            idx = SemanticIndex(str(project_path))
             idx.build([("colour", "color")])
 
-            suggestions = MappingService(str(ws_path)).lookup(
+            suggestions = MappingService(str(project_path)).lookup(
                 "colr", semantic=True, threshold=0.5,
             )
 
@@ -60,14 +83,14 @@ class TestSuggestSemanticFallback:
         mock_ensure.return_value = mock_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            ws_path = Path(tmpdir) / "proj"
-            init_workspace(str(ws_path))
-            seed_mappings(ws_path, [("colour", "color")])
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
 
-            idx = SemanticIndex(str(ws_path))
+            idx = SemanticIndex(str(project_path))
             idx.build([("colour", "color")])
 
-            suggestions = MappingService(str(ws_path)).lookup("colour", semantic=True)
+            suggestions = MappingService(str(project_path)).lookup("colour", semantic=True)
 
             assert len(suggestions) == 1
             assert suggestions[0].method == "exact"
@@ -75,22 +98,22 @@ class TestSuggestSemanticFallback:
 
     def test_no_semantic_flag_returns_empty_on_miss(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            ws_path = Path(tmpdir) / "proj"
-            init_workspace(str(ws_path))
-            seed_mappings(ws_path, [("colour", "color")])
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
 
-            suggestions = MappingService(str(ws_path)).lookup("colr", semantic=False)
+            suggestions = MappingService(str(project_path)).lookup("colr", semantic=False)
 
             assert suggestions == []
 
     def test_no_index_returns_empty_on_miss(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            ws_path = Path(tmpdir) / "proj"
-            init_workspace(str(ws_path))
-            seed_mappings(ws_path, [("colour", "color")])
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
 
             # Don't build index -- semantic should degrade gracefully
-            suggestions = MappingService(str(ws_path)).lookup("colr", semantic=True)
+            suggestions = MappingService(str(project_path)).lookup("colr", semantic=True)
 
             assert suggestions == []
 
@@ -109,14 +132,14 @@ class TestSuggestSemanticFallback:
         mock_ensure.return_value = mock_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            ws_path = Path(tmpdir) / "proj"
-            init_workspace(str(ws_path))
-            seed_mappings(ws_path, [("colour", "color"), ("centre", "center")])
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color"), ("centre", "center")])
 
-            idx = SemanticIndex(str(ws_path))
+            idx = SemanticIndex(str(project_path))
             idx.build([("colour", "color"), ("centre", "center")])
 
-            suggestions = MappingService(str(ws_path)).lookup(
+            suggestions = MappingService(str(project_path)).lookup(
                 "colr", semantic=True, threshold=0.85, llm=False,
             )
 
@@ -141,16 +164,16 @@ class TestSuggestCLI:
         mock_ensure.return_value = mock_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            ws_path = Path(tmpdir) / "proj"
-            runner.invoke(app, ["init", "--workspace", str(ws_path)])
-            seed_mappings(ws_path, [("colour", "color")])
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
 
-            result = runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])
+            result = runner.invoke(app, ["index", "build"])
             assert result.exit_code == 0
 
             result = runner.invoke(
                 app,
-                ["suggest", "--workspace", str(ws_path), "colr", "--semantic-threshold", "0.5"],
+                ["suggest", "colr", "--semantic-threshold", "0.5"],
             )
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -159,13 +182,13 @@ class TestSuggestCLI:
 
     def test_no_semantic_flag_disables_fallback(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            ws_path = Path(tmpdir) / "proj"
-            runner.invoke(app, ["init", "--workspace", str(ws_path)])
-            seed_mappings(ws_path, [("colour", "color")])
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
 
             result = runner.invoke(
                 app,
-                ["suggest", "--workspace", str(ws_path), "colr", "--no-semantic"],
+                ["suggest", "colr", "--no-semantic"],
             )
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -173,13 +196,13 @@ class TestSuggestCLI:
 
     def test_default_limit_is_one(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            ws_path = Path(tmpdir) / "proj"
-            runner.invoke(app, ["init", "--workspace", str(ws_path)])
-            seed_mappings(ws_path, [("colour", "color")])
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
 
             result = runner.invoke(
                 app,
-                ["suggest", "--workspace", str(ws_path), "colour"],
+                ["suggest", "colour"],
             )
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -199,11 +222,11 @@ class TestIndexCLI:
         mock_ensure.return_value = mock_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            ws_path = Path(tmpdir) / "proj"
-            runner.invoke(app, ["init", "--workspace", str(ws_path)])
-            seed_mappings(ws_path, [("colour", "color"), ("centre", "center")])
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color"), ("centre", "center")])
 
-            result = runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])
+            result = runner.invoke(app, ["index", "build"])
             assert result.exit_code == 0
             assert "2" in result.stdout
 
@@ -217,15 +240,17 @@ class TestIndexCLI:
         mock_ensure.return_value = mock_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            ws_path = Path(tmpdir) / "proj"
-            runner.invoke(app, ["init", "--workspace", str(ws_path)])
-            seed_mappings(ws_path, [("colour", "color")])
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
 
-            runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])
-            result = runner.invoke(app, ["index", "clear", "--workspace", str(ws_path)])
+            runner.invoke(app, ["index", "build"])
+            result = runner.invoke(app, ["index", "clear"])
             assert result.exit_code == 0
 
-    def test_index_build_invalid_workspace(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = runner.invoke(app, ["index", "build", "--workspace", tmpdir])
-            assert result.exit_code != 0
+    def test_index_build_outside_project(self, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(app, ["index", "build"])
+
+        assert result.exit_code != 0
