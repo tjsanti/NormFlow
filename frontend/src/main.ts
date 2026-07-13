@@ -309,7 +309,7 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
         <div><strong id="review-item-count">${project.review_items}</strong> pending Review Items</div>
       </div>
     </header>
-    <main class="review-workspace">
+    <main class="review-project">
       <div class="review-heading">
         <div><span class="eyebrow">Pending work</span><h2>Review Items</h2></div>
         <button type="button" id="refresh-review-items">Refresh</button>
@@ -328,7 +328,7 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
 
 async function loadBoundProject(root: HTMLElement): Promise<void> {
   setFocusRefresh();
-  root.innerHTML = '<main class="review-workspace"><p role="status">Loading Project…</p></main>';
+  root.innerHTML = '<main class="review-project"><p role="status">Loading Project…</p></main>';
   try {
     showProject(root, await fetchProject());
   } catch (error) {

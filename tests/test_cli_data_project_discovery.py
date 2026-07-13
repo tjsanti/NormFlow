@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 from normflow.cli import app
 from normflow.mapping_service import ExampleMapping, MappingService
 from normflow.mapping_service import ReviewItem
-from normflow.workspace import init_workspace as init_project
+from normflow.project_service import init_project
 
 
 runner = CliRunner()

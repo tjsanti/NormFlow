@@ -11,7 +11,7 @@ from normflow.project import (
     ProjectNotFoundError,
     resolve_project,
 )
-from normflow.workspace import init_workspace as init_project
+from normflow.project_service import init_project
 
 
 def test_resolve_project_returns_canonical_identity_at_project_root(tmp_path: Path):

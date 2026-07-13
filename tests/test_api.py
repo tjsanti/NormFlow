@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from normflow.api import create_app
 from normflow.mapping_service import MappingService, ReviewItem
 from normflow.project import resolve_project
-from normflow.workspace import init_workspace as init_project
+from normflow.project_service import init_project
 
 
 def test_application_is_bound_to_one_canonical_project():

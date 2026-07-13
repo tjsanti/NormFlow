@@ -9,7 +9,7 @@ import typer
 from . import __version__
 from .mapping_service import MappingService
 from .project import resolve_project
-from .workspace import init_workspace
+from .project_service import init_project
 
 app = typer.Typer(
     name="normflow",
@@ -74,11 +74,11 @@ def ui(
 def init() -> None:
     """Initialize the current directory as a NormFlow Project."""
     try:
-        ws = init_workspace(Path.cwd())
+        project_root = init_project(Path.cwd())
     except (ValueError, OSError) as exc:
         print(f"Error: {exc}")
         raise typer.Exit(1) from None
-    print(f"Project initialized at: {ws}")
+    print(f"Project initialized at: {project_root}")
 
 
 @app.command()
@@ -86,7 +86,7 @@ def info() -> None:
     """Show information about the active NormFlow Project."""
     try:
         project = resolve_project(Path.cwd())
-        statistics = MappingService(str(project.root)).workspace_info()
+        statistics = MappingService(str(project.root)).project_info()
     except ValueError as exc:
         print(f"Error: {exc}")
         raise typer.Exit(1) from None

@@ -12,12 +12,12 @@ from tests.helpers import seed_mappings
 from normflow.cli import app
 from normflow.mapping_service import MappingService
 from normflow.semantic_index import SemanticIndex
-from normflow.workspace import init_workspace as _init_project
+from normflow.project_service import init_project as _init_project
 
 _active_project: Path | None = None
 
 
-def init_workspace(path: str | Path) -> Path:
+def init_project(path: str | Path) -> Path:
     global _active_project
     _active_project = _init_project(path)
     return _active_project
@@ -83,23 +83,23 @@ class TestSuggestLLMFallback:
             mock_build_client.return_value = mock_client
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                ws_path = Path(tmpdir) / "proj"
-                from normflow.workspace import init_workspace
-                init_workspace(str(ws_path))
-                seed_mappings(ws_path, [
+                project_path = Path(tmpdir) / "proj"
+                from normflow.project_service import init_project
+                init_project(str(project_path))
+                seed_mappings(project_path, [
                     ("colour", "color"),
                     ("centre", "center"),
                     ("organised", "organized"),
                 ])
 
-                idx = SemanticIndex(str(ws_path))
+                idx = SemanticIndex(str(project_path))
                 idx.build([
                     ("colour", "color"),
                     ("centre", "center"),
                     ("organised", "organized"),
                 ])
 
-                suggestions = MappingService(str(ws_path)).lookup(
+                suggestions = MappingService(str(project_path)).lookup(
                     "orgnisd",
                     semantic=True,
                     threshold=0.85,
@@ -115,15 +115,15 @@ class TestSuggestLLMFallback:
             mock_ensure.return_value = _make_mock_encoder(low_sim=True)
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                ws_path = Path(tmpdir) / "proj"
-                from normflow.workspace import init_workspace
-                init_workspace(str(ws_path))
-                seed_mappings(ws_path, [("colour", "color")])
+                project_path = Path(tmpdir) / "proj"
+                from normflow.project_service import init_project
+                init_project(str(project_path))
+                seed_mappings(project_path, [("colour", "color")])
 
-                idx = SemanticIndex(str(ws_path))
+                idx = SemanticIndex(str(project_path))
                 idx.build([("colour", "color")])
 
-                suggestions = MappingService(str(ws_path)).lookup(
+                suggestions = MappingService(str(project_path)).lookup(
                     "colr", semantic=True, threshold=0.85, llm=False,
                 )
 
@@ -138,15 +138,15 @@ class TestSuggestLLMFallback:
             mock_build_client.return_value = mock_client
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                ws_path = Path(tmpdir) / "proj"
-                from normflow.workspace import init_workspace
-                init_workspace(str(ws_path))
-                seed_mappings(ws_path, [("colour", "color")])
+                project_path = Path(tmpdir) / "proj"
+                from normflow.project_service import init_project
+                init_project(str(project_path))
+                seed_mappings(project_path, [("colour", "color")])
 
-                idx = SemanticIndex(str(ws_path))
+                idx = SemanticIndex(str(project_path))
                 idx.build([("colour", "color")])
 
-                suggestions = MappingService(str(ws_path)).lookup(
+                suggestions = MappingService(str(project_path)).lookup(
                     "colur", semantic=True, threshold=0.5, llm=True,
                 )
 
@@ -164,15 +164,15 @@ class TestSuggestLLMFallback:
             mock_build_client.return_value = mock_client
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                ws_path = Path(tmpdir) / "proj"
-                from normflow.workspace import init_workspace
-                init_workspace(str(ws_path))
-                seed_mappings(ws_path, [("colour", "color")])
+                project_path = Path(tmpdir) / "proj"
+                from normflow.project_service import init_project
+                init_project(str(project_path))
+                seed_mappings(project_path, [("colour", "color")])
 
-                idx = SemanticIndex(str(ws_path))
+                idx = SemanticIndex(str(project_path))
                 idx.build([("colour", "color")])
 
-                suggestions = MappingService(str(ws_path)).lookup(
+                suggestions = MappingService(str(project_path)).lookup(
                     "colr", semantic=True, threshold=0.85, llm=True,
                 )
 
@@ -181,9 +181,9 @@ class TestSuggestLLMFallback:
     def test_cli_no_llm_flag(self):
         """CLI --no-llm flag prevents LLM fallback."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            ws_path = Path(tmpdir) / "proj"
-            init_workspace(str(ws_path))
-            seed_mappings(ws_path, [("colour", "color")])
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
 
             result = runner.invoke(
                 app,

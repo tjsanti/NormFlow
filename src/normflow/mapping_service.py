@@ -1,7 +1,7 @@
 """MappingService — single seam over all NormFlow domain operations.
 
 Consolidates CSV import/export, suggest (exact + semantic), review,
-workspace info, and FAISS index build/clear. SQLModel, sessions, and
+Project info, and FAISS index build/clear. SQLModel, sessions, and
 model imports are internal.
 """
 
@@ -78,10 +78,10 @@ def _make_engine(db_url: str):
 
 
 class MappingService:
-    """Single seam over all NormFlow workspace operations."""
+    """Single seam over all NormFlow Project operations."""
 
-    def __init__(self, workspace_path: str):
-        self._path = Path(workspace_path).expanduser().resolve()
+    def __init__(self, project_path: str):
+        self._path = Path(project_path).expanduser().resolve()
         self._db_path = self._path / "normflow.db"
         self._engine = _make_engine(str(self._db_path))
         self.validate()
@@ -107,7 +107,7 @@ class MappingService:
 
     def validate(self) -> None:
         if not self._db_path.exists():
-            msg = f"Not a NormFlow workspace: no database found at {self._db_path}"
+            msg = f"Not a NormFlow Project: no database found at {self._db_path}"
             raise ValueError(msg)
 
     def session(self):
@@ -122,10 +122,11 @@ class MappingService:
         return mapping.normalized_text if mapping else None
 
     # ------------------------------------------------------------------
-    # Workspace info
+    # Project info
     # ------------------------------------------------------------------
 
-    def workspace_info(self) -> dict:
+    def project_info(self) -> dict[str, str | int]:
+        """Return canonical Project identity and current statistics."""
         with self.session() as session:
             mapping_count = session.exec(
                 select(func.count(ExampleMapping.id))
@@ -135,20 +136,10 @@ class MappingService:
             ).one()
 
         return {
-            "workspace": str(self._path),
+            "project": str(self._path),
             "database": str(self._db_path),
             "mappings": mapping_count,
             "review_items": review_item_count,
-        }
-
-    def project_info(self) -> dict[str, str | int]:
-        """Return canonical Project identity and current statistics."""
-        info = self.workspace_info()
-        return {
-            "project": info["workspace"],
-            "database": info["database"],
-            "mappings": info["mappings"],
-            "review_items": info["review_items"],
         }
 
     # ------------------------------------------------------------------

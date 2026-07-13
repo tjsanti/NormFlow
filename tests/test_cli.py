@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from normflow.cli import app
 from normflow.mapping_service import ExampleMapping, MappingService
-from normflow.workspace import init_workspace
+from normflow.project_service import init_project as _init_project
 
 
 _active_project: Path | None = None
@@ -21,7 +21,7 @@ _active_project: Path | None = None
 def init_project(path: str | Path) -> Path:
     """Initialize and remember the Project used by a CLI adapter test."""
     global _active_project
-    _active_project = init_workspace(path)
+    _active_project = _init_project(path)
     return _active_project
 
 
@@ -107,7 +107,7 @@ def test_init_preserves_contents_and_repairs_existing_project(
     assert unrelated_file.read_text(encoding="utf-8") == "keep me"
     assert unrelated_directory.is_dir()
     assert (project_root / "input").is_dir()
-    assert MappingService(str(project_root)).workspace_info()["mappings"] == 1
+    assert MappingService(str(project_root)).project_info()["mappings"] == 1
 
 
 def test_init_refuses_damaged_database_without_mutating_project(
@@ -172,10 +172,10 @@ def test_init_rejects_descendant_project_before_mutation(
 def test_init_rejects_project_selection_options(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
-    workspace_result = runner.invoke(app, ["init", "--workspace", str(tmp_path)])
+    removed_flag_result = runner.invoke(app, ["init", "--workspace", str(tmp_path)])
     project_result = runner.invoke(app, ["init", "--project", str(tmp_path)])
 
-    assert workspace_result.exit_code == 2
+    assert removed_flag_result.exit_code == 2
     assert project_result.exit_code == 2
     assert not (tmp_path / "normflow.db").exists()
 
@@ -258,10 +258,10 @@ def test_project_info_rejects_explicit_project_selection(tmp_path: Path, monkeyp
     project_root = init_project(str(tmp_path / "myproject"))
     monkeypatch.chdir(project_root)
 
-    workspace_result = runner.invoke(app, ["info", "--workspace", str(project_root)])
+    removed_flag_result = runner.invoke(app, ["info", "--workspace", str(project_root)])
     project_result = runner.invoke(app, ["info", "--project", str(project_root)])
 
-    assert workspace_result.exit_code == 2
+    assert removed_flag_result.exit_code == 2
     assert project_result.exit_code == 2
 
 
@@ -408,10 +408,10 @@ def _write_csv(path: Path, header: str, *rows: str) -> None:
 def test_import_creates_mappings():
     """`normflow import` should insert CSV rows as mappings."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "mappings.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "mappings.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
         _write_csv(csv_path, "source,target", " hello,world", "world,bar", "  foo  ,baz")
 
         result = runner.invoke(
@@ -425,10 +425,10 @@ def test_import_creates_mappings():
 def test_import_skips_duplicates():
     """`normflow import` should skip rows where raw_text already exists."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "mappings.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "mappings.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
         _write_csv(csv_path, "source,target", "hello,world", "foo,bar")
 
         # First import
@@ -452,10 +452,10 @@ def test_import_skips_duplicates():
 def test_import_invalid_column():
     """`normflow import` should error when source column is missing from CSV."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "mappings.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "mappings.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
         _write_csv(csv_path, "src,dst", "hello,world")
 
         result = runner.invoke(
@@ -469,10 +469,10 @@ def test_import_invalid_column():
 def test_import_skips_empty_rows():
     """`normflow import` should silently skip empty rows."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "mappings.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "mappings.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
         csv_path.write_text("source,target\nhello,world\n\n\nfoo,bar\n")
 
         result = runner.invoke(
@@ -489,13 +489,13 @@ def test_import_skips_empty_rows():
 def test_export_writes_csv():
     """`normflow export` should write mappings to a CSV file."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "out.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "out.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
         # Insert mappings directly via the service
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="hello", normalized_text="world"))
             session.add(ExampleMapping(raw_text="foo", normalized_text="bar"))
@@ -518,12 +518,12 @@ def test_export_writes_csv():
 def test_export_custom_columns():
     """`normflow export` should use custom column names when flags are provided."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "out.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "out.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="hello", normalized_text="world"))
             session.commit()
@@ -542,11 +542,11 @@ def test_export_custom_columns():
 def test_import_export_round_trip():
     """Import a CSV, export it, and the contents should match."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        input_csv = ws_path / "input.csv"
-        output_csv = ws_path / "output.csv"
+        project_path = Path(tmpdir) / "proj"
+        input_csv = project_path / "input.csv"
+        output_csv = project_path / "output.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
         _write_csv(input_csv, "source,target", "hello,world", "foo,bar")
 
         runner.invoke(
@@ -575,11 +575,11 @@ def test_import_export_round_trip():
 def test_suggest_exact_match_found():
     """`normflow suggest` should return a suggestion when exact match exists."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
+        project_path = Path(tmpdir) / "proj"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
@@ -601,11 +601,11 @@ def test_suggest_exact_match_found():
 def test_suggest_no_match_found():
     """`normflow suggest` should return empty suggestions when no match exists."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
+        project_path = Path(tmpdir) / "proj"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
@@ -624,11 +624,11 @@ def test_suggest_no_match_found():
 def test_suggest_limit_respected():
     """`normflow suggest --limit 0` should return empty suggestions even when match exists."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
+        project_path = Path(tmpdir) / "proj"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
@@ -646,11 +646,11 @@ def test_suggest_limit_respected():
 def test_suggest_limit_default():
     """`normflow suggest` with default limit should return the match."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
+        project_path = Path(tmpdir) / "proj"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
@@ -665,8 +665,8 @@ def test_suggest_limit_default():
         assert len(data["suggestions"]) == 1
 
 
-def test_suggest_invalid_workspace():
-    """`normflow suggest` should error on non-workspace path."""
+def test_suggest_outside_project():
+    """`normflow suggest` should error outside a Project."""
     with tempfile.TemporaryDirectory() as tmpdir:
         result = runner.invoke(
             app,
@@ -681,13 +681,13 @@ def test_suggest_invalid_workspace():
 def test_suggest_batch_basic():
     """`normflow suggest batch` should output CSV with normalized_text column."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "input.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "input.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
         # Seed mappings
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.add(ExampleMapping(raw_text="centre", normalized_text="center"))
@@ -716,12 +716,12 @@ def test_suggest_batch_basic():
 def test_suggest_batch_no_match_blank():
     """Rows with no match should have blank normalized_text."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "input.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "input.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
@@ -745,12 +745,12 @@ def test_suggest_batch_no_match_blank():
 def test_suggest_batch_custom_output_column():
     """--output-column should rename the suggestion column."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "input.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "input.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
@@ -769,13 +769,13 @@ def test_suggest_batch_custom_output_column():
 def test_suggest_batch_output_to_file():
     """--output should write CSV to the specified file."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "input.csv"
-        out_path = ws_path / "output.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "input.csv"
+        out_path = project_path / "output.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
@@ -794,12 +794,12 @@ def test_suggest_batch_output_to_file():
 def test_suggest_batch_excludes_entirely_blank_rows():
     """Rows where every column is blank should be excluded from output."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "input.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "input.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
@@ -821,12 +821,12 @@ def test_suggest_batch_excludes_entirely_blank_rows():
 def test_suggest_batch_includes_partial_rows_skips_processing():
     """Rows with some data but blank raw text column should appear in output with blank suggestion."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "input.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "input.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
@@ -850,12 +850,12 @@ def test_suggest_batch_includes_partial_rows_skips_processing():
 def test_suggest_batch_preserves_extra_columns():
     """All original columns should be preserved in the output."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "input.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "input.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
             session.commit()
@@ -876,10 +876,10 @@ def test_suggest_batch_preserves_extra_columns():
         assert "normalized_text" in header
 
 
-def test_suggest_batch_invalid_workspace():
-    """`normflow suggest batch` should error on non-workspace path."""
+def test_suggest_batch_outside_project():
+    """`normflow suggest batch` should error outside a Project."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
+        project_path = Path(tmpdir) / "proj"
         csv_path = Path(tmpdir) / "input.csv"
         _write_csv(csv_path, "text", "hello")
 
@@ -893,10 +893,10 @@ def test_suggest_batch_invalid_workspace():
 def test_suggest_batch_missing_column():
     """`normflow suggest batch` should error when column is not in CSV."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        csv_path = ws_path / "input.csv"
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "input.csv"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
         _write_csv(csv_path, "id,text", "1,hello")
 
         result = runner.invoke(
@@ -909,9 +909,9 @@ def test_suggest_batch_missing_column():
 def test_suggest_batch_missing_input_file():
     """`normflow suggest batch` should error when input file does not exist."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
+        project_path = Path(tmpdir) / "proj"
 
-        init_project(str(ws_path))
+        init_project(str(project_path))
 
         result = runner.invoke(
             app,
@@ -923,11 +923,11 @@ def test_suggest_batch_missing_input_file():
 # ---- review tests ----
 
 
-def _seed_review_items(ws_path: Path, items: list[tuple[str, str]]) -> None:
+def _seed_review_items(project_path: Path, items: list[tuple[str, str]]) -> None:
     """Seed Review Items for CLI adapter tests."""
     from normflow.mapping_service import MappingService, ReviewItem
 
-    ms = MappingService(str(ws_path))
+    ms = MappingService(str(project_path))
     with ms.session() as session:
         for raw_text, suggested_text in items:
             session.add(ReviewItem(
@@ -940,10 +940,10 @@ def _seed_review_items(ws_path: Path, items: list[tuple[str, str]]) -> None:
 def test_review_list_shows_review_items():
     """`normflow review list` shows pending Review Items."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        init_project(str(ws_path))
+        project_path = Path(tmpdir) / "proj"
+        init_project(str(project_path))
 
-        _seed_review_items(ws_path, [
+        _seed_review_items(project_path, [
             ("o2 sensor", "O2 Sensor"),
             ("oxygen sensor", "Oxygen Sensor"),
         ])
@@ -961,8 +961,8 @@ def test_review_list_shows_review_items():
 def test_review_list_empty_when_no_pending():
     """`normflow review list` is empty when no Review Items are pending."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        init_project(str(ws_path))
+        project_path = Path(tmpdir) / "proj"
+        init_project(str(project_path))
 
         result = runner.invoke(
             app,
@@ -974,10 +974,10 @@ def test_review_list_empty_when_no_pending():
 def test_review_list_json_output():
     """`normflow review list --json` should return valid JSON array."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        init_project(str(ws_path))
+        project_path = Path(tmpdir) / "proj"
+        init_project(str(project_path))
 
-        _seed_review_items(ws_path, [
+        _seed_review_items(project_path, [
             ("o2 sensor", "O2 Sensor"),
         ])
 
@@ -996,10 +996,10 @@ def test_review_list_json_output():
 def test_review_accept_inserts_mapping_and_removes_review_item():
     """`normflow review accept` accepts a Review Item."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        init_project(str(ws_path))
+        project_path = Path(tmpdir) / "proj"
+        init_project(str(project_path))
 
-        _seed_review_items(ws_path, [
+        _seed_review_items(project_path, [
             ("o2 sensor", "O2 Sensor"),
         ])
 
@@ -1011,7 +1011,7 @@ def test_review_accept_inserts_mapping_and_removes_review_item():
         assert "Review Item 1 accepted." in result.stdout
 
         # Verify mapping was inserted
-        with chdir(ws_path):
+        with chdir(project_path):
             info_result = runner.invoke(app, ["info"])
         assert "Mappings:   1" in info_result.stdout
         assert "Review Items: 0" in info_result.stdout
@@ -1020,10 +1020,10 @@ def test_review_accept_inserts_mapping_and_removes_review_item():
 def test_review_edit_and_accept_inserts_mapping_with_custom_text():
     """`normflow review edit-and-accept` accepts with edited text."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        init_project(str(ws_path))
+        project_path = Path(tmpdir) / "proj"
+        init_project(str(project_path))
 
-        _seed_review_items(ws_path, [
+        _seed_review_items(project_path, [
             ("o2 sensor", "O2 Sensor"),
         ])
 
@@ -1035,12 +1035,12 @@ def test_review_edit_and_accept_inserts_mapping_with_custom_text():
         assert "Review Item 1 accepted with edit." in result.stdout
 
         # Verify mapping was inserted with edited text
-        with chdir(ws_path):
+        with chdir(project_path):
             info_result = runner.invoke(app, ["info"])
         assert "Mappings:   1" in info_result.stdout
 
         # Verify the mapping has the custom text
-        ms = MappingService(str(ws_path))
+        ms = MappingService(str(project_path))
         with ms.session() as session:
             from sqlmodel import select
             mapping = session.exec(
@@ -1053,10 +1053,10 @@ def test_review_edit_and_accept_inserts_mapping_with_custom_text():
 def test_review_accept_removed_item_fails():
     """A Review Item cannot be accepted twice because acceptance removes it."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        init_project(str(ws_path))
+        project_path = Path(tmpdir) / "proj"
+        init_project(str(project_path))
 
-        _seed_review_items(ws_path, [
+        _seed_review_items(project_path, [
             ("o2 sensor", "O2 Sensor"),
         ])
 
@@ -1076,8 +1076,8 @@ def test_review_accept_removed_item_fails():
 def test_review_edit_and_accept_invalid_record_id_fails():
     """`normflow review edit-and-accept` fails for an unknown Review Item."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws_path = Path(tmpdir) / "proj"
-        init_project(str(ws_path))
+        project_path = Path(tmpdir) / "proj"
+        init_project(str(project_path))
 
         result = runner.invoke(
             app,

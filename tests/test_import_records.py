@@ -7,7 +7,7 @@ from pathlib import Path
 from sqlmodel import select
 
 from normflow.mapping_service import ExampleMapping, MappingService, ReviewItem
-from normflow.workspace import init_workspace
+from normflow.project_service import init_project
 
 
 def _write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
@@ -20,17 +20,17 @@ def _write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
 def test_import_routes_exact_match_to_library_and_no_match_to_review_items():
     """Exact matches auto-commit; unmatched values become Review Items."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws = Path(tmpdir)
-        init_workspace(str(ws))
+        project = Path(tmpdir)
+        init_project(str(project))
 
         # Seed the library with one mapping
-        ms = MappingService(str(ws))
+        ms = MappingService(str(project))
         with ms.session() as session:
             session.add(ExampleMapping(raw_text="United States", normalized_text="US"))
             session.commit()
 
         # CSV with 2 rows: one exact match, one unknown
-        csv_path = ws / "input.csv"
+        csv_path = project / "input.csv"
         _write_csv(csv_path, [
             {"name": "United States"},
             {"name": "Nordic Confederation"},
@@ -59,13 +59,13 @@ def test_import_routes_exact_match_to_library_and_no_match_to_review_items():
 def test_import_deduplicates_identical_raw_text():
     """Same raw_text appearing multiple times creates only one Review Item."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws = Path(tmpdir)
-        init_workspace(str(ws))
+        project = Path(tmpdir)
+        init_project(str(project))
 
-        ms = MappingService(str(ws))
+        ms = MappingService(str(project))
 
         # CSV with 5 rows, all the same value
-        csv_path = ws / "input.csv"
+        csv_path = project / "input.csv"
         _write_csv(csv_path, [
             {"name": "Nordic Confederation"},
             {"name": "Nordic Confederation"},
@@ -84,20 +84,20 @@ def test_import_deduplicates_identical_raw_text():
         assert result["review_items"] == 1
 
 
-def test_import_stores_original_csv_in_workspace():
-    """Original CSV is copied to workspace/.batches/current.csv."""
+def test_import_stores_original_csv_in_project():
+    """Original CSV is copied to the Project's batch storage."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws = Path(tmpdir)
-        init_workspace(str(ws))
+        project = Path(tmpdir)
+        init_project(str(project))
 
-        ms = MappingService(str(ws))
+        ms = MappingService(str(project))
 
-        csv_path = ws / "input.csv"
+        csv_path = project / "input.csv"
         _write_csv(csv_path, [{"name": "Foo"}], ["name"])
 
         ms.import_records_for_review(str(csv_path), "name")
 
-        stored = ws / ".batches" / "current.csv"
+        stored = project / ".batches" / "current.csv"
         assert stored.exists()
         assert stored.read_text().strip() == "name\nFoo"
 
@@ -105,13 +105,13 @@ def test_import_stores_original_csv_in_workspace():
 def test_export_returns_original_csv_with_normalized_column():
     """Export reconstructs the original CSV with a normalized_text column filled from mappings."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        ws = Path(tmpdir)
-        init_workspace(str(ws))
+        project = Path(tmpdir)
+        init_project(str(project))
 
-        ms = MappingService(str(ws))
+        ms = MappingService(str(project))
 
         # Import a CSV with 3 columns, 2 rows
-        csv_path = ws / "input.csv"
+        csv_path = project / "input.csv"
         _write_csv(csv_path, [
             {"id": "1", "name": "United States", "pop": "330M"},
             {"id": "2", "name": "Canada", "pop": "38M"},

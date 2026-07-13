@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from normflow.mapping_service import BulkAcceptResult, MappingService, ReviewItem
-from normflow.workspace import init_workspace
+from normflow.project_service import init_project
 
 
 def test_opening_legacy_project_migrates_only_pending_suggestions_to_review_items():
@@ -43,7 +43,7 @@ def test_opening_legacy_project_migrates_only_pending_suggestions_to_review_item
         assert service.list_review_items() == [
             {"id": 3, "raw_text": "centre", "suggested_text": "center"}
         ]
-        assert service.workspace_info()["mappings"] == 1
+        assert service.project_info()["mappings"] == 1
         with sqlite3.connect(database) as connection:
             assert connection.execute(
                 "SELECT id, raw_text, normalized_text FROM examplemapping"
@@ -56,7 +56,7 @@ def test_opening_legacy_project_migrates_only_pending_suggestions_to_review_item
 def test_imported_review_items_are_listed_oldest_first_with_stable_ids():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         records = project / "records.csv"
         records.write_text("name\nfirst\nsecond\n", encoding="utf-8")
         service = MappingService(str(project))
@@ -75,7 +75,7 @@ def test_imported_review_items_are_listed_oldest_first_with_stable_ids():
 def test_accept_trims_mapping_text_and_removes_review_item():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         service = MappingService(str(project))
         with service.session() as session:
             session.add(ReviewItem(raw_text="o2 sensor", suggested_text="  Oxygen Sensor  "))
@@ -85,8 +85,8 @@ def test_accept_trims_mapping_text_and_removes_review_item():
 
         assert service.list_review_items() == []
         assert service.lookup("o2 sensor", semantic=False, llm=False)[0].suggested_text == "Oxygen Sensor"
-        assert service.workspace_info() == {
-            "workspace": str(project.resolve()),
+        assert service.project_info() == {
+            "project": str(project.resolve()),
             "database": str((project / "normflow.db").resolve()),
             "mappings": 1,
             "review_items": 0,
@@ -96,7 +96,7 @@ def test_accept_trims_mapping_text_and_removes_review_item():
 def test_bulk_accept_creates_all_mappings_and_removes_all_selected_items():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         service = MappingService(str(project))
         with service.session() as session:
             session.add_all([
@@ -114,7 +114,7 @@ def test_bulk_accept_creates_all_mappings_and_removes_all_selected_items():
         ]
         assert service.lookup("o2 sensor", semantic=False, llm=False)[0].suggested_text == "Oxygen Sensor"
         assert service.lookup("fuel pump", semantic=False, llm=False)[0].suggested_text == "Fuel Pump"
-        assert service.workspace_info()["mappings"] == 2
+        assert service.project_info()["mappings"] == 2
 
 
 @pytest.mark.parametrize(
@@ -128,7 +128,7 @@ def test_bulk_accept_creates_all_mappings_and_removes_all_selected_items():
 def test_bulk_accept_rejects_invalid_ids(record_ids, message):
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         service = MappingService(str(project))
 
         with pytest.raises(ValueError, match=message):
@@ -138,7 +138,7 @@ def test_bulk_accept_rejects_invalid_ids(record_ids, message):
 def test_bulk_accept_stale_item_rolls_back_the_full_selection():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         service = MappingService(str(project))
         with service.session() as session:
             session.add(ReviewItem(raw_text="o2 sensor", suggested_text="Oxygen Sensor"))
@@ -150,13 +150,13 @@ def test_bulk_accept_stale_item_rolls_back_the_full_selection():
         assert service.list_review_items() == [
             {"id": 1, "raw_text": "o2 sensor", "suggested_text": "Oxygen Sensor"}
         ]
-        assert service.workspace_info()["mappings"] == 0
+        assert service.project_info()["mappings"] == 0
 
 
 def test_bulk_accept_blank_suggestion_rolls_back_the_full_selection():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         service = MappingService(str(project))
         with service.session() as session:
             session.add_all([
@@ -169,13 +169,13 @@ def test_bulk_accept_blank_suggestion_rolls_back_the_full_selection():
             service.accept_review_items([1, 2])
 
         assert len(service.list_review_items()) == 2
-        assert service.workspace_info()["mappings"] == 0
+        assert service.project_info()["mappings"] == 0
 
 
 def test_bulk_accept_mapping_failure_rolls_back_the_full_selection():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         service = MappingService(str(project))
         with service.session() as session:
             session.add_all([
@@ -196,13 +196,13 @@ def test_bulk_accept_mapping_failure_rolls_back_the_full_selection():
             service.accept_review_items([1, 2])
 
         assert len(service.list_review_items()) == 2
-        assert service.workspace_info()["mappings"] == 0
+        assert service.project_info()["mappings"] == 0
 
 
 def test_accept_rejects_blank_text_without_changing_review_item_or_mappings():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         service = MappingService(str(project))
         with service.session() as session:
             session.add(ReviewItem(raw_text="unknown", suggested_text="   "))
@@ -218,13 +218,13 @@ def test_accept_rejects_blank_text_without_changing_review_item_or_mappings():
         assert service.list_review_items() == [
             {"id": 1, "raw_text": "unknown", "suggested_text": "   "}
         ]
-        assert service.workspace_info()["mappings"] == 0
+        assert service.project_info()["mappings"] == 0
 
 
 def test_edit_and_accept_uses_trimmed_edit_and_removes_review_item():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         service = MappingService(str(project))
         with service.session() as session:
             session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
@@ -239,7 +239,7 @@ def test_edit_and_accept_uses_trimmed_edit_and_removes_review_item():
 def test_edit_and_accept_rejects_blank_text_without_changing_state():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         service = MappingService(str(project))
         with service.session() as session:
             session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
@@ -251,13 +251,13 @@ def test_edit_and_accept_rejects_blank_text_without_changing_state():
         assert service.list_review_items() == [
             {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
         ]
-        assert service.workspace_info()["mappings"] == 0
+        assert service.project_info()["mappings"] == 0
 
 
 def test_accept_rolls_back_review_item_removal_when_mapping_insert_fails():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         service = MappingService(str(project))
         with service.session() as session:
             session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
@@ -276,13 +276,13 @@ def test_accept_rolls_back_review_item_removal_when_mapping_insert_fails():
         assert service.list_review_items() == [
             {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
         ]
-        assert service.workspace_info()["mappings"] == 0
+        assert service.project_info()["mappings"] == 0
 
 
 def test_review_item_ids_are_not_reused_after_acceptance():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
-        init_workspace(str(project))
+        init_project(str(project))
         first_batch = project / "first.csv"
         first_batch.write_text("name\nfirst\nsecond\n", encoding="utf-8")
         service = MappingService(str(project))

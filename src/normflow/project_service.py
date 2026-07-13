@@ -1,4 +1,4 @@
-"""Workspace operations: init."""
+"""Project initialization operations."""
 
 from pathlib import Path
 
@@ -15,39 +15,39 @@ def _descendant_project(root: Path) -> Project | None:
     return None
 
 
-def init_workspace(path: str | Path) -> Path:
-    """Create a new project workspace at the given path."""
-    ws = Path(path).expanduser().resolve()
+def init_project(path: str | Path) -> Path:
+    """Initialize a NormFlow Project at the given path."""
+    project_root = Path(path).expanduser().resolve()
 
-    db_path = ws / "normflow.db"
+    db_path = project_root / "normflow.db"
     if db_path.exists() or db_path.is_symlink():
-        project_at(ws)
+        project_at(project_root)
     else:
         try:
-            ancestor = resolve_project(ws.parent)
+            ancestor = resolve_project(project_root.parent)
         except ProjectNotFoundError:
             pass
         else:
             msg = (
-                f"Cannot initialize a nested Project at {ws}; "
+                f"Cannot initialize a nested Project at {project_root}; "
                 f"the directory is already inside the Project at {ancestor.root}."
             )
             raise ProjectNestingError(msg)
 
-        descendant = _descendant_project(ws) if ws.is_dir() else None
+        descendant = _descendant_project(project_root) if project_root.is_dir() else None
         if descendant is not None:
             msg = (
-                f"Cannot initialize the Project at {ws}; it would contain the "
+                f"Cannot initialize the Project at {project_root}; it would contain the "
                 f"nested Project at {descendant.root}."
             )
             raise ProjectNestingError(msg)
 
-    ws.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir(parents=True, exist_ok=True)
 
-    for d in ("input", "output", "samples", ".normflow"):
-        (ws / d).mkdir(exist_ok=True)
+    for directory in ("input", "output", "samples", ".normflow"):
+        (project_root / directory).mkdir(exist_ok=True)
 
     engine = _make_engine(str(db_path))
     SQLModel.metadata.create_all(engine)
 
-    return ws
+    return project_root

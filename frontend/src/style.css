@@ -23,7 +23,7 @@ header h1 { margin: 0; font-size: 2rem; }
 .counts div { display: flex; align-items: baseline; gap: 6px; }
 .counts strong { font-size: 1.5rem; }
 
-.review-workspace { width: min(1180px, calc(100% - 40px)); margin: 40px auto; }
+.review-project { width: min(1180px, calc(100% - 40px)); margin: 40px auto; }
 .review-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; }
 .review-heading h2 { margin: 4px 0 0; font-family: Georgia, serif; font-size: 2rem; }
 #notices:empty { display: none; }

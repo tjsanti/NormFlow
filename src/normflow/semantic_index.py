@@ -18,11 +18,11 @@ def _ensure_model() -> SentenceTransformer:
 
 
 class SemanticIndex:
-    """Build, persist, and query a FAISS index over workspace mappings."""
+    """Build, persist, and query a FAISS index over Project Mappings."""
 
-    def __init__(self, workspace_path: str) -> None:
-        self._workspace_path = Path(workspace_path).expanduser().resolve()
-        self._index_dir = self._workspace_path / ".normflow" / "faiss_index"
+    def __init__(self, project_path: str) -> None:
+        self._project_path = Path(project_path).expanduser().resolve()
+        self._index_dir = self._project_path / ".normflow" / "faiss_index"
 
     # ------------------------------------------------------------------
     # Public interface
