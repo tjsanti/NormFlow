@@ -30,36 +30,44 @@ def version() -> None:
 
 
 @app.command()
-def serve(
-    host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
-    port: int = typer.Option(8000, "--port", help="Port to listen on."),
-) -> None:
-    """Start the NormFlow API server."""
-    import uvicorn
-    from .api import app as api_app
-    uvicorn.run(api_app, host=host, port=port)
-
-
-@app.command()
 def ui(
     no_open: bool = typer.Option(False, "--no-open", help="Do not open the default browser."),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        min=1,
+        max=65535,
+        help="Local port to use (defaults to a free port).",
+    ),
 ) -> None:
-    """Launch the local NormFlow browser UI."""
+    """Launch the browser UI for the active Project."""
     import socket
     import uvicorn
     import webbrowser
 
-    from .api import app as api_app
+    from .api import create_app
 
-    with socket.socket() as local_socket:
-        local_socket.bind(("127.0.0.1", 0))
-        port = local_socket.getsockname()[1]
+    try:
+        project = resolve_project(Path.cwd())
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        raise typer.Exit(1) from None
 
-    url = f"http://127.0.0.1:{port}"
+    requested_port = port or 0
+    try:
+        with socket.socket() as local_socket:
+            local_socket.bind(("127.0.0.1", requested_port))
+            selected_port = port or local_socket.getsockname()[1]
+    except OSError as exc:
+        description = f"port {port}" if port is not None else "a local port"
+        print(f"Error: {description} is unavailable: {exc}")
+        raise typer.Exit(1) from None
+
+    url = f"http://127.0.0.1:{selected_port}"
     print(url)
     if not no_open:
         webbrowser.open(url)
-    uvicorn.run(api_app, host="127.0.0.1", port=port)
+    uvicorn.run(create_app(project), host="127.0.0.1", port=selected_port)
 
 
 @app.command()

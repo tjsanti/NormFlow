@@ -10,29 +10,15 @@ body { margin: 0; min-width: 320px; }
 button, input { font: inherit; }
 button { cursor: pointer; }
 
-.picker {
-  width: min(680px, calc(100% - 40px));
-  margin: 16vh auto 0;
-  padding: 48px;
-  background: #fffdf7;
-  border: 1px solid #d4cdbc;
-  box-shadow: 8px 8px 0 #d9dfd4;
-}
-
 h1 { margin: 4px 0 12px; font-family: Georgia, serif; font-size: clamp(2rem, 5vw, 3.25rem); }
 .eyebrow { color: #2f6b52; font-size: .75rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-form { margin-top: 32px; }
-label { display: block; margin-bottom: 8px; font-weight: 700; }
-.field-row { display: flex; gap: 8px; }
 input { flex: 1; min-width: 0; padding: 12px; border: 1px solid #80796b; background: white; }
 button { padding: 12px 18px; border: 1px solid #183028; color: white; background: #183028; font-weight: 700; }
 [role="alert"] { padding: 10px 12px; color: #7b251c; background: #f9ded8; border-left: 4px solid #b34335; }
-.recents { margin-top: 32px; border-top: 1px solid #d4cdbc; }
-.recents h2 { font-family: Georgia, serif; }
-.recents button { display: block; width: 100%; margin-top: 8px; overflow: hidden; color: #183028; background: transparent; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 
 header { display: flex; align-items: center; gap: 32px; padding: 24px 5vw; background: #fffdf7; border-bottom: 1px solid #d4cdbc; }
 header h1 { margin: 0; font-size: 2rem; }
+.project-path { max-width: 56vw; margin: 4px 0 0; overflow: hidden; color: #5b625d; font-size: .85rem; text-overflow: ellipsis; white-space: nowrap; }
 .counts { display: flex; gap: 24px; margin: 0 0 0 auto; }
 .counts div { display: flex; align-items: baseline; gap: 6px; }
 .counts strong { font-size: 1.5rem; }
@@ -63,9 +49,9 @@ td button:disabled { cursor: not-allowed; opacity: .42; }
 td input[type="checkbox"] { width: 18px; height: 18px; accent-color: #2f6b52; }
 
 @media (max-width: 700px) {
-  .picker { padding: 28px; }
-  .field-row, header, .counts { align-items: stretch; flex-direction: column; }
+  header, .counts { align-items: stretch; flex-direction: column; }
   header { gap: 16px; }
+  .project-path { max-width: calc(100vw - 40px); }
   .counts { margin: 0; }
   .review-heading { align-items: stretch; flex-direction: column; }
   #review-queue { overflow-x: auto; }

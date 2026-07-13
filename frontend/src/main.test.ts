@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { startApp } from "./main";
 
 const projectInfo = {
-  workspace: "/Users/example/projects/customer-names",
+  project: "/Users/example/projects/customer-names",
   database: "/Users/example/projects/customer-names/normflow.db",
   mappings: 12,
   review_items: 4,
@@ -16,7 +16,7 @@ function okJson(value: unknown): Response {
   });
 }
 
-describe("Project selection", () => {
+describe("Bound Project launch", () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="app"></div>';
     window.localStorage.clear();
@@ -26,120 +26,28 @@ describe("Project selection", () => {
     vi.unstubAllGlobals();
   });
 
-  test("first run opens a valid Project and remembers its canonical path", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okJson(projectInfo));
+  test("immediately loads review for the server-bound canonical Project", async () => {
+    window.localStorage.setItem("normflow.recentProjects", JSON.stringify(["/old/project"]));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson(projectInfo))
+      .mockResolvedValueOnce(okJson([]));
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
-    const input = document.querySelector<HTMLInputElement>("#project-path")!;
-    input.value = "~/projects/customer-names";
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
-    await vi.waitFor(() => expect(document.querySelector("header")).not.toBeNull());
+    await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
 
-    expect(fetchMock).toHaveBeenCalledWith("/workspace/info", {
-      headers: { "X-Normflow-Workspace": "~/projects/customer-names" },
-    });
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/project/info");
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/review-items");
     expect(document.body.textContent).toContain("customer-names");
+    expect(document.body.textContent).toContain(projectInfo.project);
     expect(document.body.textContent).toContain("12 Mappings");
     expect(document.body.textContent).toContain("4 pending Review Items");
-    expect(JSON.parse(window.localStorage.getItem("normflow.recentProjects")!)).toEqual([
-      projectInfo.workspace,
-    ]);
-  });
-
-  test("first run displays the API's actionable validation error", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
-      JSON.stringify({ detail: "Not a NormFlow workspace: no database found at /tmp/empty/normflow.db" }),
-      { status: 422, headers: { "Content-Type": "application/json" } },
-    )));
-    startApp();
-
-    document.querySelector<HTMLInputElement>("#project-path")!.value = "/tmp/empty";
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
-    await vi.waitFor(() => expect(document.querySelector("[role=alert]")).not.toBeNull());
-
-    expect(document.querySelector("[role=alert]")!.textContent).toContain("no database found");
-    expect(document.querySelector("form")).not.toBeNull();
-    expect(window.localStorage.getItem("normflow.recentProjects")).toBeNull();
-  });
-
-  test("the most recent valid Project reopens automatically", async () => {
-    window.localStorage.setItem("normflow.recentProjects", JSON.stringify([
-      projectInfo.workspace,
-      "/Users/example/projects/older-project",
-    ]));
-    const fetchMock = vi.fn().mockResolvedValue(okJson(projectInfo));
-    vi.stubGlobal("fetch", fetchMock);
-
-    startApp();
-    await vi.waitFor(() => expect(document.querySelector("header")?.textContent).toContain("customer-names"));
-
-    expect(fetchMock).toHaveBeenCalledWith("/workspace/info", {
-      headers: { "X-Normflow-Workspace": projectInfo.workspace },
-    });
     expect(document.querySelector("form")).toBeNull();
-  });
-
-  test("automatic reopening skips a recent path that is no longer a valid Project", async () => {
-    const missing = "/Users/example/projects/moved-project";
-    window.localStorage.setItem("normflow.recentProjects", JSON.stringify([
-      missing,
-      projectInfo.workspace,
-    ]));
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(
-        JSON.stringify({ detail: "Not a NormFlow workspace: no database found" }),
-        { status: 422, headers: { "Content-Type": "application/json" } },
-      ))
-      .mockResolvedValueOnce(okJson(projectInfo))
-      .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
-
-    startApp();
-    await vi.waitFor(() => expect(document.querySelector("header")?.textContent).toContain("customer-names"));
-
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(JSON.parse(window.localStorage.getItem("normflow.recentProjects")!)).toEqual([
-      projectInfo.workspace,
-    ]);
-  });
-
-  test("users can switch to another recent Project", async () => {
-    const olderInfo = {
-      ...projectInfo,
-      workspace: "/Users/example/projects/older-project",
-      database: "/Users/example/projects/older-project/normflow.db",
-      mappings: 3,
-      review_items: 1,
-    };
-    window.localStorage.setItem("normflow.recentProjects", JSON.stringify([
-      projectInfo.workspace,
-      olderInfo.workspace,
-    ]));
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(okJson(projectInfo))
-      .mockResolvedValueOnce(okJson([]))
-      .mockResolvedValueOnce(okJson(olderInfo))
-      .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
-    startApp();
-    await vi.waitFor(() => expect(document.querySelector("header")?.textContent).toContain("customer-names"));
-
-    const switchButton = [...document.querySelectorAll("button")]
-      .find((button) => button.textContent === "Switch Project")!;
-    switchButton.click();
-    expect(document.body.textContent).toContain("Recent Projects");
-    const olderButton = [...document.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("older-project"))!;
-    olderButton.click();
-    await vi.waitFor(() => expect(document.querySelector("header")?.textContent).toContain("older-project"));
-
-    expect(document.querySelector("header")?.textContent).toContain("3 Mappings");
-    expect(document.querySelector("header")?.textContent).toContain("1 pending Review Item");
-    expect(JSON.parse(window.localStorage.getItem("normflow.recentProjects")!)).toEqual([
-      olderInfo.workspace,
-      projectInfo.workspace,
-    ]);
+    expect(document.querySelector("#project-path")).toBeNull();
+    expect(document.body.textContent).not.toContain("Switch Project");
+    expect(document.body.textContent).not.toContain("Recent Projects");
+    expect(window.localStorage.getItem("normflow.recentProjects"))
+      .toBe(JSON.stringify(["/old/project"]));
   });
 });
 
@@ -162,8 +70,6 @@ describe("Review queue", () => {
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelector("[role=status]")?.textContent).toContain("Loading"));
     resolveQueue(okJson([
       { id: 4, raw_text: "first raw", suggested_text: "First" },
@@ -184,9 +90,7 @@ describe("Review queue", () => {
     expect([...document.querySelectorAll<HTMLButtonElement>("tbody button")].map((button) => button.disabled)).toEqual([
       false, false, true, false,
     ]);
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/review-items", {
-      headers: { "X-Normflow-Workspace": projectInfo.workspace },
-    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/review-items");
   });
 
   test("only eligible rows can be selected and select-all covers the complete loaded queue", async () => {
@@ -199,8 +103,6 @@ describe("Review queue", () => {
       ])));
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelectorAll("tbody tr")).toHaveLength(3));
 
     const selectedAction = document.querySelector<HTMLButtonElement>("#accept-selected")!;
@@ -239,8 +141,6 @@ describe("Review queue", () => {
     vi.stubGlobal("confirm", confirmMock);
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelectorAll("tbody tr")).toHaveLength(3));
     document.querySelector<HTMLInputElement>(
       'input[aria-label="Select all eligible Review Items"]',
@@ -253,7 +153,6 @@ describe("Review queue", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Normflow-Workspace": projectInfo.workspace,
       },
       body: JSON.stringify({ review_item_ids: [4, 12] }),
     });
@@ -280,8 +179,6 @@ describe("Review queue", () => {
     vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelectorAll("tbody tr")).toHaveLength(2));
     const rowCheckboxes = [...document.querySelectorAll<HTMLInputElement>(
       'tbody input[type="checkbox"]',
@@ -308,8 +205,6 @@ describe("Review queue", () => {
       ])));
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelectorAll("tbody tr")).toHaveLength(2));
     const editButtons = [...document.querySelectorAll<HTMLButtonElement>("tbody button")]
       .filter((button) => button.textContent === "Edit");
@@ -340,8 +235,6 @@ describe("Review queue", () => {
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelector("tbody")).not.toBeNull());
     const buttons = [...document.querySelectorAll<HTMLButtonElement>("tbody button")];
     expect(buttons.find((button) => button.textContent === "Accept")!.disabled).toBe(true);
@@ -367,8 +260,6 @@ describe("Review queue", () => {
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelector("tbody")).not.toBeNull());
     [...document.querySelectorAll<HTMLButtonElement>("tbody button")]
       .find((button) => button.textContent === "Edit")!.click();
@@ -380,7 +271,7 @@ describe("Review queue", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
       "/review-items/9/edit-and-accept?normalized_text=%20%20Completed%20text%20%20",
-      { method: "POST", headers: { "X-Normflow-Workspace": projectInfo.workspace } },
+      { method: "POST" },
     );
     expect(document.querySelector("[role=status]")?.textContent).toContain("Review Item 9 accepted with edit");
     expect(document.querySelector("header")?.textContent).toContain("13 Mappings");
@@ -400,8 +291,6 @@ describe("Review queue", () => {
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelector("tbody")).not.toBeNull());
     [...document.querySelectorAll<HTMLButtonElement>("tbody button")]
       .find((button) => button.textContent === "Edit")!.click();
@@ -432,25 +321,18 @@ describe("Review queue", () => {
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelectorAll("tbody tr")).toHaveLength(2));
     document.querySelector<HTMLButtonElement>("tbody button")!.click();
     await vi.waitFor(() => expect(document.querySelectorAll("tbody tr")).toHaveLength(1));
 
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/review-items/4/accept", {
       method: "POST",
-      headers: { "X-Normflow-Workspace": projectInfo.workspace },
     });
     expect(document.querySelector("[role=status]")?.textContent).toContain("Review Item 4 accepted");
     expect(document.querySelector("header")?.textContent).toContain("13 Mappings");
     expect(document.querySelector("header")?.textContent).toContain("3 pending Review Items");
-    expect(fetchMock).toHaveBeenNthCalledWith(4, "/workspace/info", {
-      headers: { "X-Normflow-Workspace": projectInfo.workspace },
-    });
-    expect(fetchMock).toHaveBeenNthCalledWith(5, "/review-items", {
-      headers: { "X-Normflow-Workspace": projectInfo.workspace },
-    });
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/project/info");
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/review-items");
   });
 
   test("manual Refresh reloads the queue and counts", async () => {
@@ -464,8 +346,6 @@ describe("Review queue", () => {
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
     document.querySelector<HTMLButtonElement>("#refresh-review-items")!.click();
     await vi.waitFor(() => expect(document.querySelector("tbody")?.textContent).toContain("new raw"));
@@ -484,8 +364,6 @@ describe("Review queue", () => {
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.runAllTimersAsync();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     window.dispatchEvent(new Event("focus"));
@@ -507,8 +385,6 @@ describe("Review queue", () => {
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelector("tbody button")).not.toBeNull());
     document.querySelector<HTMLButtonElement>("tbody button")!.click();
     await vi.waitFor(() => expect(document.querySelector("[role=alert]")?.textContent).toContain("could not be saved"));
@@ -532,8 +408,6 @@ describe("Review queue", () => {
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelector("tbody button")).not.toBeNull());
     document.querySelector<HTMLButtonElement>("tbody button")!.click();
     await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
@@ -551,8 +425,6 @@ describe("Review queue", () => {
       )));
     startApp();
 
-    document.querySelector<HTMLInputElement>("#project-path")!.value = projectInfo.workspace;
-    document.querySelector<HTMLFormElement>("form")!.requestSubmit();
     await vi.waitFor(() => expect(document.querySelector("#review-queue [role=alert]")?.textContent).toContain("unavailable"));
 
     expect(document.querySelector("#review-queue [role=status]")).toBeNull();

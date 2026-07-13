@@ -181,7 +181,3 @@ def create_app(project: Project) -> FastAPI:
         name="ui-assets",
     )
     return project_app
-
-
-# Kept as an import-compatible shell until CLI launch binds a discovered Project.
-app = FastAPI(title="NormFlow", redirect_slashes=False)

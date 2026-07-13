@@ -283,10 +283,19 @@ def test_project_info_reports_damaged_nearest_marker_without_parent_fallback(
     assert "recover" in result.stdout.lower()
 
 
-def test_ui_launches_local_server_and_opens_browser():
-    """`normflow ui` prints and opens the URL for its localhost-only server."""
+def test_ui_discovers_project_and_launches_bound_local_server_from_subdirectory(
+    tmp_path: Path, monkeypatch,
+):
+    """`normflow ui` binds the browser server to the canonical active Project."""
+    project_root = init_project(str(tmp_path / "project"))
+    nested = project_root / "input" / "incoming"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+    bound_app = object()
+
     with (
         patch("socket.socket") as socket_factory,
+        patch("normflow.api.create_app", return_value=bound_app) as create_app,
         patch("uvicorn.run") as run_server,
         patch("webbrowser.open") as open_browser,
     ):
@@ -299,14 +308,23 @@ def test_ui_launches_local_server_and_opens_browser():
     assert url == "http://127.0.0.1:43123"
     local_socket.bind.assert_called_once_with(("127.0.0.1", 0))
     open_browser.assert_called_once_with(url)
+    assert create_app.call_args.args[0].root == project_root
+    assert run_server.call_args.args == (bound_app,)
     assert run_server.call_args.kwargs["host"] == "127.0.0.1"
     assert run_server.call_args.kwargs["port"] == 43123
 
 
-def test_ui_no_open_starts_same_server_without_opening_browser():
+def test_ui_no_open_starts_same_bound_server_without_opening_browser(
+    tmp_path: Path, monkeypatch,
+):
     """`normflow ui --no-open` leaves browser launching to the user."""
+    project_root = init_project(str(tmp_path / "project"))
+    monkeypatch.chdir(project_root)
+    bound_app = object()
+
     with (
         patch("socket.socket") as socket_factory,
+        patch("normflow.api.create_app", return_value=bound_app),
         patch("uvicorn.run") as run_server,
         patch("webbrowser.open") as open_browser,
     ):
@@ -319,8 +337,64 @@ def test_ui_no_open_starts_same_server_without_opening_browser():
     assert url == "http://127.0.0.1:43124"
     local_socket.bind.assert_called_once_with(("127.0.0.1", 0))
     open_browser.assert_not_called()
+    assert run_server.call_args.args == (bound_app,)
     assert run_server.call_args.kwargs["host"] == "127.0.0.1"
     assert run_server.call_args.kwargs["port"] == 43124
+
+
+def test_ui_fixed_port_is_checked_and_used(tmp_path: Path, monkeypatch):
+    project_root = init_project(str(tmp_path / "project"))
+    monkeypatch.chdir(project_root)
+
+    with (
+        patch("socket.socket") as socket_factory,
+        patch("normflow.api.create_app", return_value=object()),
+        patch("uvicorn.run") as run_server,
+        patch("webbrowser.open"),
+    ):
+        result = runner.invoke(app, ["ui", "--port", "43125", "--no-open"])
+
+    assert result.exit_code == 0
+    local_socket = socket_factory.return_value.__enter__.return_value
+    local_socket.bind.assert_called_once_with(("127.0.0.1", 43125))
+    assert result.stdout.strip() == "http://127.0.0.1:43125"
+    assert run_server.call_args.kwargs == {"host": "127.0.0.1", "port": 43125}
+
+
+def test_ui_unavailable_fixed_port_fails_usefully(tmp_path: Path, monkeypatch):
+    project_root = init_project(str(tmp_path / "project"))
+    monkeypatch.chdir(project_root)
+
+    with (
+        patch("socket.socket") as socket_factory,
+        patch("uvicorn.run") as run_server,
+        patch("webbrowser.open") as open_browser,
+    ):
+        local_socket = socket_factory.return_value.__enter__.return_value
+        local_socket.bind.side_effect = OSError("Address already in use")
+        result = runner.invoke(app, ["ui", "--port", "43126"])
+
+    assert result.exit_code == 1
+    assert "43126" in result.stdout
+    assert "unavailable" in result.stdout.lower()
+    run_server.assert_not_called()
+    open_browser.assert_not_called()
+
+
+def test_ui_rejects_invalid_ports_and_host_selection(tmp_path: Path, monkeypatch):
+    project_root = init_project(str(tmp_path / "project"))
+    monkeypatch.chdir(project_root)
+
+    assert runner.invoke(app, ["ui", "--port", "0"]).exit_code != 0
+    assert runner.invoke(app, ["ui", "--port", "65536"]).exit_code != 0
+    assert runner.invoke(app, ["ui", "--host", "0.0.0.0"]).exit_code != 0
+
+
+def test_serve_command_is_not_public():
+    result = runner.invoke(app, ["serve"])
+
+    assert result.exit_code != 0
+    assert "No such command 'serve'" in result.output
 
 
 # ---- import tests ----

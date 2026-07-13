@@ -1,7 +1,7 @@
 import "./style.css";
 
 interface ProjectInfo {
-  workspace: string;
+  project: string;
   database: string;
   mappings: number;
   review_items: number;
@@ -13,7 +13,6 @@ interface ReviewItem {
   suggested_text: string;
 }
 
-const RECENTS_KEY = "normflow.recentProjects";
 let focusRefresh: (() => void) | undefined;
 
 function setFocusRefresh(refresh?: () => void): void {
@@ -26,31 +25,8 @@ function projectName(path: string): string {
   return path.split("/").filter(Boolean).at(-1) ?? path;
 }
 
-function recentProjects(): string[] {
-  try {
-    const value: unknown = JSON.parse(window.localStorage.getItem(RECENTS_KEY) ?? "[]");
-    return Array.isArray(value) ? value.filter((path): path is string => typeof path === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function rememberProject(path: string): void {
-  const recents = [path, ...recentProjects().filter((recent) => recent !== path)];
-  window.localStorage.setItem(RECENTS_KEY, JSON.stringify(recents));
-}
-
-function forgetProject(path: string): void {
-  window.localStorage.setItem(
-    RECENTS_KEY,
-    JSON.stringify(recentProjects().filter((recent) => recent !== path)),
-  );
-}
-
-async function fetchProject(path: string): Promise<ProjectInfo> {
-  const response = await fetch("/workspace/info", {
-    headers: { "X-Normflow-Workspace": path },
-  });
+async function fetchProject(): Promise<ProjectInfo> {
+  const response = await fetch("/project/info");
   if (!response.ok) {
     const error = await response.json() as { detail?: string };
     throw new Error(error.detail ?? `Could not open Project (${response.status}).`);
@@ -58,10 +34,8 @@ async function fetchProject(path: string): Promise<ProjectInfo> {
   return response.json() as Promise<ProjectInfo>;
 }
 
-async function fetchReviewItems(path: string): Promise<ReviewItem[]> {
-  const response = await fetch("/review-items", {
-    headers: { "X-Normflow-Workspace": path },
-  });
+async function fetchReviewItems(): Promise<ReviewItem[]> {
+  const response = await fetch("/review-items");
   if (!response.ok) {
     const error = await response.json() as { detail?: string };
     throw new Error(error.detail ?? `Could not load Review Items (${response.status}).`);
@@ -85,7 +59,6 @@ function updateProjectCounts(root: HTMLElement, project: ProjectInfo): void {
 
 async function acceptReviewItem(
   root: HTMLElement,
-  path: string,
   item: ReviewItem,
   row: HTMLTableRowElement,
 ): Promise<void> {
@@ -94,7 +67,6 @@ async function acceptReviewItem(
   try {
     const response = await fetch(`/review-items/${item.id}/accept`, {
       method: "POST",
-      headers: { "X-Normflow-Workspace": path },
     });
     if (!response.ok) {
       const error = await response.json() as { detail?: string };
@@ -105,19 +77,19 @@ async function acceptReviewItem(
     }
     row.remove();
     showNotice(root, `Review Item ${item.id} accepted.`);
-    await refreshProject(root, path);
+    await refreshProject(root);
   } catch (error) {
     const stale = error instanceof Error && "stale" in error && error.stale === true;
     showNotice(root, error instanceof Error ? error.message : "Could not accept Review Item.", true);
     if (stale) {
-      await refreshProject(root, path);
+      await refreshProject(root);
     } else {
       button.disabled = false;
     }
   }
 }
 
-function renderReviewItems(root: HTMLElement, path: string, items: ReviewItem[]): void {
+function renderReviewItems(root: HTMLElement, items: ReviewItem[]): void {
   const region = root.querySelector<HTMLElement>("#review-queue")!;
   if (!items.length) {
     region.innerHTML = '<p class="empty-state" role="status">No pending Review Items.</p>';
@@ -182,7 +154,6 @@ function renderReviewItems(root: HTMLElement, path: string, items: ReviewItem[])
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Normflow-Workspace": path,
         },
         body: JSON.stringify({ review_item_ids: reviewItemIds }),
       });
@@ -192,7 +163,7 @@ function renderReviewItems(root: HTMLElement, path: string, items: ReviewItem[])
       }
       const result = await response.json() as { accepted: number };
       showNotice(root, `Accepted ${result.accepted} Review Items.`);
-      await refreshProject(root, path);
+      await refreshProject(root);
     } catch (error) {
       showNotice(
         root,
@@ -222,7 +193,7 @@ function renderReviewItems(root: HTMLElement, path: string, items: ReviewItem[])
     const cancel = document.createElement("button");
     cancel.type = "button";
     cancel.textContent = "Cancel";
-    const cancelEdit = () => renderReviewItems(root, path, items);
+    const cancelEdit = () => renderReviewItems(root, items);
     const submitEdit = async () => {
       if (!input.value.trim()) {
         showNotice(root, "Normalized text must not be blank.", true);
@@ -235,7 +206,6 @@ function renderReviewItems(root: HTMLElement, path: string, items: ReviewItem[])
           `/review-items/${item.id}/edit-and-accept?normalized_text=${encodeURIComponent(input.value)}`,
           {
             method: "POST",
-            headers: { "X-Normflow-Workspace": path },
           },
         );
         if (!response.ok) {
@@ -243,7 +213,7 @@ function renderReviewItems(root: HTMLElement, path: string, items: ReviewItem[])
           throw new Error(error.detail ?? `Could not edit and accept Review Item (${response.status}).`);
         }
         showNotice(root, `Review Item ${item.id} accepted with edit.`);
-        await refreshProject(root, path);
+        await refreshProject(root);
       } catch (error) {
         showNotice(
           root,
@@ -293,7 +263,7 @@ function renderReviewItems(root: HTMLElement, path: string, items: ReviewItem[])
     accept.type = "button";
     accept.textContent = "Accept";
     accept.disabled = !item.suggested_text.trim();
-    accept.addEventListener("click", () => void acceptReviewItem(root, path, item, row));
+    accept.addEventListener("click", () => void acceptReviewItem(root, item, row));
     const edit = document.createElement("button");
     edit.type = "button";
     edit.dataset.action = "edit";
@@ -306,11 +276,11 @@ function renderReviewItems(root: HTMLElement, path: string, items: ReviewItem[])
   updateBulkControls();
 }
 
-async function refreshReviewItems(root: HTMLElement, path: string): Promise<void> {
+async function refreshReviewItems(root: HTMLElement): Promise<void> {
   const region = root.querySelector<HTMLElement>("#review-queue")!;
   region.innerHTML = '<p role="status">Loading Review Items…</p>';
   try {
-    renderReviewItems(root, path, await fetchReviewItems(path));
+    renderReviewItems(root, await fetchReviewItems());
   } catch (error) {
     region.innerHTML = "";
     const message = document.createElement("p");
@@ -320,10 +290,10 @@ async function refreshReviewItems(root: HTMLElement, path: string): Promise<void
   }
 }
 
-async function refreshProject(root: HTMLElement, path: string): Promise<void> {
-  const project = await fetchProject(path);
+async function refreshProject(root: HTMLElement): Promise<void> {
+  const project = await fetchProject();
   updateProjectCounts(root, project);
-  await refreshReviewItems(root, path);
+  await refreshReviewItems(root);
 }
 
 function showProject(root: HTMLElement, project: ProjectInfo): void {
@@ -331,13 +301,13 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
     <header>
       <div>
         <span class="eyebrow">Project</span>
-        <h1>${projectName(project.workspace)}</h1>
+        <h1>${projectName(project.project)}</h1>
+        <p class="project-path">${project.project}</p>
       </div>
       <div class="counts">
         <div><strong id="mapping-count">${project.mappings}</strong> Mappings</div>
         <div><strong id="review-item-count">${project.review_items}</strong> pending Review Items</div>
       </div>
-      <button type="button">Switch Project</button>
     </header>
     <main class="review-workspace">
       <div class="review-heading">
@@ -348,97 +318,31 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
       <section id="review-queue" aria-label="Review Items"></section>
     </main>
   `;
-  root.querySelector("header button")!.addEventListener("click", () => showProjectPicker(root));
   root.querySelector("#refresh-review-items")!.addEventListener(
     "click",
-    () => void refreshProject(root, project.workspace),
+    () => void refreshProject(root),
   );
-  setFocusRefresh(() => void refreshProject(root, project.workspace));
-  void refreshReviewItems(root, project.workspace);
+  setFocusRefresh(() => void refreshProject(root));
+  void refreshReviewItems(root);
 }
 
-function showProjectPicker(root: HTMLElement): void {
+async function loadBoundProject(root: HTMLElement): Promise<void> {
   setFocusRefresh();
-  root.innerHTML = `
-    <main class="picker">
-      <p class="eyebrow">Local normalization workbench</p>
-      <h1>Open a Project</h1>
-      <p>Enter the folder containing your NormFlow Project.</p>
-      <form>
-        <label for="project-path">Project folder path</label>
-        <div class="field-row">
-          <input id="project-path" name="project-path" autocomplete="off" required />
-          <button type="submit">Open Project</button>
-        </div>
-      </form>
-    </main>
-  `;
-
-  root.querySelector("form")!.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const path = root.querySelector<HTMLInputElement>("#project-path")!.value;
-    root.querySelector("[role=alert]")?.remove();
-    try {
-      const project = await fetchProject(path);
-      rememberProject(project.workspace);
-      showProject(root, project);
-    } catch (error) {
-      const message = document.createElement("p");
-      message.role = "alert";
-      message.textContent = error instanceof Error ? error.message : "Could not open Project.";
-      root.querySelector("form")!.append(message);
-    }
-  });
-
-  const recents = recentProjects();
-  if (recents.length) {
-    const section = document.createElement("section");
-    section.className = "recents";
-    const heading = document.createElement("h2");
-    heading.textContent = "Recent Projects";
-    section.append(heading);
-    for (const path of recents) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = `${projectName(path)} — ${path}`;
-      button.addEventListener("click", async () => {
-        try {
-          const project = await fetchProject(path);
-          rememberProject(project.workspace);
-          showProject(root, project);
-        } catch (error) {
-          forgetProject(path);
-          const message = document.createElement("p");
-          message.role = "alert";
-          message.textContent = error instanceof Error ? error.message : "Could not open Project.";
-          section.append(message);
-          button.remove();
-        }
-      });
-      section.append(button);
-    }
-    root.querySelector("main")!.append(section);
-  }
-}
-
-async function reopenRecentProject(root: HTMLElement): Promise<void> {
-  for (const path of recentProjects()) {
-    try {
-      const project = await fetchProject(path);
-      rememberProject(project.workspace);
-      showProject(root, project);
-      return;
-    } catch {
-      forgetProject(path);
-    }
+  root.innerHTML = '<main class="review-workspace"><p role="status">Loading Project…</p></main>';
+  try {
+    showProject(root, await fetchProject());
+  } catch (error) {
+    const message = document.createElement("p");
+    message.role = "alert";
+    message.textContent = error instanceof Error ? error.message : "Could not load Project.";
+    root.replaceChildren(message);
   }
 }
 
 export function startApp(): void {
   const root = document.querySelector<HTMLElement>("#app");
   if (!root) return;
-  showProjectPicker(root);
-  void reopenRecentProject(root);
+  void loadBoundProject(root);
 }
 
 startApp();
