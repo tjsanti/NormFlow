@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+from contextlib import chdir
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,9 +12,31 @@ from tests.helpers import seed_mappings
 from normflow.cli import app
 from normflow.mapping_service import ExampleMapping, MappingService
 from normflow.semantic_index import SemanticIndex
-from normflow.workspace import init_workspace
+from normflow.workspace import init_workspace as _init_project
 
-runner = CliRunner()
+_active_project: Path | None = None
+
+
+def init_workspace(path: str | Path) -> Path:
+    global _active_project
+    _active_project = _init_project(path)
+    return _active_project
+
+
+class ProjectCliRunner(CliRunner):
+    def invoke(self, cli, args=None, **kwargs):
+        if (
+            args
+            and args[0] in {"suggest", "index"}
+            and _active_project is not None
+            and _active_project.is_dir()
+        ):
+            with chdir(_active_project):
+                return super().invoke(cli, args, **kwargs)
+        return super().invoke(cli, args, **kwargs)
+
+
+runner = ProjectCliRunner()
 _INDEX_PATCH = "normflow.semantic_index._ensure_model"
 
 
@@ -145,12 +168,12 @@ class TestSuggestCLI:
             init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color")])
 
-            result = runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])
+            result = runner.invoke(app, ["index", "build"])
             assert result.exit_code == 0
 
             result = runner.invoke(
                 app,
-                ["suggest", "--workspace", str(ws_path), "colr", "--semantic-threshold", "0.5"],
+                ["suggest", "colr", "--semantic-threshold", "0.5"],
             )
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -165,7 +188,7 @@ class TestSuggestCLI:
 
             result = runner.invoke(
                 app,
-                ["suggest", "--workspace", str(ws_path), "colr", "--no-semantic"],
+                ["suggest", "colr", "--no-semantic"],
             )
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -179,7 +202,7 @@ class TestSuggestCLI:
 
             result = runner.invoke(
                 app,
-                ["suggest", "--workspace", str(ws_path), "colour"],
+                ["suggest", "colour"],
             )
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -203,7 +226,7 @@ class TestIndexCLI:
             init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color"), ("centre", "center")])
 
-            result = runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])
+            result = runner.invoke(app, ["index", "build"])
             assert result.exit_code == 0
             assert "2" in result.stdout
 
@@ -221,11 +244,11 @@ class TestIndexCLI:
             init_workspace(str(ws_path))
             seed_mappings(ws_path, [("colour", "color")])
 
-            runner.invoke(app, ["index", "build", "--workspace", str(ws_path)])
-            result = runner.invoke(app, ["index", "clear", "--workspace", str(ws_path)])
+            runner.invoke(app, ["index", "build"])
+            result = runner.invoke(app, ["index", "clear"])
             assert result.exit_code == 0
 
     def test_index_build_invalid_workspace(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = runner.invoke(app, ["index", "build", "--workspace", tmpdir])
+            result = runner.invoke(app, ["index", "build"])
             assert result.exit_code != 0

@@ -12,10 +12,36 @@ from typer.testing import CliRunner
 
 from normflow.cli import app
 from normflow.mapping_service import ExampleMapping, MappingService
-from normflow.workspace import init_workspace as init_project
+from normflow.workspace import init_workspace
 
 
-runner = CliRunner()
+_active_project: Path | None = None
+
+
+def init_project(path: str | Path) -> Path:
+    """Initialize and remember the Project used by a CLI adapter test."""
+    global _active_project
+    _active_project = init_workspace(path)
+    return _active_project
+
+
+class ProjectCliRunner(CliRunner):
+    """Invoke Project-dependent commands from the initialized Project root."""
+
+    def invoke(self, cli, args=None, **kwargs):
+        project_commands = {"import", "export", "suggest", "suggest-batch", "review", "index"}
+        if (
+            args
+            and args[0] in project_commands
+            and _active_project is not None
+            and _active_project.is_dir()
+        ):
+            with chdir(_active_project):
+                return super().invoke(cli, args, **kwargs)
+        return super().invoke(cli, args, **kwargs)
+
+
+runner = ProjectCliRunner()
 
 
 def test_cli_help():
@@ -316,7 +342,7 @@ def test_import_creates_mappings():
 
         result = runner.invoke(
             app,
-            ["import", "--workspace", str(ws_path), str(csv_path), "--source-column", "source", "--target-column", "target"],
+            ["import", str(csv_path), "--source-column", "source", "--target-column", "target"],
         )
         assert result.exit_code == 0
         assert "Imported 3" in result.stdout
@@ -334,7 +360,7 @@ def test_import_skips_duplicates():
         # First import
         r1 = runner.invoke(
             app,
-            ["import", "--workspace", str(ws_path), str(csv_path), "--source-column", "source", "--target-column", "target"],
+            ["import", str(csv_path), "--source-column", "source", "--target-column", "target"],
         )
         assert r1.exit_code == 0
         assert "Imported 2" in r1.stdout
@@ -342,7 +368,7 @@ def test_import_skips_duplicates():
         # Second import same file
         r2 = runner.invoke(
             app,
-            ["import", "--workspace", str(ws_path), str(csv_path), "--source-column", "source", "--target-column", "target"],
+            ["import", str(csv_path), "--source-column", "source", "--target-column", "target"],
         )
         assert r2.exit_code == 0
         assert "0 new" in r2.stdout
@@ -360,7 +386,7 @@ def test_import_invalid_column():
 
         result = runner.invoke(
             app,
-            ["import", "--workspace", str(ws_path), str(csv_path), "--source-column", "source", "--target-column", "target"],
+            ["import", str(csv_path), "--source-column", "source", "--target-column", "target"],
         )
         assert result.exit_code != 0
         assert "source" in result.stdout.lower() or "column" in result.stdout.lower()
@@ -377,7 +403,7 @@ def test_import_skips_empty_rows():
 
         result = runner.invoke(
             app,
-            ["import", "--workspace", str(ws_path), str(csv_path), "--source-column", "source", "--target-column", "target"],
+            ["import", str(csv_path), "--source-column", "source", "--target-column", "target"],
         )
         assert result.exit_code == 0
         assert "Imported 2" in result.stdout
@@ -403,7 +429,7 @@ def test_export_writes_csv():
 
         result = runner.invoke(
             app,
-            ["export", "--workspace", str(ws_path), str(csv_path)],
+            ["export", str(csv_path)],
         )
         assert result.exit_code == 0
         assert "Exported 2" in result.stdout
@@ -430,7 +456,7 @@ def test_export_custom_columns():
 
         result = runner.invoke(
             app,
-            ["export", "--workspace", str(ws_path), str(csv_path), "--source-column", "src", "--target-column", "tgt"],
+            ["export", str(csv_path), "--source-column", "src", "--target-column", "tgt"],
         )
         assert result.exit_code == 0
         content = csv_path.read_text()
@@ -451,19 +477,19 @@ def test_import_export_round_trip():
 
         runner.invoke(
             app,
-            ["import", "--workspace", str(ws_path), str(input_csv), "--source-column", "source", "--target-column", "target"],
+            ["import", str(input_csv), "--source-column", "source", "--target-column", "target"],
         )
 
         result = runner.invoke(
             app,
-            ["export", "--workspace", str(ws_path), str(output_csv)],
+            ["export", str(output_csv)],
         )
         assert result.exit_code == 0
 
         # Round-trip: import again from exported file should be 0 new
         result2 = runner.invoke(
             app,
-            ["import", "--workspace", str(ws_path), str(output_csv), "--source-column", "raw_text", "--target-column", "normalized_text"],
+            ["import", str(output_csv), "--source-column", "raw_text", "--target-column", "normalized_text"],
         )
         assert result2.exit_code == 0
         assert "0 new" in result2.stdout
@@ -486,7 +512,7 @@ def test_suggest_exact_match_found():
 
         result = runner.invoke(
             app,
-            ["suggest", "--workspace", str(ws_path), "colour"],
+            ["suggest", "colour"],
         )
         assert result.exit_code == 0
 
@@ -512,7 +538,7 @@ def test_suggest_no_match_found():
 
         result = runner.invoke(
             app,
-            ["suggest", "--workspace", str(ws_path), "colr"],
+            ["suggest", "colr"],
         )
         assert result.exit_code == 0
 
@@ -535,7 +561,7 @@ def test_suggest_limit_respected():
 
         result = runner.invoke(
             app,
-            ["suggest", "--workspace", str(ws_path), "colour", "--limit", "0"],
+            ["suggest", "colour", "--limit", "0"],
         )
         assert result.exit_code == 0
 
@@ -557,7 +583,7 @@ def test_suggest_limit_default():
 
         result = runner.invoke(
             app,
-            ["suggest", "--workspace", str(ws_path), "colour", "--limit", "5"],
+            ["suggest", "colour", "--limit", "5"],
         )
         assert result.exit_code == 0
 
@@ -570,7 +596,7 @@ def test_suggest_invalid_workspace():
     with tempfile.TemporaryDirectory() as tmpdir:
         result = runner.invoke(
             app,
-            ["suggest", "--workspace", tmpdir, "colour"],
+            ["suggest", "colour"],
         )
         assert result.exit_code != 0
 
@@ -598,7 +624,7 @@ def test_suggest_batch_basic():
 
         result = runner.invoke(
             app,
-            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "item"],
+            ["suggest-batch", str(csv_path), "--column", "item"],
         )
         assert result.exit_code == 0
 
@@ -630,7 +656,7 @@ def test_suggest_batch_no_match_blank():
 
         result = runner.invoke(
             app,
-            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text"],
+            ["suggest-batch", str(csv_path), "--column", "text"],
         )
         assert result.exit_code == 0
 
@@ -659,7 +685,7 @@ def test_suggest_batch_custom_output_column():
 
         result = runner.invoke(
             app,
-            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text", "--output-column", "mapping"],
+            ["suggest-batch", str(csv_path), "--column", "text", "--output-column", "mapping"],
         )
         assert result.exit_code == 0
         assert "mapping" in result.stdout
@@ -684,7 +710,7 @@ def test_suggest_batch_output_to_file():
 
         result = runner.invoke(
             app,
-            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text", "--output", str(out_path)],
+            ["suggest-batch", str(csv_path), "--column", "text", "--output", str(out_path)],
         )
         assert result.exit_code == 0
         assert out_path.exists()
@@ -709,7 +735,7 @@ def test_suggest_batch_excludes_entirely_blank_rows():
 
         result = runner.invoke(
             app,
-            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text"],
+            ["suggest-batch", str(csv_path), "--column", "text"],
         )
         assert result.exit_code == 0
 
@@ -736,7 +762,7 @@ def test_suggest_batch_includes_partial_rows_skips_processing():
 
         result = runner.invoke(
             app,
-            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text"],
+            ["suggest-batch", str(csv_path), "--column", "text"],
         )
         assert result.exit_code == 0
 
@@ -764,7 +790,7 @@ def test_suggest_batch_preserves_extra_columns():
 
         result = runner.invoke(
             app,
-            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text"],
+            ["suggest-batch", str(csv_path), "--column", "text"],
         )
         assert result.exit_code == 0
 
@@ -785,7 +811,7 @@ def test_suggest_batch_invalid_workspace():
 
         result = runner.invoke(
             app,
-            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "text"],
+            ["suggest-batch", str(csv_path), "--column", "text"],
         )
         assert result.exit_code != 0
 
@@ -801,7 +827,7 @@ def test_suggest_batch_missing_column():
 
         result = runner.invoke(
             app,
-            ["suggest-batch", "--workspace", str(ws_path), str(csv_path), "--column", "missing"],
+            ["suggest-batch", str(csv_path), "--column", "missing"],
         )
         assert result.exit_code != 0
 
@@ -815,7 +841,7 @@ def test_suggest_batch_missing_input_file():
 
         result = runner.invoke(
             app,
-            ["suggest-batch", "--workspace", str(ws_path), "nonexistent.csv", "--column", "text"],
+            ["suggest-batch", "nonexistent.csv", "--column", "text"],
         )
         assert result.exit_code != 0
 
@@ -850,7 +876,7 @@ def test_review_list_shows_review_items():
 
         result = runner.invoke(
             app,
-            ["review", "list", "--workspace", str(ws_path)],
+            ["review", "list"],
         )
         assert result.exit_code == 0
         assert "o2 sensor" in result.stdout
@@ -866,7 +892,7 @@ def test_review_list_empty_when_no_pending():
 
         result = runner.invoke(
             app,
-            ["review", "list", "--workspace", str(ws_path)],
+            ["review", "list"],
         )
         assert result.exit_code == 0
 
@@ -883,7 +909,7 @@ def test_review_list_json_output():
 
         result = runner.invoke(
             app,
-            ["review", "list", "--workspace", str(ws_path), "--json"],
+            ["review", "list", "--json"],
         )
         assert result.exit_code == 0
         data = json.loads(result.stdout)
@@ -905,7 +931,7 @@ def test_review_accept_inserts_mapping_and_removes_review_item():
 
         result = runner.invoke(
             app,
-            ["review", "accept", "--workspace", str(ws_path), "--record-id", "1"],
+            ["review", "accept", "--record-id", "1"],
         )
         assert result.exit_code == 0
         assert "Review Item 1 accepted." in result.stdout
@@ -929,7 +955,7 @@ def test_review_edit_and_accept_inserts_mapping_with_custom_text():
 
         result = runner.invoke(
             app,
-            ["review", "edit-and-accept", "--workspace", str(ws_path), "--record-id", "1", "--normalized-text", "Oxygen Sensor"],
+            ["review", "edit-and-accept", "--record-id", "1", "--normalized-text", "Oxygen Sensor"],
         )
         assert result.exit_code == 0
         assert "Review Item 1 accepted with edit." in result.stdout
@@ -962,13 +988,13 @@ def test_review_accept_removed_item_fails():
 
         first = runner.invoke(
             app,
-            ["review", "accept", "--workspace", str(ws_path), "--record-id", "1"],
+            ["review", "accept", "--record-id", "1"],
         )
         assert first.exit_code == 0
 
         result = runner.invoke(
             app,
-            ["review", "accept", "--workspace", str(ws_path), "--record-id", "1"],
+            ["review", "accept", "--record-id", "1"],
         )
         assert result.exit_code != 0
 
@@ -981,6 +1007,6 @@ def test_review_edit_and_accept_invalid_record_id_fails():
 
         result = runner.invoke(
             app,
-            ["review", "edit-and-accept", "--workspace", str(ws_path), "--record-id", "999", "--normalized-text", "Something"],
+            ["review", "edit-and-accept", "--record-id", "999", "--normalized-text", "Something"],
         )
         assert result.exit_code != 0

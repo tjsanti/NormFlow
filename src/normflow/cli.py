@@ -17,12 +17,10 @@ app = typer.Typer(
     add_completion=False,
 )
 
-_ws_opt = typer.Option(..., "--workspace", "-w", help="Path to the NormFlow project workspace.")
-
-
-def _ms(workspace: str) -> MappingService:
-    """Get a MappingService for the workspace."""
-    return MappingService(workspace)
+def _project_service() -> MappingService:
+    """Return the service for the Project selected by the process directory."""
+    project = resolve_project(Path.cwd())
+    return MappingService(str(project.root))
 
 
 @app.command()
@@ -96,11 +94,12 @@ def import_cmd(
     csv_path: str = typer.Argument(..., help="Path to the CSV file to import."),
     source_column: str = typer.Option(..., "--source-column", help="CSV header name for raw_text values."),
     target_column: str = typer.Option(..., "--target-column", help="CSV header name for normalized_text values."),
-    workspace: str = _ws_opt,
 ) -> None:
-    """Import mappings from a CSV file into the workspace database."""
+    """Import Mappings from a CSV file into the active Project."""
     try:
-        imported, skipped = _ms(workspace).import_mappings(csv_path, source_column, target_column)
+        imported, skipped = _project_service().import_mappings(
+            csv_path, source_column, target_column,
+        )
         print(f"Imported {imported} new mappings. {skipped} skipped.")
     except (ValueError, FileNotFoundError) as e:
         print(f"Error: {e}")
@@ -112,11 +111,12 @@ def export_cmd(
     csv_path: str = typer.Argument(..., help="Path to export mappings to."),
     source_column: str = typer.Option("raw_text", "--source-column", help="CSV header name for raw_text column."),
     target_column: str = typer.Option("normalized_text", "--target-column", help="CSV header name for normalized_text column."),
-    workspace: str = _ws_opt,
 ) -> None:
-    """Export mappings from the workspace database to a CSV file."""
+    """Export Mappings from the active Project to a CSV file."""
     try:
-        count = _ms(workspace).export_mappings(csv_path, source_column, target_column)
+        count = _project_service().export_mappings(
+            csv_path, source_column, target_column,
+        )
         print(f"Exported {count} mappings to {csv_path}")
     except (ValueError, FileNotFoundError) as e:
         print(f"Error: {e}")
@@ -130,11 +130,10 @@ def suggest_cmd(
     no_semantic: bool = typer.Option(False, "--no-semantic", help="Disable semantic matching fallback."),
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM matching fallback."),
     semantic_threshold: float = typer.Option(0.85, "--semantic-threshold", help="Minimum cosine similarity for semantic matches."),
-    workspace: str = _ws_opt,
 ) -> None:
-    """Return normalization suggestions for a single raw text value."""
+    """Return Suggestions for a single raw text value."""
     try:
-        items = _ms(workspace).lookup(
+        items = _project_service().lookup(
             raw_text, semantic=not no_semantic, llm=not no_llm, threshold=semantic_threshold, limit=limit,
         )
         import json as _json
@@ -153,11 +152,10 @@ def suggest_batch_cmd(
     no_semantic: bool = typer.Option(False, "--no-semantic", help="Disable semantic matching fallback."),
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM matching fallback."),
     semantic_threshold: float = typer.Option(0.85, "--semantic-threshold", help="Minimum cosine similarity for semantic matches."),
-    workspace: str = _ws_opt,
 ) -> None:
-    """Batch-suggest normalizations for all rows in a CSV file."""
+    """Suggest normalized text for every row in a CSV file."""
     try:
-        result_csv = _ms(workspace).lookup_batch(
+        result_csv = _project_service().lookup_batch(
             csv_path, column, output_column, semantic=not no_semantic, llm=not no_llm, threshold=semantic_threshold,
         )
         if output:
@@ -182,11 +180,10 @@ review_app = typer.Typer(
 @review_app.command(name="list")
 def list_review_items(
     as_json: bool = typer.Option(False, "--json", help="Output as JSON instead of a table."),
-    workspace: str = _ws_opt,
 ) -> None:
     """List pending Review Items."""
     try:
-        items = _ms(workspace).list_review_items()
+        items = _project_service().list_review_items()
     except ValueError as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from None
@@ -202,11 +199,10 @@ def list_review_items(
 @review_app.command()
 def accept(
     record_id: int = typer.Option(..., "--record-id", help="ID of the Review Item to accept."),
-    workspace: str = _ws_opt,
 ) -> None:
-    """Accept a Review Item, inserting it into the mapping library."""
+    """Accept a Review Item, inserting it into the Mapping library."""
     try:
-        _ms(workspace).accept_review_item(record_id)
+        _project_service().accept_review_item(record_id)
         print(f"Review Item {record_id} accepted.")
     except ValueError as e:
         print(f"Error: {e}")
@@ -217,11 +213,10 @@ def accept(
 def edit_and_accept(
     record_id: int = typer.Option(..., "--record-id", help="ID of the Review Item to edit and accept."),
     normalized_text: str = typer.Option(..., "--normalized-text", help="Edited normalized text to store."),
-    workspace: str = _ws_opt,
 ) -> None:
     """Edit and accept a Review Item."""
     try:
-        _ms(workspace).edit_and_accept_review_item(record_id, normalized_text)
+        _project_service().edit_and_accept_review_item(record_id, normalized_text)
         print(f"Review Item {record_id} accepted with edit.")
     except ValueError as e:
         print(f"Error: {e}")
@@ -240,10 +235,10 @@ index_app = typer.Typer(
 
 
 @index_app.command(name="build")
-def index_build(workspace: str = _ws_opt) -> None:
-    """Build or rebuild the FAISS semantic search index from current mappings."""
+def index_build() -> None:
+    """Build or rebuild the FAISS semantic search index from current Mappings."""
     try:
-        count = _ms(workspace).build_index()
+        count = _project_service().build_index()
         print(f"Index built with {count} entries.")
     except ValueError as e:
         print(f"Error: {e}")
@@ -251,10 +246,10 @@ def index_build(workspace: str = _ws_opt) -> None:
 
 
 @index_app.command(name="clear")
-def index_clear(workspace: str = _ws_opt) -> None:
+def index_clear() -> None:
     """Remove the persisted FAISS index."""
     try:
-        _ms(workspace).clear_index()
+        _project_service().clear_index()
         print("Index cleared.")
     except ValueError as e:
         print(f"Error: {e}")

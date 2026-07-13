@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+from contextlib import chdir
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,9 +12,31 @@ from tests.helpers import seed_mappings
 from normflow.cli import app
 from normflow.mapping_service import MappingService
 from normflow.semantic_index import SemanticIndex
-from normflow.workspace import init_workspace
+from normflow.workspace import init_workspace as _init_project
 
-runner = CliRunner()
+_active_project: Path | None = None
+
+
+def init_workspace(path: str | Path) -> Path:
+    global _active_project
+    _active_project = _init_project(path)
+    return _active_project
+
+
+class ProjectCliRunner(CliRunner):
+    def invoke(self, cli, args=None, **kwargs):
+        if (
+            args
+            and args[0] in {"suggest", "index"}
+            and _active_project is not None
+            and _active_project.is_dir()
+        ):
+            with chdir(_active_project):
+                return super().invoke(cli, args, **kwargs)
+        return super().invoke(cli, args, **kwargs)
+
+
+runner = ProjectCliRunner()
 
 
 def _make_mock_encoder(low_sim: bool = False):
@@ -164,7 +187,7 @@ class TestSuggestLLMFallback:
 
             result = runner.invoke(
                 app,
-                ["suggest", "--workspace", str(ws_path), "colr", "--no-semantic", "--no-llm"],
+                ["suggest", "colr", "--no-semantic", "--no-llm"],
             )
             assert result.exit_code == 0
             data = json.loads(result.stdout)
