@@ -1043,20 +1043,12 @@ def test_review_accept_inserts_mapping_with_replacement_text():
         assert result.exit_code == 0
         assert "Review Item 1 accepted." in result.stdout
 
-        # Verify mapping was inserted with edited text
-        with chdir(project_path):
-            info_result = runner.invoke(app, ["info"])
-        assert "Mappings:   1" in info_result.stdout
-
-        # Verify the mapping has the custom text
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            from sqlmodel import select
-            mapping = session.exec(
-                select(ExampleMapping).where(ExampleMapping.raw_text == "o2 sensor")
-            ).first()
-        assert mapping is not None
-        assert mapping.normalized_text == "Oxygen Sensor"
+        suggestion_result = runner.invoke(
+            app,
+            ["suggest", "o2 sensor", "--no-semantic", "--no-llm"],
+        )
+        suggestion = json.loads(suggestion_result.stdout)
+        assert suggestion["suggestions"][0]["suggested_text"] == "Oxygen Sensor"
 
 
 def test_legacy_review_accept_command_and_option_are_unavailable():
