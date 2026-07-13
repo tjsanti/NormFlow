@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import tempfile
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictInt
@@ -16,8 +16,9 @@ from .mapping_service import (
     MappingService,
     ReviewItemNotFoundError,
 )
+from .project import Project
 
-app = FastAPI(title="NormFlow", redirect_slashes=False)
+router = APIRouter()
 
 
 class BulkAcceptRequest(BaseModel):
@@ -26,6 +27,13 @@ class BulkAcceptRequest(BaseModel):
 
 class BulkAcceptResponse(BaseModel):
     accepted: int
+
+
+class ProjectInfoResponse(BaseModel):
+    project: str
+    database: str
+    mappings: int
+    review_items: int
 
 
 @asynccontextmanager
@@ -43,58 +51,57 @@ async def _temporary_upload_csv(file: UploadFile | None):
         csv_path.unlink(missing_ok=True)
 
 
-def _get_workspace(workspace: str = Header(alias="X-Normflow-Workspace")) -> MappingService:
-    """Extract workspace from X-Normflow-Workspace header."""
-    try:
-        return MappingService(workspace)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+def get_project_service(request: Request) -> MappingService:
+    """Return the canonical Project service bound to this application."""
+    return request.app.state.project_service
 
 
-@app.get("/workspace/info")
-def workspace_info(ms: MappingService = Depends(_get_workspace)):
-    return ms.workspace_info()
+@router.get("/project/info", response_model=ProjectInfoResponse)
+def project_info(
+    service: MappingService = Depends(get_project_service),
+) -> ProjectInfoResponse:
+    return ProjectInfoResponse(**service.project_info())
 
 
-@app.post("/import/mappings")
+@router.post("/import/mappings")
 async def import_mappings(
     source_column: str = Query(...),
     target_column: str = Query(...),
     file: UploadFile = None,
-    ms: MappingService = Depends(_get_workspace),
+    service: MappingService = Depends(get_project_service),
 ):
     async with _temporary_upload_csv(file) as csv_path:
-        imported, skipped = ms.import_mappings(str(csv_path), source_column, target_column)
+        imported, skipped = service.import_mappings(str(csv_path), source_column, target_column)
         return {"imported": imported, "skipped": skipped}
 
 
-@app.post("/import/records")
+@router.post("/import/records")
 async def import_records(
     column: str = Query(...),
     semantic: bool = Query(True),
     llm: bool = Query(True),
     threshold: float = Query(0.85),
     file: UploadFile = None,
-    ms: MappingService = Depends(_get_workspace),
+    service: MappingService = Depends(get_project_service),
 ):
     async with _temporary_upload_csv(file) as csv_path:
-        return ms.import_records_for_review(
+        return service.import_records_for_review(
             str(csv_path), column, semantic=semantic, llm=llm, threshold=threshold
         )
 
 
-@app.get("/review-items")
-def list_review_items(ms: MappingService = Depends(_get_workspace)):
-    return ms.list_review_items()
+@router.get("/review-items")
+def list_review_items(service: MappingService = Depends(get_project_service)):
+    return service.list_review_items()
 
 
-@app.post("/review-items/bulk-accept", response_model=BulkAcceptResponse)
+@router.post("/review-items/bulk-accept", response_model=BulkAcceptResponse)
 def bulk_accept_review_items(
     request: BulkAcceptRequest,
-    ms: MappingService = Depends(_get_workspace),
+    service: MappingService = Depends(get_project_service),
 ):
     try:
-        result = ms.accept_review_items(request.review_item_ids)
+        result = service.accept_review_items(request.review_item_ids)
         return BulkAcceptResponse(accepted=result.accepted)
     except BulkAcceptStaleItemsError as error:
         raise HTTPException(status_code=409, detail=str(error))
@@ -104,10 +111,13 @@ def bulk_accept_review_items(
         raise HTTPException(status_code=422, detail=str(error))
 
 
-@app.post("/review-items/{record_id}/accept")
-def accept_review_item(record_id: int, ms: MappingService = Depends(_get_workspace)):
+@router.post("/review-items/{record_id}/accept")
+def accept_review_item(
+    record_id: int,
+    service: MappingService = Depends(get_project_service),
+):
     try:
-        ms.accept_review_item(record_id)
+        service.accept_review_item(record_id)
         return {"status": "accepted"}
     except ReviewItemNotFoundError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -115,14 +125,14 @@ def accept_review_item(record_id: int, ms: MappingService = Depends(_get_workspa
         raise HTTPException(status_code=422, detail=str(e))
 
 
-@app.post("/review-items/{record_id}/edit-and-accept")
+@router.post("/review-items/{record_id}/edit-and-accept")
 def edit_and_accept_review_item(
     record_id: int,
     normalized_text: str = Query(...),
-    ms: MappingService = Depends(_get_workspace),
+    service: MappingService = Depends(get_project_service),
 ):
     try:
-        ms.edit_and_accept_review_item(record_id, normalized_text)
+        service.edit_and_accept_review_item(record_id, normalized_text)
         return {"status": "accepted"}
     except ReviewItemNotFoundError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -130,23 +140,23 @@ def edit_and_accept_review_item(
         raise HTTPException(status_code=422, detail=str(e))
 
 
-@app.post("/export")
+@router.post("/export")
 def export_normalized(
     source_column: str = Query("raw_text"),
     output_column: str = Query("normalized_text"),
-    ms: MappingService = Depends(_get_workspace),
+    service: MappingService = Depends(get_project_service),
 ):
     try:
-        csv_content = ms.export_normalized_csv(source_column, output_column)
+        csv_content = service.export_normalized_csv(source_column, output_column)
         return PlainTextResponse(content=csv_content, media_type="text/csv")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/index/build")
-def build_index(ms: MappingService = Depends(_get_workspace)):
+@router.post("/index/build")
+def build_index(service: MappingService = Depends(get_project_service)):
     try:
-        count = ms.build_index()
+        count = service.build_index()
         return {"entries": count}
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -155,9 +165,23 @@ def build_index(ms: MappingService = Depends(_get_workspace)):
 _static_dir = Path(__file__).with_name("static")
 
 
-@app.get("/", include_in_schema=False)
+@router.get("/", include_in_schema=False)
 def ui_index():
     return FileResponse(_static_dir / "index.html")
 
 
-app.mount("/assets", StaticFiles(directory=_static_dir / "assets"), name="ui-assets")
+def create_app(project: Project) -> FastAPI:
+    """Construct an HTTP application bound to one canonical Project."""
+    project_app = FastAPI(title="NormFlow", redirect_slashes=False)
+    project_app.state.project_service = MappingService(str(project.root))
+    project_app.include_router(router)
+    project_app.mount(
+        "/assets",
+        StaticFiles(directory=_static_dir / "assets"),
+        name="ui-assets",
+    )
+    return project_app
+
+
+# Kept as an import-compatible shell until CLI launch binds a discovered Project.
+app = FastAPI(title="NormFlow", redirect_slashes=False)

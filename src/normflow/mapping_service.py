@@ -141,6 +141,16 @@ class MappingService:
             "review_items": review_item_count,
         }
 
+    def project_info(self) -> dict[str, str | int]:
+        """Return canonical Project identity and current statistics."""
+        info = self.workspace_info()
+        return {
+            "project": info["workspace"],
+            "database": info["database"],
+            "mappings": info["mappings"],
+            "review_items": info["review_items"],
+        }
+
     # ------------------------------------------------------------------
     # CSV import / export
     # ------------------------------------------------------------------
