@@ -19,6 +19,11 @@ build/
 # Testing
 .pytest_cache/
 
+# Frontend
+node_modules/
+!src/normflow/static/
+!src/normflow/static/**
+
 # Runtime
 normflow.db
 input/

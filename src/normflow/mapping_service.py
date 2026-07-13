@@ -8,14 +8,40 @@ model imports are internal.
 import csv
 import io
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
 
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Field as SField, SQLModel, Session, create_engine, func, select
 
 from .semantic_index import SemanticIndex
 from .suggestion_lookup import SuggestionItem, SuggestionLookup
+
+
+class ReviewItemNotFoundError(ValueError):
+    """The requested Review Item is no longer pending."""
+
+
+class BulkAcceptError(ValueError):
+    """A selected Review Item bulk acceptance could not be committed."""
+
+
+class BulkAcceptStaleItemsError(BulkAcceptError):
+    """One or more selected Review Items are no longer pending."""
+
+
+class BulkAcceptPersistenceError(BulkAcceptError):
+    """Mappings for selected Review Items could not be persisted."""
+
+
+@dataclass(frozen=True)
+class BulkAcceptResult:
+    """Outcome of atomically accepting selected Review Items."""
+
+    accepted: int
 
 # ---------------------------------------------------------------------------
 # Internal models
@@ -30,13 +56,14 @@ class ExampleMapping(SQLModel, table=True):
     normalized_text: str
 
 
-class Suggestion(SQLModel, table=True):
-    """A system-generated candidate for a raw_text record."""
+class ReviewItem(SQLModel, table=True):
+    """A raw text input awaiting human review."""
+
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: int | None = SField(default=None, primary_key=True)
     raw_text: str = SField(index=True)
     suggested_text: str
-    status: str = SField(default="pending")
     created_at: datetime = SField(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -58,6 +85,25 @@ class MappingService:
         self._db_path = self._path / "normflow.db"
         self._engine = _make_engine(str(self._db_path))
         self.validate()
+        self._migrate_legacy_suggestions()
+
+    def _migrate_legacy_suggestions(self) -> None:
+        """Upgrade the former queue-specific Suggestion table in place."""
+        if "suggestion" not in inspect(self._engine).get_table_names():
+            return
+
+        with self._engine.begin() as connection:
+            ReviewItem.__table__.create(connection, checkfirst=True)
+            connection.execute(text(
+                """
+                INSERT INTO reviewitem (id, raw_text, suggested_text, created_at)
+                SELECT id, raw_text, suggested_text, created_at
+                FROM suggestion
+                WHERE status = 'pending'
+                ORDER BY created_at, id
+                """
+            ))
+            connection.execute(text("DROP TABLE suggestion"))
 
     def validate(self) -> None:
         if not self._db_path.exists():
@@ -84,15 +130,15 @@ class MappingService:
             mapping_count = session.exec(
                 select(func.count(ExampleMapping.id))
             ).one()
-            suggestion_count = session.exec(
-                select(func.count(Suggestion.id))
+            review_item_count = session.exec(
+                select(func.count(ReviewItem.id))
             ).one()
 
         return {
             "workspace": str(self._path),
             "database": str(self._db_path),
             "mappings": mapping_count,
-            "suggestions": suggestion_count,
+            "review_items": review_item_count,
         }
 
     # ------------------------------------------------------------------
@@ -260,15 +306,15 @@ class MappingService:
         skipped = len(values) - len(unique_values)
 
         auto_committed = 0
-        pending = 0
+        review_items = 0
 
         with self.session() as session:
             existing_raw = {r for r in session.exec(select(ExampleMapping.raw_text)).all()}
-            existing_suggestions = {r for r in session.exec(select(Suggestion.raw_text)).all()}
+            existing_review_items = {r for r in session.exec(select(ReviewItem.raw_text)).all()}
 
             for raw_text in unique_values:
-                # Skip if already has a suggestion (from prior import)
-                if raw_text in existing_suggestions:
+                # Skip if already awaiting review from a prior import.
+                if raw_text in existing_review_items:
                     skipped += 1
                     continue
 
@@ -283,19 +329,19 @@ class MappingService:
                             existing_raw.add(raw_text)
                         auto_committed += 1
                     else:
-                        # LLM suggestion — store for review
-                        session.add(Suggestion(raw_text=raw_text, suggested_text=result.suggested_text))
-                        pending += 1
+                        # LLM suggestion — store it on a Review Item.
+                        session.add(ReviewItem(raw_text=raw_text, suggested_text=result.suggested_text))
+                        review_items += 1
                 else:
-                    # No match — store empty suggestion for manual entry
-                    session.add(Suggestion(raw_text=raw_text, suggested_text=""))
-                    pending += 1
+                    # No match — create a Review Item for manual entry.
+                    session.add(ReviewItem(raw_text=raw_text, suggested_text=""))
+                    review_items += 1
 
             session.commit()
 
         return {
             "auto_committed": auto_committed,
-            "pending": pending,
+            "review_items": review_items,
             "skipped": skipped,
         }
 
@@ -333,49 +379,92 @@ class MappingService:
     # Review
     # ------------------------------------------------------------------
 
-    def list_pending_suggestions(self) -> list[dict]:
+    def list_review_items(self) -> list[dict]:
         with self.session() as session:
-            suggestions = session.exec(
-                select(Suggestion).where(Suggestion.status == "pending")
+            items = session.exec(
+                select(ReviewItem).order_by(ReviewItem.created_at, ReviewItem.id)
             ).all()
 
         return [
             {
-                "id": s.id,
-                "raw_text": s.raw_text,
-                "suggested_text": s.suggested_text,
+                "id": item.id,
+                "raw_text": item.raw_text,
+                "suggested_text": item.suggested_text,
             }
-            for s in suggestions
+            for item in items
         ]
 
-    def _process_suggestion(self, record_id: int, status: str, normalized_text: str | None) -> None:
+    def _accept_review_item(self, record_id: int, normalized_text: str | None) -> None:
         with self.session() as session:
-            suggestion = session.exec(
-                select(Suggestion).where(Suggestion.id == record_id)
+            item = session.exec(
+                select(ReviewItem).where(ReviewItem.id == record_id)
             ).first()
 
-            if suggestion is None:
-                msg = f"Suggestion with id {record_id} not found"
-                raise ValueError(msg)
+            if item is None:
+                msg = f"Review Item with id {record_id} not found"
+                raise ReviewItemNotFoundError(msg)
 
-            if suggestion.status != "pending":
-                msg = f"Suggestion {record_id} already reviewed with status '{suggestion.status}'"
-                raise ValueError(msg)
+            approved_text = (
+                normalized_text if normalized_text is not None else item.suggested_text
+            ).strip()
+            if not approved_text:
+                raise ValueError("Normalized text must not be blank")
 
-            suggestion.status = status
             session.add(
                 ExampleMapping(
-                    raw_text=suggestion.raw_text,
-                    normalized_text=normalized_text if normalized_text is not None else suggestion.suggested_text,
+                    raw_text=item.raw_text,
+                    normalized_text=approved_text,
                 )
             )
+            session.delete(item)
             session.commit()
 
-    def accept_suggestion(self, record_id: int) -> None:
-        self._process_suggestion(record_id, "accepted", None)
+    def accept_review_item(self, record_id: int) -> None:
+        self._accept_review_item(record_id, None)
 
-    def edit_suggestion(self, record_id: int, normalized_text: str) -> None:
-        self._process_suggestion(record_id, "accepted_edited", normalized_text)
+    def accept_review_items(self, record_ids: list[int]) -> BulkAcceptResult:
+        if not record_ids:
+            raise BulkAcceptError("Select at least one Review Item")
+        if any(not isinstance(record_id, int) or isinstance(record_id, bool) or record_id <= 0
+               for record_id in record_ids):
+            raise BulkAcceptError("Review Item IDs must be positive integers")
+        if len(set(record_ids)) != len(record_ids):
+            raise BulkAcceptError("Review Item IDs must not contain duplicates")
+
+        with self.session() as session:
+            items = session.exec(
+                select(ReviewItem).where(ReviewItem.id.in_(record_ids))
+            ).all()
+            found_ids = {item.id for item in items}
+            stale_ids = [record_id for record_id in record_ids if record_id not in found_ids]
+            if stale_ids:
+                joined_ids = ", ".join(str(record_id) for record_id in stale_ids)
+                raise BulkAcceptStaleItemsError(
+                    f"Review Items with IDs {joined_ids} are no longer pending"
+                )
+            blank_ids = [item.id for item in items if not item.suggested_text.strip()]
+            if blank_ids:
+                joined_ids = ", ".join(str(record_id) for record_id in blank_ids)
+                raise BulkAcceptError(
+                    f"Review Items with IDs {joined_ids} have blank Suggestions"
+                )
+            for item in items:
+                session.add(ExampleMapping(
+                    raw_text=item.raw_text,
+                    normalized_text=item.suggested_text.strip(),
+                ))
+                session.delete(item)
+            try:
+                session.commit()
+            except SQLAlchemyError as error:
+                session.rollback()
+                raise BulkAcceptPersistenceError(
+                    "Could not accept selected Review Items; no changes were made"
+                ) from error
+        return BulkAcceptResult(accepted=len(items))
+
+    def edit_and_accept_review_item(self, record_id: int, normalized_text: str) -> None:
+        self._accept_review_item(record_id, normalized_text)
 
     # ------------------------------------------------------------------
     # Index

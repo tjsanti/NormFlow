@@ -4,7 +4,7 @@ from pathlib import Path
 
 from sqlmodel import SQLModel
 
-from .mapping_service import _make_engine, ExampleMapping, Suggestion
+from .mapping_service import _make_engine, ExampleMapping, ReviewItem
 
 
 def init_workspace(path: str) -> Path:

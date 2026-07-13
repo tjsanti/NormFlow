@@ -42,6 +42,28 @@ def serve(
 
 
 @app.command()
+def ui(
+    no_open: bool = typer.Option(False, "--no-open", help="Do not open the default browser."),
+) -> None:
+    """Launch the local NormFlow browser UI."""
+    import socket
+    import uvicorn
+    import webbrowser
+
+    from .api import app as api_app
+
+    with socket.socket() as local_socket:
+        local_socket.bind(("127.0.0.1", 0))
+        port = local_socket.getsockname()[1]
+
+    url = f"http://127.0.0.1:{port}"
+    print(url)
+    if not no_open:
+        webbrowser.open(url)
+    uvicorn.run(api_app, host="127.0.0.1", port=port)
+
+
+@app.command()
 def init(workspace: str = typer.Option(..., "--workspace", help="Path to initialize as a NormFlow project.")) -> None:
     """Initialize a new NormFlow project workspace."""
     ws = init_workspace(workspace)
@@ -55,7 +77,7 @@ def info(workspace: str = _ws_opt) -> None:
     print(f"Workspace:  {info['workspace']}")
     print(f"Database:   {info['database']}")
     print(f"Mappings:   {info['mappings']}")
-    print(f"Suggestions: {info['suggestions']}")
+    print(f"Review Items: {info['review_items']}")
 
 
 @app.command(name="import")
@@ -142,18 +164,18 @@ def suggest_batch_cmd(
 
 review_app = typer.Typer(
     name="review",
-    help="Review normalization suggestions.",
+    help="Review pending normalization work.",
 )
 
 
 @review_app.command(name="list")
-def list_suggestions(
+def list_review_items(
     as_json: bool = typer.Option(False, "--json", help="Output as JSON instead of a table."),
     workspace: str = _ws_opt,
 ) -> None:
-    """List pending suggestions awaiting review."""
+    """List pending Review Items."""
     try:
-        items = _ms(workspace).list_pending_suggestions()
+        items = _ms(workspace).list_review_items()
     except ValueError as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from None
@@ -168,28 +190,28 @@ def list_suggestions(
 
 @review_app.command()
 def accept(
-    record_id: int = typer.Option(..., "--record-id", help="ID of the suggestion to accept."),
+    record_id: int = typer.Option(..., "--record-id", help="ID of the Review Item to accept."),
     workspace: str = _ws_opt,
 ) -> None:
-    """Accept a suggestion, inserting it into the mapping library."""
+    """Accept a Review Item, inserting it into the mapping library."""
     try:
-        _ms(workspace).accept_suggestion(record_id)
-        print(f"Suggestion {record_id} accepted.")
+        _ms(workspace).accept_review_item(record_id)
+        print(f"Review Item {record_id} accepted.")
     except ValueError as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from None
 
 
 @review_app.command()
-def edit(
-    record_id: int = typer.Option(..., "--record-id", help="ID of the suggestion to edit."),
+def edit_and_accept(
+    record_id: int = typer.Option(..., "--record-id", help="ID of the Review Item to edit and accept."),
     normalized_text: str = typer.Option(..., "--normalized-text", help="Edited normalized text to store."),
     workspace: str = _ws_opt,
 ) -> None:
-    """Accept a suggestion with an edit, inserting the edited text into the mapping library."""
+    """Edit and accept a Review Item."""
     try:
-        _ms(workspace).edit_suggestion(record_id, normalized_text)
-        print(f"Suggestion {record_id} accepted with edit.")
+        _ms(workspace).edit_and_accept_review_item(record_id, normalized_text)
+        print(f"Review Item {record_id} accepted with edit.")
     except ValueError as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from None

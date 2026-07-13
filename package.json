@@ -1,0 +1,17 @@
+{
+  "name": "normflow-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build --config frontend/vite.config.ts",
+    "test": "vitest run --config frontend/vitest.config.ts",
+    "typecheck": "tsc --noEmit -p frontend/tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "jsdom": "^26.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.1.0",
+    "vitest": "^3.0.0"
+  }
+}

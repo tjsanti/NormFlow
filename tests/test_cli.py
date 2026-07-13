@@ -3,6 +3,7 @@
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from sqlmodel import Session
 from typer.testing import CliRunner
@@ -51,7 +52,7 @@ def test_workspace_info():
 
         assert "myproject" in info_result.stdout
         assert "Mappings:   0" in info_result.stdout
-        assert "Suggestions: 0" in info_result.stdout
+        assert "Review Items: 0" in info_result.stdout
 
 
 def test_workspace_info_errors_on_invalid_path():
@@ -59,6 +60,46 @@ def test_workspace_info_errors_on_invalid_path():
     with tempfile.TemporaryDirectory() as tmpdir:
         result = runner.invoke(app, ["info", "--workspace", tmpdir])
         assert result.exit_code != 0
+
+
+def test_ui_launches_local_server_and_opens_browser():
+    """`normflow ui` prints and opens the URL for its localhost-only server."""
+    with (
+        patch("socket.socket") as socket_factory,
+        patch("uvicorn.run") as run_server,
+        patch("webbrowser.open") as open_browser,
+    ):
+        local_socket = socket_factory.return_value.__enter__.return_value
+        local_socket.getsockname.return_value = ("127.0.0.1", 43123)
+        result = runner.invoke(app, ["ui"])
+
+    assert result.exit_code == 0
+    url = result.stdout.strip()
+    assert url == "http://127.0.0.1:43123"
+    local_socket.bind.assert_called_once_with(("127.0.0.1", 0))
+    open_browser.assert_called_once_with(url)
+    assert run_server.call_args.kwargs["host"] == "127.0.0.1"
+    assert run_server.call_args.kwargs["port"] == 43123
+
+
+def test_ui_no_open_starts_same_server_without_opening_browser():
+    """`normflow ui --no-open` leaves browser launching to the user."""
+    with (
+        patch("socket.socket") as socket_factory,
+        patch("uvicorn.run") as run_server,
+        patch("webbrowser.open") as open_browser,
+    ):
+        local_socket = socket_factory.return_value.__enter__.return_value
+        local_socket.getsockname.return_value = ("127.0.0.1", 43124)
+        result = runner.invoke(app, ["ui", "--no-open"])
+
+    assert result.exit_code == 0
+    url = result.stdout.strip()
+    assert url == "http://127.0.0.1:43124"
+    local_socket.bind.assert_called_once_with(("127.0.0.1", 0))
+    open_browser.assert_not_called()
+    assert run_server.call_args.kwargs["host"] == "127.0.0.1"
+    assert run_server.call_args.kwargs["port"] == 43124
 
 
 # ---- import tests ----
@@ -587,31 +628,29 @@ def test_suggest_batch_missing_input_file():
 # ---- review tests ----
 
 
-def _seed_suggestions(ws_path: Path, suggestions: list[tuple[str, str, str]]) -> None:
-    """Seed Suggestion rows. Each tuple is (raw_text, suggested_text, status)."""
-    from normflow.mapping_service import MappingService, Suggestion
+def _seed_review_items(ws_path: Path, items: list[tuple[str, str]]) -> None:
+    """Seed Review Items for CLI adapter tests."""
+    from normflow.mapping_service import MappingService, ReviewItem
 
     ms = MappingService(str(ws_path))
     with ms.session() as session:
-        for raw_text, suggested_text, status in suggestions:
-            session.add(Suggestion(
+        for raw_text, suggested_text in items:
+            session.add(ReviewItem(
                 raw_text=raw_text,
                 suggested_text=suggested_text,
-                status=status,
             ))
         session.commit()
 
 
-def test_review_list_shows_pending_suggestions():
-    """`normflow review list` should show only pending suggestions."""
+def test_review_list_shows_review_items():
+    """`normflow review list` shows pending Review Items."""
     with tempfile.TemporaryDirectory() as tmpdir:
         ws_path = Path(tmpdir) / "proj"
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        _seed_suggestions(ws_path, [
-            ("o2 sensor", "O2 Sensor", "pending"),
-            ("oxygen sensor", "Oxygen Sensor", "pending"),
-            ("old part", "Old Part", "accepted"),
+        _seed_review_items(ws_path, [
+            ("o2 sensor", "O2 Sensor"),
+            ("oxygen sensor", "Oxygen Sensor"),
         ])
 
         result = runner.invoke(
@@ -621,12 +660,11 @@ def test_review_list_shows_pending_suggestions():
         assert result.exit_code == 0
         assert "o2 sensor" in result.stdout
         assert "oxygen sensor" in result.stdout
-        # accepted suggestion should not appear
-        assert "old part" not in result.stdout
+        assert "oxygen sensor" in result.stdout
 
 
 def test_review_list_empty_when_no_pending():
-    """`normflow review list` should show empty when no pending suggestions."""
+    """`normflow review list` is empty when no Review Items are pending."""
     with tempfile.TemporaryDirectory() as tmpdir:
         ws_path = Path(tmpdir) / "proj"
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
@@ -644,8 +682,8 @@ def test_review_list_json_output():
         ws_path = Path(tmpdir) / "proj"
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        _seed_suggestions(ws_path, [
-            ("o2 sensor", "O2 Sensor", "pending"),
+        _seed_review_items(ws_path, [
+            ("o2 sensor", "O2 Sensor"),
         ])
 
         result = runner.invoke(
@@ -660,14 +698,14 @@ def test_review_list_json_output():
         assert data[0]["suggested_text"] == "O2 Sensor"
 
 
-def test_review_accept_inserts_mapping():
-    """`normflow review accept` should mark accepted and insert a mapping."""
+def test_review_accept_inserts_mapping_and_removes_review_item():
+    """`normflow review accept` accepts a Review Item."""
     with tempfile.TemporaryDirectory() as tmpdir:
         ws_path = Path(tmpdir) / "proj"
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        _seed_suggestions(ws_path, [
-            ("o2 sensor", "O2 Sensor", "pending"),
+        _seed_review_items(ws_path, [
+            ("o2 sensor", "O2 Sensor"),
         ])
 
         result = runner.invoke(
@@ -675,6 +713,7 @@ def test_review_accept_inserts_mapping():
             ["review", "accept", "--workspace", str(ws_path), "--record-id", "1"],
         )
         assert result.exit_code == 0
+        assert "Review Item 1 accepted." in result.stdout
 
         # Verify mapping was inserted
         info_result = runner.invoke(
@@ -682,23 +721,25 @@ def test_review_accept_inserts_mapping():
             ["info", "--workspace", str(ws_path)],
         )
         assert "Mappings:   1" in info_result.stdout
+        assert "Review Items: 0" in info_result.stdout
 
 
-def test_review_edit_inserts_mapping_with_custom_text():
-    """`normflow review edit` should mark accepted_edited and insert mapping with edited text."""
+def test_review_edit_and_accept_inserts_mapping_with_custom_text():
+    """`normflow review edit-and-accept` accepts with edited text."""
     with tempfile.TemporaryDirectory() as tmpdir:
         ws_path = Path(tmpdir) / "proj"
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        _seed_suggestions(ws_path, [
-            ("o2 sensor", "O2 Sensor", "pending"),
+        _seed_review_items(ws_path, [
+            ("o2 sensor", "O2 Sensor"),
         ])
 
         result = runner.invoke(
             app,
-            ["review", "edit", "--workspace", str(ws_path), "--record-id", "1", "--normalized-text", "Oxygen Sensor"],
+            ["review", "edit-and-accept", "--workspace", str(ws_path), "--record-id", "1", "--normalized-text", "Oxygen Sensor"],
         )
         assert result.exit_code == 0
+        assert "Review Item 1 accepted with edit." in result.stdout
 
         # Verify mapping was inserted with edited text
         info_result = runner.invoke(
@@ -718,15 +759,21 @@ def test_review_edit_inserts_mapping_with_custom_text():
         assert mapping.normalized_text == "Oxygen Sensor"
 
 
-def test_review_accept_already_reviewed_fails():
-    """`normflow review accept` should fail when suggestion is already reviewed."""
+def test_review_accept_removed_item_fails():
+    """A Review Item cannot be accepted twice because acceptance removes it."""
     with tempfile.TemporaryDirectory() as tmpdir:
         ws_path = Path(tmpdir) / "proj"
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
-        _seed_suggestions(ws_path, [
-            ("o2 sensor", "O2 Sensor", "accepted"),
+        _seed_review_items(ws_path, [
+            ("o2 sensor", "O2 Sensor"),
         ])
+
+        first = runner.invoke(
+            app,
+            ["review", "accept", "--workspace", str(ws_path), "--record-id", "1"],
+        )
+        assert first.exit_code == 0
 
         result = runner.invoke(
             app,
@@ -735,14 +782,14 @@ def test_review_accept_already_reviewed_fails():
         assert result.exit_code != 0
 
 
-def test_review_edit_invalid_record_id_fails():
-    """`normflow review edit` should fail when record id does not exist."""
+def test_review_edit_and_accept_invalid_record_id_fails():
+    """`normflow review edit-and-accept` fails for an unknown Review Item."""
     with tempfile.TemporaryDirectory() as tmpdir:
         ws_path = Path(tmpdir) / "proj"
         runner.invoke(app, ["init", "--workspace", str(ws_path)])
 
         result = runner.invoke(
             app,
-            ["review", "edit", "--workspace", str(ws_path), "--record-id", "999", "--normalized-text", "Something"],
+            ["review", "edit-and-accept", "--workspace", str(ws_path), "--record-id", "999", "--normalized-text", "Something"],
         )
         assert result.exit_code != 0

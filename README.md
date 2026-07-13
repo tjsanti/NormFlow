@@ -2,9 +2,9 @@
 
 CLI-first, human-in-the-loop text normalization workbench.
 
-Import approved `raw_text → normalized_text` mappings, get suggestions for new records (exact match + semantic search), review and edit them, then feed accepted changes back into your mapping library.
+Import approved `raw_text → normalized_text` mappings, get Suggestions for new records, and resolve pending Review Items into Mappings.
 
-**Current state:** Workspace init, CSV import/export, exact-match suggestions, semantic search (FAISS), batch CSV suggestions, and human review workflow (accept/edit).
+**Current state:** Project init, a local browser UI, CSV import/export, exact-match Suggestions, semantic search (FAISS), batch CSV Suggestions, and a Review Item workflow (accept/edit-and-accept).
 
 ## Prerequisites
 
@@ -19,7 +19,21 @@ cd normflow
 uv sync
 ```
 
+Include the local server dependencies before launching the browser UI:
+
+```bash
+uv sync --extra server
+```
+
 ## Usage
+
+### Launch the local browser UI
+
+```bash
+uv run normflow ui
+```
+
+NormFlow prints its localhost URL, opens it in the default browser, and lets you open a Project by entering its folder path. Valid Projects are remembered locally for quick reopening and switching. Use `--no-open` to start the same server without opening a browser.
 
 ### Initialize a project workspace
 
@@ -31,7 +45,7 @@ Creates a project directory with:
 
 | Item | Purpose |
 |------|---------|
-| `normflow.db` | SQLite database — source of truth for mappings and suggestions |
+| `normflow.db` | SQLite database — source of truth for Mappings and Review Items |
 | `input/` | Raw text records awaiting normalization |
 | `output/` | Results after normalization |
 | `samples/` | Portable flat files for demos, seed data, and evaluation fixtures |
@@ -43,7 +57,7 @@ Creates a project directory with:
 uv run normflow info --workspace <path>
 ```
 
-Shows the workspace path, database location, and current counts of mappings and suggestions.
+Shows the Project path, database location, and current counts of Mappings and Review Items.
 
 ### Import mappings from CSV
 
@@ -113,34 +127,35 @@ Reads every row from a CSV, looks up exact-match and semantic suggestions for th
 uv run normflow suggest-batch --workspace <path> records.csv --column product_name --output results.csv
 ```
 
-### Review suggestions
+### Review Items
 
-List pending suggestions awaiting review:
+List pending Review Items:
 
 ```bash
 uv run normflow review list --workspace <path>
 ```
 
-Shows a table of pending suggestions with their ID, raw text, and suggested normalized text. Add `--json` for machine-readable output.
+Shows pending Review Items oldest-first with a stable ID, raw text, and optional Suggestion. Add `--json` for machine-readable output.
 
-Accept a suggestion as-is:
+Accept a Review Item's Suggestion as-is:
 
 ```bash
 uv run normflow review accept --workspace <path> --record-id 1
 ```
 
-Marks the suggestion as accepted and inserts `raw_text → suggested_text` into the mapping library.
+Trims and validates the suggested text, creates its Mapping, and removes the Review Item atomically.
 
-Accept a suggestion with an edit:
+Edit and accept a Review Item:
 
 ```bash
-uv run normflow review edit --workspace <path> --record-id 1 --normalized-text "Oxygen Sensor"
+uv run normflow review edit-and-accept --workspace <path> --record-id 1 --normalized-text "Oxygen Sensor"
 ```
 
-Marks the suggestion as accepted with edits and inserts `raw_text → normalized_text` (your edited text) into the mapping library.
+Trims and validates the edited text, creates its Mapping, and removes the Review Item atomically.
 
-- Once a suggestion is reviewed, it cannot be reviewed again — commands fail clearly if the record is already accepted.
-- If a suggestion is not a good fit, edit it to the text you want rather than rejecting it.
+- Normalized text must contain at least one non-whitespace character.
+- Once accepted, a Review Item no longer exists and cannot be reviewed again.
+- Existing Projects are upgraded automatically when opened: pending legacy queue records become Review Items, accepted records are discarded, and existing Mappings are preserved.
 
 ### Show version
 
@@ -155,9 +170,12 @@ src/normflow/
 ├── __init__.py           # Package entry, __version__
 ├── __main__.py           # python -m normflow
 ├── cli.py                # Typer CLI: version, init, info, import, export, suggest, suggest-batch, review, index
+├── api.py                # Same-origin FastAPI adapter and production UI serving
 ├── mapping_service.py    # Single seam: CSV import/export, suggest (exact + semantic), review, index build/clear
 ├── semantic_index.py     # FAISS + SentenceTransformer index (build, persist, query)
+├── static/               # Built browser UI served by FastAPI
 └── workspace.py          # Workspace init
+frontend/                 # Framework-free TypeScript UI, Vite build, and Vitest tests
 tests/
 ├── conftest.py               # Shared fixtures
 ├── helpers.py                # Test helpers
@@ -175,5 +193,5 @@ tests/
 - [x] Batch CSV suggestions
 - [x] Semantic search with embeddings (FAISS + sentence-transformers)
 - [ ] LLM fallback
-- [x] Human review workflow (accept/edit)
-- [ ] TypeScript web UI
+- [x] Review Item workflow (accept/edit-and-accept)
+- [x] Local TypeScript Project-selection UI
