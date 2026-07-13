@@ -47,3 +47,12 @@ def test_maintained_interfaces_use_project_vocabulary():
                     obsolete.append(f"{path.relative_to(ROOT)}:{line_number}: {line.strip()}")
 
     assert obsolete == []
+
+
+def test_readme_documents_unified_review_item_acceptance():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "normflow review accept --review-item-id 1" in readme
+    assert "--normalized-text \"Oxygen Sensor\"" in readme
+    assert "edit-and-accept" not in readme
+    assert "--record-id" not in readme

@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 from fastapi.testclient import TestClient
+import pytest
 
 from normflow.api import create_app
 from normflow.mapping_service import MappingService, ReviewItem
@@ -146,8 +147,7 @@ def test_json_endpoints_publish_explicit_response_schemas(tmp_path: Path):
     expected_models = {
         ("post", "/import/mappings"): "ImportMappingsResponse",
         ("post", "/import/records"): "ImportRecordsResponse",
-        ("post", "/review-items/{record_id}/accept"): "StatusResponse",
-        ("post", "/review-items/{record_id}/edit-and-accept"): "StatusResponse",
+        ("post", "/review-items/{review_item_id}/accept"): "StatusResponse",
         ("post", "/index/build"): "IndexBuildResponse",
     }
     for (method, path), model in expected_models.items():
@@ -161,10 +161,27 @@ def test_json_endpoints_publish_explicit_response_schemas(tmp_path: Path):
     ]["application/json"]["schema"]
     assert review_schema["items"]["$ref"].endswith("/ReviewItemResponse")
 
-    edit_request_schema = schema["paths"][
-        "/review-items/{record_id}/edit-and-accept"
-    ]["post"]["requestBody"]["content"]["application/json"]["schema"]
-    assert edit_request_schema["$ref"].endswith("/EditAndAcceptRequest")
+    accept_operation = schema["paths"][
+        "/review-items/{review_item_id}/accept"
+    ]["post"]
+    assert "required" not in accept_operation["requestBody"]
+    request_schema = accept_operation["requestBody"]["content"][
+        "application/json"
+    ]["schema"]
+    assert request_schema["anyOf"] == [
+        {"$ref": "#/components/schemas/AcceptReviewItemRequest"},
+        {"type": "null"},
+    ]
+    normalized_text_schema = schema["components"]["schemas"][
+        "AcceptReviewItemRequest"
+    ]["properties"]["normalized_text"]
+    assert normalized_text_schema["anyOf"] == [
+        {"type": "string"},
+        {"type": "null"},
+    ]
+    assert "required" not in schema["components"]["schemas"][
+        "AcceptReviewItemRequest"
+    ]
 
 
 def test_project_info_returns_stats():
@@ -207,7 +224,8 @@ def test_review_items_route_lists_pending_work():
         ]
 
 
-def test_accept_review_item_route_creates_mapping_and_removes_item():
+@pytest.mark.parametrize("body", [None, {}, {"normalized_text": None}])
+def test_accept_review_item_route_uses_suggestion_when_replacement_is_absent(body):
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
@@ -217,7 +235,11 @@ def test_accept_review_item_route_creates_mapping_and_removes_item():
             session.commit()
         client = TestClient(create_app(resolve_project(project_root)))
 
-        response = client.post("/review-items/1/accept")
+        response = (
+            client.post("/review-items/1/accept")
+            if body is None
+            else client.post("/review-items/1/accept", json=body)
+        )
 
         assert response.status_code == 200
         assert response.json() == {"status": "accepted"}
@@ -355,7 +377,7 @@ def test_accept_review_item_route_rejects_blank_suggestion_without_removing_item
         ]
 
 
-def test_edit_and_accept_review_item_route_uses_edited_text():
+def test_accept_review_item_route_uses_replacement_text():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
@@ -366,7 +388,7 @@ def test_edit_and_accept_review_item_route_uses_edited_text():
         client = TestClient(create_app(resolve_project(project_root)))
 
         response = client.post(
-            "/review-items/1/edit-and-accept",
+            "/review-items/1/accept",
             json={"normalized_text": "  Oxygen Sensor  "},
         )
 
@@ -375,21 +397,14 @@ def test_edit_and_accept_review_item_route_uses_edited_text():
         assert service.lookup("o2 sensor", semantic=False, llm=False)[0].suggested_text == "Oxygen Sensor"
 
 
-def test_edit_and_accept_review_item_route_reports_a_stale_item_as_a_conflict():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_root = str(Path(tmpdir).resolve())
-        init_project(project_root)
-
-        response = TestClient(create_app(resolve_project(project_root))).post(
-            "/review-items/99/edit-and-accept",
-            json={"normalized_text": "Something"},
-        )
-
-        assert response.status_code == 409
-        assert response.json() == {"detail": "Review Item with id 99 not found"}
-
-
-def test_edit_and_accept_review_item_route_rejects_query_text_without_mutation():
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"normalized_text": ["Oxygen Sensor"]},
+        {"normalized_text": "   "},
+    ],
+)
+def test_accept_review_item_route_rejects_invalid_replacement_without_mutation(body):
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
@@ -399,37 +414,9 @@ def test_edit_and_accept_review_item_route_rejects_query_text_without_mutation()
             session.commit()
         client = TestClient(create_app(resolve_project(project_root)))
 
-        response = client.post(
-            "/review-items/1/edit-and-accept",
-            params={"normalized_text": "Oxygen Sensor"},
-        )
+        response = client.post("/review-items/1/accept", json=body)
 
         assert response.status_code == 422
-        assert client.get("/review-items").json() == [
-            {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
-        ]
-
-
-def test_edit_and_accept_review_item_route_rejects_invalid_payloads_without_mutation():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_root = str(Path(tmpdir).resolve())
-        init_project(project_root)
-        service = MappingService(project_root)
-        with service.session() as session:
-            session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
-            session.commit()
-        client = TestClient(create_app(resolve_project(project_root)))
-
-        for body in (
-            {},
-            {"normalized_text": ["Oxygen Sensor"]},
-            {"normalized_text": "   "},
-        ):
-            response = client.post(
-                "/review-items/1/edit-and-accept",
-                json=body,
-            )
-            assert response.status_code == 422
 
         assert client.get("/review-items").json() == [
             {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
@@ -447,4 +434,8 @@ def test_old_suggestion_review_routes_are_removed():
         assert client.post(
             "/suggestions/1/edit",
             params={"normalized_text": "edited"},
+        ).status_code == 404
+        assert client.post(
+            "/review-items/1/edit-and-accept",
+            json={"normalized_text": "edited"},
         ).status_code == 404

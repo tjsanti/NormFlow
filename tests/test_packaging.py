@@ -57,3 +57,17 @@ assert app.info.name == 'normflow'
         cwd=tmp_path,
         check=True,
     )
+
+
+def test_wheel_browser_build_uses_unified_review_item_acceptance(tmp_path: Path):
+    wheel = _build_wheel(tmp_path)
+
+    with zipfile.ZipFile(wheel) as archive:
+        javascript = b"\n".join(
+            archive.read(name)
+            for name in archive.namelist()
+            if name.startswith("normflow/static/assets/") and name.endswith(".js")
+        )
+
+    assert b"/edit-and-accept" not in javascript
+    assert b"/accept" in javascript

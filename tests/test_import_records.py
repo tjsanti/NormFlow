@@ -128,7 +128,7 @@ def test_export_returns_original_csv_with_normalized_column():
                 select(ReviewItem).where(ReviewItem.raw_text == "Canada")
             ).first()
 
-        ms.edit_and_accept_review_item(us_review_item.id, "US")
+        ms.accept_review_item(us_review_item.id, "US")
         assert ca_review_item is not None
 
         # Export — should return original CSV + normalized_text column

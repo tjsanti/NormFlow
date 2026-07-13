@@ -29,8 +29,8 @@ class BulkAcceptResponse(BaseModel):
     accepted: int
 
 
-class EditAndAcceptRequest(BaseModel):
-    normalized_text: str
+class AcceptReviewItemRequest(BaseModel):
+    normalized_text: str | None = None
 
 
 class ProjectInfoResponse(BaseModel):
@@ -144,39 +144,22 @@ def bulk_accept_review_items(
 
 
 @router.post(
-    "/review-items/{record_id}/accept",
+    "/review-items/{review_item_id}/accept",
     response_model=StatusResponse,
 )
 def accept_review_item(
-    record_id: int,
+    review_item_id: int,
+    request: AcceptReviewItemRequest | None = None,
     service: MappingService = Depends(get_project_service),
 ) -> StatusResponse:
     try:
-        service.accept_review_item(record_id)
+        normalized_text = request.normalized_text if request else None
+        service.accept_review_item(review_item_id, normalized_text)
         return StatusResponse(status="accepted")
     except ReviewItemNotFoundError as error:
         raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
-
-
-@router.post(
-    "/review-items/{record_id}/edit-and-accept",
-    response_model=StatusResponse,
-)
-def edit_and_accept_review_item(
-    record_id: int,
-    request: EditAndAcceptRequest,
-    service: MappingService = Depends(get_project_service),
-) -> StatusResponse:
-    try:
-        service.edit_and_accept_review_item(record_id, request.normalized_text)
-        return StatusResponse(status="accepted")
-    except ReviewItemNotFoundError as error:
-        raise HTTPException(status_code=409, detail=str(error))
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error))
-
 
 @router.post("/export")
 def export_normalized(
