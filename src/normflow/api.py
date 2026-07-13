@@ -29,6 +29,10 @@ class BulkAcceptResponse(BaseModel):
     accepted: int
 
 
+class EditAndAcceptRequest(BaseModel):
+    normalized_text: str
+
+
 class ProjectInfoResponse(BaseModel):
     project: str
     database: str
@@ -162,11 +166,11 @@ def accept_review_item(
 )
 def edit_and_accept_review_item(
     record_id: int,
-    normalized_text: str = Query(...),
+    request: EditAndAcceptRequest,
     service: MappingService = Depends(get_project_service),
 ) -> StatusResponse:
     try:
-        service.edit_and_accept_review_item(record_id, normalized_text)
+        service.edit_and_accept_review_item(record_id, request.normalized_text)
         return StatusResponse(status="accepted")
     except ReviewItemNotFoundError as error:
         raise HTTPException(status_code=409, detail=str(error))

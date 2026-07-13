@@ -22,7 +22,7 @@ function setFocusRefresh(refresh?: () => void): void {
 }
 
 function projectName(path: string): string {
-  return path.split("/").filter(Boolean).at(-1) ?? path;
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
 async function fetchProject(): Promise<ProjectInfo> {
@@ -202,12 +202,13 @@ function renderReviewItems(root: HTMLElement, items: ReviewItem[]): void {
       save.disabled = true;
       cancel.disabled = true;
       try {
-        const response = await fetch(
-          `/review-items/${item.id}/edit-and-accept?normalized_text=${encodeURIComponent(input.value)}`,
-          {
-            method: "POST",
+        const response = await fetch(`/review-items/${item.id}/edit-and-accept`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
           },
-        );
+          body: JSON.stringify({ normalized_text: input.value }),
+        });
         if (!response.ok) {
           const error = await response.json() as { detail?: string };
           throw new Error(error.detail ?? `Could not edit and accept Review Item (${response.status}).`);

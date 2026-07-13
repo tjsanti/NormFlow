@@ -161,6 +161,11 @@ def test_json_endpoints_publish_explicit_response_schemas(tmp_path: Path):
     ]["application/json"]["schema"]
     assert review_schema["items"]["$ref"].endswith("/ReviewItemResponse")
 
+    edit_request_schema = schema["paths"][
+        "/review-items/{record_id}/edit-and-accept"
+    ]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    assert edit_request_schema["$ref"].endswith("/EditAndAcceptRequest")
+
 
 def test_project_info_returns_stats():
     """GET /project/info returns Project stats."""
@@ -362,7 +367,7 @@ def test_edit_and_accept_review_item_route_uses_edited_text():
 
         response = client.post(
             "/review-items/1/edit-and-accept",
-            params={"normalized_text": "  Oxygen Sensor  "},
+            json={"normalized_text": "  Oxygen Sensor  "},
         )
 
         assert response.status_code == 200
@@ -377,11 +382,58 @@ def test_edit_and_accept_review_item_route_reports_a_stale_item_as_a_conflict():
 
         response = TestClient(create_app(resolve_project(project_root))).post(
             "/review-items/99/edit-and-accept",
-            params={"normalized_text": "Something"},
+            json={"normalized_text": "Something"},
         )
 
         assert response.status_code == 409
         assert response.json() == {"detail": "Review Item with id 99 not found"}
+
+
+def test_edit_and_accept_review_item_route_rejects_query_text_without_mutation():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = str(Path(tmpdir).resolve())
+        init_project(project_root)
+        service = MappingService(project_root)
+        with service.session() as session:
+            session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
+            session.commit()
+        client = TestClient(create_app(resolve_project(project_root)))
+
+        response = client.post(
+            "/review-items/1/edit-and-accept",
+            params={"normalized_text": "Oxygen Sensor"},
+        )
+
+        assert response.status_code == 422
+        assert client.get("/review-items").json() == [
+            {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
+        ]
+
+
+def test_edit_and_accept_review_item_route_rejects_invalid_payloads_without_mutation():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = str(Path(tmpdir).resolve())
+        init_project(project_root)
+        service = MappingService(project_root)
+        with service.session() as session:
+            session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
+            session.commit()
+        client = TestClient(create_app(resolve_project(project_root)))
+
+        for body in (
+            {},
+            {"normalized_text": ["Oxygen Sensor"]},
+            {"normalized_text": "   "},
+        ):
+            response = client.post(
+                "/review-items/1/edit-and-accept",
+                json=body,
+            )
+            assert response.status_code == 422
+
+        assert client.get("/review-items").json() == [
+            {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
+        ]
 
 
 def test_old_suggestion_review_routes_are_removed():

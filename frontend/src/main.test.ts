@@ -66,6 +66,22 @@ describe("Bound Project launch", () => {
     expect(document.querySelector("h1")?.textContent).toBe("<img src=x onerror=alert(1)>");
     expect(document.querySelector(".project-path")?.textContent).toBe(project.project);
   });
+
+  test("shows the Project name for a canonical Windows path", async () => {
+    const project = {
+      ...projectInfo,
+      project: "C:\\Projects\\customer-names",
+    };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(okJson(project))
+      .mockResolvedValueOnce(okJson([])));
+
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
+    expect(document.querySelector("h1")?.textContent).toBe("customer-names");
+    expect(document.querySelector(".project-path")?.textContent).toBe(project.project);
+  });
 });
 
 describe("Review queue", () => {
@@ -287,8 +303,14 @@ describe("Review queue", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
-      "/review-items/9/edit-and-accept?normalized_text=%20%20Completed%20text%20%20",
-      { method: "POST" },
+      "/review-items/9/edit-and-accept",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ normalized_text: "  Completed text  " }),
+      },
     );
     expect(document.querySelector("[role=status]")?.textContent).toContain("Review Item 9 accepted with edit");
     expect(document.querySelector("header")?.textContent).toContain("13 Mappings");
