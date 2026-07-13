@@ -92,7 +92,7 @@ def project_info(
 async def import_mappings(
     source_column: str = Query(...),
     target_column: str = Query(...),
-    file: UploadFile = None,
+    file: UploadFile | None = None,
     service: MappingService = Depends(get_project_service),
 ) -> ImportMappingsResponse:
     async with _temporary_upload_csv(file) as csv_path:
@@ -106,7 +106,7 @@ async def import_records(
     semantic: bool = Query(True),
     llm: bool = Query(True),
     threshold: float = Query(0.85),
-    file: UploadFile = None,
+    file: UploadFile | None = None,
     service: MappingService = Depends(get_project_service),
 ) -> ImportRecordsResponse:
     async with _temporary_upload_csv(file) as csv_path:

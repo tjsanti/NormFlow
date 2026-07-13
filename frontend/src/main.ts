@@ -291,8 +291,12 @@ async function refreshReviewItems(root: HTMLElement): Promise<void> {
 }
 
 async function refreshProject(root: HTMLElement): Promise<void> {
-  const project = await fetchProject();
-  updateProjectCounts(root, project);
+  try {
+    const project = await fetchProject();
+    updateProjectCounts(root, project);
+  } catch (error) {
+    showNotice(root, error instanceof Error ? error.message : "Could not refresh Project.", true);
+  }
   await refreshReviewItems(root);
 }
 

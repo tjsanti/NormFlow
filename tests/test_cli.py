@@ -387,7 +387,7 @@ def test_ui_rejects_invalid_ports_and_host_selection(tmp_path: Path, monkeypatch
 
     assert runner.invoke(app, ["ui", "--port", "0"]).exit_code != 0
     assert runner.invoke(app, ["ui", "--port", "65536"]).exit_code != 0
-    assert runner.invoke(app, ["ui", "--host", "0.0.0.0"]).exit_code != 0
+    assert runner.invoke(app, ["ui", "--host", "0.0.0.0"]).exit_code != 0  # noqa: S104
 
 
 def test_serve_command_is_not_public():
@@ -665,14 +665,16 @@ def test_suggest_limit_default():
         assert len(data["suggestions"]) == 1
 
 
-def test_suggest_outside_project():
+def test_suggest_outside_project(tmp_path: Path, monkeypatch):
     """`normflow suggest` should error outside a Project."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        result = runner.invoke(
-            app,
-            ["suggest", "colour"],
-        )
-        assert result.exit_code != 0
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        app,
+        ["suggest", "colour"],
+    )
+
+    assert result.exit_code != 0
 
 
 # ---- suggest batch tests ----
@@ -876,18 +878,18 @@ def test_suggest_batch_preserves_extra_columns():
         assert "normalized_text" in header
 
 
-def test_suggest_batch_outside_project():
+def test_suggest_batch_outside_project(tmp_path: Path, monkeypatch):
     """`normflow suggest batch` should error outside a Project."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_path = Path(tmpdir) / "proj"
-        csv_path = Path(tmpdir) / "input.csv"
-        _write_csv(csv_path, "text", "hello")
+    csv_path = tmp_path / "input.csv"
+    _write_csv(csv_path, "text", "hello")
+    monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(
-            app,
-            ["suggest-batch", str(csv_path), "--column", "text"],
-        )
-        assert result.exit_code != 0
+    result = CliRunner().invoke(
+        app,
+        ["suggest-batch", str(csv_path), "--column", "text"],
+    )
+
+    assert result.exit_code != 0
 
 
 def test_suggest_batch_missing_column():

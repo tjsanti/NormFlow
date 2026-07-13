@@ -371,6 +371,29 @@ describe("Review queue", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  test("manual Refresh reports a Project failure and still reloads the queue", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson(projectInfo))
+      .mockResolvedValueOnce(okJson([]))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ detail: "Project statistics are unavailable" }),
+        { status: 503, headers: { "Content-Type": "application/json" } },
+      ))
+      .mockResolvedValueOnce(okJson([
+        { id: 12, raw_text: "new raw", suggested_text: "New" },
+      ]));
+    vi.stubGlobal("fetch", fetchMock);
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
+    document.querySelector<HTMLButtonElement>("#refresh-review-items")!.click();
+
+    await vi.waitFor(() => expect(document.querySelector("tbody")?.textContent).toContain("new raw"));
+    expect(document.querySelector("[role=alert]")?.textContent)
+      .toContain("Project statistics are unavailable");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   test("returning focus to the tab refreshes without timed polling", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn()

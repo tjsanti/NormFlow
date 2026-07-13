@@ -182,7 +182,7 @@ normflow version
 src/normflow/
 ├── __init__.py           # Package entry, __version__
 ├── __main__.py           # python -m normflow
-├── cli.py                # Typer CLI: version, init, info, import, export, suggest, suggest-batch, review, index
+├── cli.py                # Typer CLI: version, init, info, ui, import, export, suggest, suggest-batch, review, index
 ├── api.py                # Same-origin FastAPI adapter and production UI serving
 ├── mapping_service.py    # Single seam: CSV import/export, suggest (exact + semantic), review, index build/clear
 ├── project.py            # Current-directory Project discovery and validation

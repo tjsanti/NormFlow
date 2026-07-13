@@ -248,7 +248,9 @@ class TestIndexCLI:
             result = runner.invoke(app, ["index", "clear"])
             assert result.exit_code == 0
 
-    def test_index_build_outside_project(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = runner.invoke(app, ["index", "build"])
-            assert result.exit_code != 0
+    def test_index_build_outside_project(self, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(app, ["index", "build"])
+
+        assert result.exit_code != 0
