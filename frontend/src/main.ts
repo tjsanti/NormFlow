@@ -202,7 +202,7 @@ function renderReviewItems(root: HTMLElement, items: ReviewItem[]): void {
       save.disabled = true;
       cancel.disabled = true;
       try {
-        const response = await fetch(`/review-items/${item.id}/edit-and-accept`, {
+        const response = await fetch(`/review-items/${item.id}/accept`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -211,14 +211,14 @@ function renderReviewItems(root: HTMLElement, items: ReviewItem[]): void {
         });
         if (!response.ok) {
           const error = await response.json() as { detail?: string };
-          throw new Error(error.detail ?? `Could not edit and accept Review Item (${response.status}).`);
+          throw new Error(error.detail ?? `Could not accept Review Item (${response.status}).`);
         }
-        showNotice(root, `Review Item ${item.id} accepted with edit.`);
+        showNotice(root, `Review Item ${item.id} accepted.`);
         await refreshProject(root);
       } catch (error) {
         showNotice(
           root,
-          error instanceof Error ? error.message : "Could not edit and accept Review Item.",
+          error instanceof Error ? error.message : "Could not accept Review Item.",
           true,
         );
         save.disabled = false;

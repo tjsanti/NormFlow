@@ -206,30 +206,24 @@ def list_review_items(
 
 @review_app.command()
 def accept(
-    record_id: int = typer.Option(..., "--record-id", help="ID of the Review Item to accept."),
+    review_item_id: int = typer.Option(
+        ...,
+        "--review-item-id",
+        help="ID of the Review Item to accept.",
+    ),
+    normalized_text: str | None = typer.Option(
+        None,
+        "--normalized-text",
+        help="Replacement normalized text to store instead of the Suggestion.",
+    ),
 ) -> None:
     """Accept a Review Item, inserting it into the Mapping library."""
     try:
-        _project_service().accept_review_item(record_id)
-        print(f"Review Item {record_id} accepted.")
+        _project_service().accept_review_item(review_item_id, normalized_text)
+        print(f"Review Item {review_item_id} accepted.")
     except ValueError as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from None
-
-
-@review_app.command()
-def edit_and_accept(
-    record_id: int = typer.Option(..., "--record-id", help="ID of the Review Item to edit and accept."),
-    normalized_text: str = typer.Option(..., "--normalized-text", help="Edited normalized text to store."),
-) -> None:
-    """Edit and accept a Review Item."""
-    try:
-        _project_service().edit_and_accept_review_item(record_id, normalized_text)
-        print(f"Review Item {record_id} accepted with edit.")
-    except ValueError as e:
-        print(f"Error: {e}")
-        raise typer.Exit(1) from None
-
 
 app.add_typer(review_app, name="review")
 

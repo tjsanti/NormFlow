@@ -221,7 +221,7 @@ def test_accept_rejects_blank_text_without_changing_review_item_or_mappings():
         assert service.project_info()["mappings"] == 0
 
 
-def test_edit_and_accept_uses_trimmed_edit_and_removes_review_item():
+def test_accept_uses_trimmed_replacement_text_and_removes_review_item():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
         init_project(str(project))
@@ -230,13 +230,13 @@ def test_edit_and_accept_uses_trimmed_edit_and_removes_review_item():
             session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
             session.commit()
 
-        service.edit_and_accept_review_item(1, "  Oxygen Sensor  ")
+        service.accept_review_item(1, "  Oxygen Sensor  ")
 
         assert service.list_review_items() == []
         assert service.lookup("o2 sensor", semantic=False, llm=False)[0].suggested_text == "Oxygen Sensor"
 
 
-def test_edit_and_accept_rejects_blank_text_without_changing_state():
+def test_accept_rejects_blank_replacement_text_without_changing_state():
     with tempfile.TemporaryDirectory() as tmpdir:
         project = Path(tmpdir)
         init_project(str(project))
@@ -246,7 +246,7 @@ def test_edit_and_accept_rejects_blank_text_without_changing_state():
             session.commit()
 
         with pytest.raises(ValueError, match="Normalized text must not be blank"):
-            service.edit_and_accept_review_item(1, " \t ")
+            service.accept_review_item(1, " \t ")
 
         assert service.list_review_items() == [
             {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
@@ -271,7 +271,7 @@ def test_accept_rolls_back_review_item_removal_when_mapping_insert_fails():
             )
 
         with pytest.raises(IntegrityError):
-            service.accept_review_item(1)
+            service.accept_review_item(1, "Oxygen Sensor")
 
         assert service.list_review_items() == [
             {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
@@ -289,7 +289,7 @@ def test_review_item_ids_are_not_reused_after_acceptance():
         service.import_records_for_review(
             str(first_batch), "name", semantic=False, llm=False
         )
-        service.edit_and_accept_review_item(2, "Second")
+        service.accept_review_item(2, "Second")
         second_batch = project / "second.csv"
         second_batch.write_text("name\nthird\n", encoding="utf-8")
 

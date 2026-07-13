@@ -1007,7 +1007,7 @@ def test_review_accept_inserts_mapping_and_removes_review_item():
 
         result = runner.invoke(
             app,
-            ["review", "accept", "--record-id", "1"],
+            ["review", "accept", "--review-item-id", "1"],
         )
         assert result.exit_code == 0
         assert "Review Item 1 accepted." in result.stdout
@@ -1019,8 +1019,8 @@ def test_review_accept_inserts_mapping_and_removes_review_item():
         assert "Review Items: 0" in info_result.stdout
 
 
-def test_review_edit_and_accept_inserts_mapping_with_custom_text():
-    """`normflow review edit-and-accept` accepts with edited text."""
+def test_review_accept_inserts_mapping_with_replacement_text():
+    """`normflow review accept` accepts optional replacement normalized text."""
     with tempfile.TemporaryDirectory() as tmpdir:
         project_path = Path(tmpdir) / "proj"
         init_project(str(project_path))
@@ -1031,10 +1031,17 @@ def test_review_edit_and_accept_inserts_mapping_with_custom_text():
 
         result = runner.invoke(
             app,
-            ["review", "edit-and-accept", "--record-id", "1", "--normalized-text", "Oxygen Sensor"],
+            [
+                "review",
+                "accept",
+                "--review-item-id",
+                "1",
+                "--normalized-text",
+                "Oxygen Sensor",
+            ],
         )
         assert result.exit_code == 0
-        assert "Review Item 1 accepted with edit." in result.stdout
+        assert "Review Item 1 accepted." in result.stdout
 
         # Verify mapping was inserted with edited text
         with chdir(project_path):
@@ -1052,6 +1059,17 @@ def test_review_edit_and_accept_inserts_mapping_with_custom_text():
         assert mapping.normalized_text == "Oxygen Sensor"
 
 
+def test_legacy_review_accept_command_and_option_are_unavailable():
+    edit_result = runner.invoke(app, ["review", "edit-and-accept", "--help"])
+    record_id_result = runner.invoke(
+        app,
+        ["review", "accept", "--record-id", "1"],
+    )
+
+    assert edit_result.exit_code == 2
+    assert record_id_result.exit_code == 2
+
+
 def test_review_accept_removed_item_fails():
     """A Review Item cannot be accepted twice because acceptance removes it."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1064,25 +1082,32 @@ def test_review_accept_removed_item_fails():
 
         first = runner.invoke(
             app,
-            ["review", "accept", "--record-id", "1"],
+            ["review", "accept", "--review-item-id", "1"],
         )
         assert first.exit_code == 0
 
         result = runner.invoke(
             app,
-            ["review", "accept", "--record-id", "1"],
+            ["review", "accept", "--review-item-id", "1"],
         )
         assert result.exit_code != 0
 
 
-def test_review_edit_and_accept_invalid_record_id_fails():
-    """`normflow review edit-and-accept` fails for an unknown Review Item."""
+def test_review_accept_invalid_review_item_id_fails():
+    """`normflow review accept` fails for an unknown Review Item."""
     with tempfile.TemporaryDirectory() as tmpdir:
         project_path = Path(tmpdir) / "proj"
         init_project(str(project_path))
 
         result = runner.invoke(
             app,
-            ["review", "edit-and-accept", "--record-id", "999", "--normalized-text", "Something"],
+            [
+                "review",
+                "accept",
+                "--review-item-id",
+                "999",
+                "--normalized-text",
+                "Something",
+            ],
         )
         assert result.exit_code != 0

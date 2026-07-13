@@ -303,7 +303,7 @@ describe("Review queue", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
-      "/review-items/9/edit-and-accept",
+      "/review-items/9/accept",
       {
         method: "POST",
         headers: {
@@ -312,7 +312,7 @@ describe("Review queue", () => {
         body: JSON.stringify({ normalized_text: "  Completed text  " }),
       },
     );
-    expect(document.querySelector("[role=status]")?.textContent).toContain("Review Item 9 accepted with edit");
+    expect(document.querySelector("[role=status]")?.textContent).toContain("Review Item 9 accepted.");
     expect(document.querySelector("header")?.textContent).toContain("13 Mappings");
     expect(document.querySelector("header")?.textContent).toContain("3 pending Review Items");
   });

@@ -132,13 +132,13 @@ def test_review_accept_uses_active_project(tmp_path: Path, monkeypatch):
         session.commit()
     monkeypatch.chdir(project)
 
-    result = runner.invoke(app, ["review", "accept", "--record-id", "1"])
+    result = runner.invoke(app, ["review", "accept", "--review-item-id", "1"])
 
     assert result.exit_code == 0
     assert json.loads(runner.invoke(app, ["review", "list", "--json"]).stdout) == []
 
 
-def test_review_edit_and_accept_uses_active_project(tmp_path: Path, monkeypatch):
+def test_review_accept_with_replacement_uses_active_project(tmp_path: Path, monkeypatch):
     project = init_project(tmp_path / "project")
     with MappingService(str(project)).session() as session:
         session.add(ReviewItem(raw_text="colr", suggested_text="color"))
@@ -149,8 +149,8 @@ def test_review_edit_and_accept_uses_active_project(tmp_path: Path, monkeypatch)
         app,
         [
             "review",
-            "edit-and-accept",
-            "--record-id",
+            "accept",
+            "--review-item-id",
             "1",
             "--normalized-text",
             "Color",

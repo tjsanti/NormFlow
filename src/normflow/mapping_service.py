@@ -413,14 +413,18 @@ class MappingService:
             for item in items
         ]
 
-    def _accept_review_item(self, record_id: int, normalized_text: str | None) -> None:
+    def accept_review_item(
+        self,
+        review_item_id: int,
+        normalized_text: str | None = None,
+    ) -> None:
         with self.session() as session:
             item = session.exec(
-                select(ReviewItem).where(ReviewItem.id == record_id)
+                select(ReviewItem).where(ReviewItem.id == review_item_id)
             ).first()
 
             if item is None:
-                msg = f"Review Item with id {record_id} not found"
+                msg = f"Review Item with id {review_item_id} not found"
                 raise ReviewItemNotFoundError(msg)
 
             approved_text = (
@@ -437,9 +441,6 @@ class MappingService:
             )
             session.delete(item)
             session.commit()
-
-    def accept_review_item(self, record_id: int) -> None:
-        self._accept_review_item(record_id, None)
 
     def accept_review_items(self, record_ids: list[int]) -> BulkAcceptResult:
         if not record_ids:
@@ -481,9 +482,6 @@ class MappingService:
                     "Could not accept selected Review Items; no changes were made"
                 ) from error
         return BulkAcceptResult(accepted=len(items))
-
-    def edit_and_accept_review_item(self, record_id: int, normalized_text: str) -> None:
-        self._accept_review_item(record_id, normalized_text)
 
     # ------------------------------------------------------------------
     # Index

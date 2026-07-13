@@ -4,7 +4,7 @@ CLI-first, human-in-the-loop text normalization workbench.
 
 Import approved `raw_text → normalized_text` mappings, get Suggestions for new records, and resolve pending Review Items into Mappings.
 
-**Current state:** Project init, a local browser UI, CSV import/export, exact-match Suggestions, semantic search (FAISS), batch CSV Suggestions, and a Review Item workflow (accept/edit-and-accept).
+**Current state:** Project init, a local browser UI, CSV import/export, exact-match Suggestions, semantic search (FAISS), batch CSV Suggestions, and unified Review Item acceptance.
 
 ## Prerequisites
 
@@ -153,18 +153,18 @@ Shows pending Review Items oldest-first with a stable ID, raw text, and optional
 Accept a Review Item's Suggestion as-is:
 
 ```bash
-normflow review accept --record-id 1
+normflow review accept --review-item-id 1
 ```
 
 Trims and validates the suggested text, creates its Mapping, and removes the Review Item atomically.
 
-Edit and accept a Review Item:
+Accept a Review Item with replacement normalized text:
 
 ```bash
-normflow review edit-and-accept --record-id 1 --normalized-text "Oxygen Sensor"
+normflow review accept --review-item-id 1 --normalized-text "Oxygen Sensor"
 ```
 
-Trims and validates the edited text, creates its Mapping, and removes the Review Item atomically.
+Both forms trim and validate the chosen text, create its Mapping, and remove the Review Item atomically.
 
 - Normalized text must contain at least one non-whitespace character.
 - Once accepted, a Review Item no longer exists and cannot be reviewed again.
@@ -208,5 +208,5 @@ tests/
 - [x] Batch CSV suggestions
 - [x] Semantic search with embeddings (FAISS + sentence-transformers)
 - [ ] LLM fallback
-- [x] Review Item workflow (accept/edit-and-accept)
+- [x] Unified Review Item acceptance
 - [x] Local TypeScript UI bound to the current Project

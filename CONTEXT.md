@@ -11,7 +11,7 @@ A project's physical container (created by `normflow init`) holds:
 ## Core Concepts
 
 **Project**:
-A discrete normalization task and its on-disk project folder. A user may have multiple Projects for different domains that require separate editing styles and do not cross-pollinate.
+A discrete normalization task and its on-disk project folder. A user may have multiple Projects for different domains that require separate editing styles and do not cross-pollinate; Projects are independent and must not be nested inside one another.
 _Avoid_: Workspace
 
 **Suggestion**:
@@ -19,7 +19,7 @@ A candidate normalized text proposed by the system for a Review Item.
 _Avoid_: Candidate, Proposal
 
 **Review Item**:
-A raw text input awaiting human review. It may contain a Suggestion or have no proposed normalized text yet; acceptance requires nonblank normalized text, with surrounding whitespace removed. Acceptance creates a Mapping and removes the Review Item.
+A raw text input awaiting human review. It may contain a Suggestion or have no proposed normalized text yet; a user accepts it either with its Suggestion or with replacement normalized text. Acceptance requires nonblank normalized text, with surrounding whitespace removed, creates a Mapping, and removes the Review Item.
 
 **Mapping**:
 A pair of strings — the messy original text and its approved clean version.
