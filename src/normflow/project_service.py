@@ -2,9 +2,7 @@
 
 from pathlib import Path
 
-from sqlmodel import SQLModel
-
-from .mapping_service import _make_engine, ExampleMapping, ReviewItem
+from .mapping_service import MappingService
 from .project import Project, ProjectNotFoundError, ProjectNestingError, project_at, resolve_project
 
 
@@ -47,7 +45,6 @@ def init_project(path: str | Path) -> Path:
     for directory in ("input", "output", "samples", ".normflow"):
         (project_root / directory).mkdir(exist_ok=True)
 
-    engine = _make_engine(str(db_path))
-    SQLModel.metadata.create_all(engine)
+    MappingService.initialize(project_root)
 
     return project_root

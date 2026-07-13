@@ -137,6 +137,31 @@ def test_production_ui_and_api_are_served_from_same_origin():
         assert "javascript" in script.headers["content-type"]
 
 
+def test_json_endpoints_publish_explicit_response_schemas(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    schema = TestClient(create_app(resolve_project(project_root))).get(
+        "/openapi.json"
+    ).json()
+
+    expected_models = {
+        ("post", "/import/mappings"): "ImportMappingsResponse",
+        ("post", "/import/records"): "ImportRecordsResponse",
+        ("post", "/review-items/{record_id}/accept"): "StatusResponse",
+        ("post", "/review-items/{record_id}/edit-and-accept"): "StatusResponse",
+        ("post", "/index/build"): "IndexBuildResponse",
+    }
+    for (method, path), model in expected_models.items():
+        response_schema = schema["paths"][path][method]["responses"]["200"][
+            "content"
+        ]["application/json"]["schema"]
+        assert response_schema["$ref"].endswith(f"/{model}")
+
+    review_schema = schema["paths"]["/review-items"]["get"]["responses"]["200"][
+        "content"
+    ]["application/json"]["schema"]
+    assert review_schema["items"]["$ref"].endswith("/ReviewItemResponse")
+
+
 def test_project_info_returns_stats():
     """GET /project/info returns Project stats."""
     with tempfile.TemporaryDirectory() as tmpdir:

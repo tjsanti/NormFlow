@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
+from typing import TypedDict
 
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -42,6 +43,15 @@ class BulkAcceptResult:
     """Outcome of atomically accepting selected Review Items."""
 
     accepted: int
+
+
+class ProjectInfo(TypedDict):
+    """Canonical Project identity and current statistics."""
+
+    project: str
+    database: str
+    mappings: int
+    review_items: int
 
 # ---------------------------------------------------------------------------
 # Internal models
@@ -80,12 +90,20 @@ def _make_engine(db_url: str):
 class MappingService:
     """Single seam over all NormFlow Project operations."""
 
-    def __init__(self, project_path: str):
+    def __init__(self, project_path: str | Path):
         self._path = Path(project_path).expanduser().resolve()
         self._db_path = self._path / "normflow.db"
         self._engine = _make_engine(str(self._db_path))
         self.validate()
         self._migrate_legacy_suggestions()
+
+    @classmethod
+    def initialize(cls, project_path: str | Path) -> "MappingService":
+        """Create the Project schema behind the service boundary."""
+        root = Path(project_path).expanduser().resolve()
+        engine = _make_engine(str(root / "normflow.db"))
+        SQLModel.metadata.create_all(engine)
+        return cls(root)
 
     def _migrate_legacy_suggestions(self) -> None:
         """Upgrade the former queue-specific Suggestion table in place."""
@@ -125,7 +143,7 @@ class MappingService:
     # Project info
     # ------------------------------------------------------------------
 
-    def project_info(self) -> dict[str, str | int]:
+    def project_info(self) -> ProjectInfo:
         """Return canonical Project identity and current statistics."""
         with self.session() as session:
             mapping_count = session.exec(

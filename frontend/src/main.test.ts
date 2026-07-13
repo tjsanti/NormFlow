@@ -49,6 +49,23 @@ describe("Bound Project launch", () => {
     expect(window.localStorage.getItem("normflow.recentProjects"))
       .toBe(JSON.stringify(["/old/project"]));
   });
+
+  test("renders the canonical Project path as text", async () => {
+    const project = {
+      ...projectInfo,
+      project: "/tmp/<img src=x onerror=alert(1)>",
+    };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(okJson(project))
+      .mockResolvedValueOnce(okJson([])));
+
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
+    expect(document.querySelector("header img")).toBeNull();
+    expect(document.querySelector("h1")?.textContent).toBe("<img src=x onerror=alert(1)>");
+    expect(document.querySelector(".project-path")?.textContent).toBe(project.project);
+  });
 });
 
 describe("Review queue", () => {

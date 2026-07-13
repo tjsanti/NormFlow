@@ -301,8 +301,8 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
     <header>
       <div>
         <span class="eyebrow">Project</span>
-        <h1>${projectName(project.project)}</h1>
-        <p class="project-path">${project.project}</p>
+        <h1></h1>
+        <p class="project-path"></p>
       </div>
       <div class="counts">
         <div><strong id="mapping-count">${project.mappings}</strong> Mappings</div>
@@ -318,6 +318,8 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
       <section id="review-queue" aria-label="Review Items"></section>
     </main>
   `;
+  root.querySelector("h1")!.textContent = projectName(project.project);
+  root.querySelector<HTMLElement>(".project-path")!.textContent = project.project;
   root.querySelector("#refresh-review-items")!.addEventListener(
     "click",
     () => void refreshProject(root),

@@ -36,6 +36,31 @@ class ProjectInfoResponse(BaseModel):
     review_items: int
 
 
+class ImportMappingsResponse(BaseModel):
+    imported: int
+    skipped: int
+
+
+class ImportRecordsResponse(BaseModel):
+    auto_committed: int
+    review_items: int
+    skipped: int
+
+
+class ReviewItemResponse(BaseModel):
+    id: int
+    raw_text: str
+    suggested_text: str
+
+
+class StatusResponse(BaseModel):
+    status: str
+
+
+class IndexBuildResponse(BaseModel):
+    entries: int
+
+
 @asynccontextmanager
 async def _temporary_upload_csv(file: UploadFile | None):
     if not file:
@@ -63,19 +88,19 @@ def project_info(
     return ProjectInfoResponse(**service.project_info())
 
 
-@router.post("/import/mappings")
+@router.post("/import/mappings", response_model=ImportMappingsResponse)
 async def import_mappings(
     source_column: str = Query(...),
     target_column: str = Query(...),
     file: UploadFile = None,
     service: MappingService = Depends(get_project_service),
-):
+) -> ImportMappingsResponse:
     async with _temporary_upload_csv(file) as csv_path:
         imported, skipped = service.import_mappings(str(csv_path), source_column, target_column)
-        return {"imported": imported, "skipped": skipped}
+        return ImportMappingsResponse(imported=imported, skipped=skipped)
 
 
-@router.post("/import/records")
+@router.post("/import/records", response_model=ImportRecordsResponse)
 async def import_records(
     column: str = Query(...),
     semantic: bool = Query(True),
@@ -83,23 +108,26 @@ async def import_records(
     threshold: float = Query(0.85),
     file: UploadFile = None,
     service: MappingService = Depends(get_project_service),
-):
+) -> ImportRecordsResponse:
     async with _temporary_upload_csv(file) as csv_path:
-        return service.import_records_for_review(
+        result = service.import_records_for_review(
             str(csv_path), column, semantic=semantic, llm=llm, threshold=threshold
         )
+        return ImportRecordsResponse(**result)
 
 
-@router.get("/review-items")
-def list_review_items(service: MappingService = Depends(get_project_service)):
-    return service.list_review_items()
+@router.get("/review-items", response_model=list[ReviewItemResponse])
+def list_review_items(
+    service: MappingService = Depends(get_project_service),
+) -> list[ReviewItemResponse]:
+    return [ReviewItemResponse(**item) for item in service.list_review_items()]
 
 
 @router.post("/review-items/bulk-accept", response_model=BulkAcceptResponse)
 def bulk_accept_review_items(
     request: BulkAcceptRequest,
     service: MappingService = Depends(get_project_service),
-):
+) -> BulkAcceptResponse:
     try:
         result = service.accept_review_items(request.review_item_ids)
         return BulkAcceptResponse(accepted=result.accepted)
@@ -111,33 +139,39 @@ def bulk_accept_review_items(
         raise HTTPException(status_code=422, detail=str(error))
 
 
-@router.post("/review-items/{record_id}/accept")
+@router.post(
+    "/review-items/{record_id}/accept",
+    response_model=StatusResponse,
+)
 def accept_review_item(
     record_id: int,
     service: MappingService = Depends(get_project_service),
-):
+) -> StatusResponse:
     try:
         service.accept_review_item(record_id)
-        return {"status": "accepted"}
-    except ReviewItemNotFoundError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        return StatusResponse(status="accepted")
+    except ReviewItemNotFoundError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
 
 
-@router.post("/review-items/{record_id}/edit-and-accept")
+@router.post(
+    "/review-items/{record_id}/edit-and-accept",
+    response_model=StatusResponse,
+)
 def edit_and_accept_review_item(
     record_id: int,
     normalized_text: str = Query(...),
     service: MappingService = Depends(get_project_service),
-):
+) -> StatusResponse:
     try:
         service.edit_and_accept_review_item(record_id, normalized_text)
-        return {"status": "accepted"}
-    except ReviewItemNotFoundError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        return StatusResponse(status="accepted")
+    except ReviewItemNotFoundError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
 
 
 @router.post("/export")
@@ -145,28 +179,30 @@ def export_normalized(
     source_column: str = Query("raw_text"),
     output_column: str = Query("normalized_text"),
     service: MappingService = Depends(get_project_service),
-):
+) -> PlainTextResponse:
     try:
         csv_content = service.export_normalized_csv(source_column, output_column)
         return PlainTextResponse(content=csv_content, media_type="text/csv")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
 
 
-@router.post("/index/build")
-def build_index(service: MappingService = Depends(get_project_service)):
+@router.post("/index/build", response_model=IndexBuildResponse)
+def build_index(
+    service: MappingService = Depends(get_project_service),
+) -> IndexBuildResponse:
     try:
         count = service.build_index()
-        return {"entries": count}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        return IndexBuildResponse(entries=count)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
 
 
 _static_dir = Path(__file__).with_name("static")
 
 
 @router.get("/", include_in_schema=False)
-def ui_index():
+def ui_index() -> FileResponse:
     return FileResponse(_static_dir / "index.html")
 
 
