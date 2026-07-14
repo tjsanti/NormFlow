@@ -262,11 +262,15 @@ class SemanticIndex:
             os.replace(temporary_pointer, self._current_path)
             published = True
 
-            if (
-                mapping_revision is None
-                or current_mapping_revision is None
-                or current_mapping_revision() == mapping_revision
-            ):
+            revision_confirmed = (
+                mapping_revision is None or current_mapping_revision is None
+            )
+            if not revision_confirmed:
+                try:
+                    revision_confirmed = current_mapping_revision() == mapping_revision
+                except Exception:
+                    pass
+            if revision_confirmed:
                 self._refresh_required_path.unlink(missing_ok=True)
                 self._refresh_failed_path.unlink(missing_ok=True)
             for old_generation in existing_generations - {previous_generation}:

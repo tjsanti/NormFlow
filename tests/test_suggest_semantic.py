@@ -223,6 +223,38 @@ class TestSuggestSemanticFallback:
             assert service.project_info()["semantic_index_status"] == "refresh_required"
 
     @patch(_INDEX_PATCH)
+    def test_revision_confirmation_error_does_not_fail_published_build(self, mock_ensure):
+        """A database read error after publication leaves freshness unknown."""
+        mock_model = MagicMock()
+        mock_model.encode.side_effect = lambda texts, **kw: [
+            [1.0, 0.0, 0.0] for _ in texts
+        ]
+        mock_model.get_sentence_embedding_dimension.return_value = 3
+        mock_ensure.return_value = mock_model
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            service = MappingService(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
+            service.build_index()
+            csv_path = project_path / "new-mapping.csv"
+            csv_path.write_text("raw,clean\ncentre,center\n", encoding="utf-8")
+            service.import_mappings(str(csv_path), "raw", "clean")
+
+            with patch.object(
+                service,
+                "_current_mapping_revision",
+                side_effect=RuntimeError("database unavailable"),
+            ):
+                count = service.build_index()
+
+            marker_dir = project_path / ".normflow"
+            assert count == 2
+            assert (marker_dir / "semantic_index_refresh_required").exists()
+            assert not (marker_dir / "semantic_index_refresh_failed").exists()
+
+    @patch(_INDEX_PATCH)
     def test_failed_lazy_refresh_preserves_stale_fallback_and_warning(self, mock_ensure):
         """A refresh failure keeps the previous index usable and visibly stale."""
         mock_model = MagicMock()
