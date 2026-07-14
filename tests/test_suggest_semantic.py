@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from tests.helpers import seed_mappings
 from normflow.cli import app
-from normflow.mapping_service import ExampleMapping, MappingService
+from normflow.mapping_service import MappingService
 from normflow.semantic_index import SemanticIndex
 from normflow.project_service import init_project as _init_project
 

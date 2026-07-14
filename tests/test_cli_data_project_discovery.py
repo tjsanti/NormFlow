@@ -8,9 +8,8 @@ import pytest
 from typer.testing import CliRunner
 
 from normflow.cli import app
-from normflow.mapping_service import ExampleMapping, MappingService
-from normflow.mapping_service import ReviewItem
 from normflow.project_service import init_project
+from tests.helpers import import_blank_review_items, seed_mappings
 
 
 runner = CliRunner()
@@ -46,9 +45,7 @@ def test_export_discovers_parent_project_and_keeps_output_relative_to_shell_dire
     project = init_project(tmp_path / "project")
     nested = project / "reports" / "daily"
     nested.mkdir(parents=True)
-    with MappingService(str(project)).session() as session:
-        session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-        session.commit()
+    seed_mappings(project, [("colour", "color")])
     monkeypatch.chdir(nested)
 
     result = runner.invoke(app, ["export", "mappings.csv"])
@@ -65,12 +62,8 @@ def test_suggest_uses_nearest_project_from_nested_directory(tmp_path: Path, monk
     inner = init_project(tmp_path / "inner")
     nested = inner / "input" / "incoming"
     nested.mkdir(parents=True)
-    with MappingService(str(outer)).session() as session:
-        session.add(ExampleMapping(raw_text="colour", normalized_text="outer"))
-        session.commit()
-    with MappingService(str(inner)).session() as session:
-        session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-        session.commit()
+    seed_mappings(outer, [("colour", "outer")])
+    seed_mappings(inner, [("colour", "color")])
     monkeypatch.chdir(nested)
 
     result = runner.invoke(app, ["suggest", "colour"])
@@ -86,9 +79,7 @@ def test_suggest_batch_keeps_input_and_output_relative_to_shell_directory(
     nested = project / "input" / "incoming"
     nested.mkdir(parents=True)
     (nested / "records.csv").write_text("text\ncolour\n", encoding="utf-8")
-    with MappingService(str(project)).session() as session:
-        session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-        session.commit()
+    seed_mappings(project, [("colour", "color")])
     monkeypatch.chdir(nested)
 
     result = runner.invoke(
@@ -114,9 +105,7 @@ def test_review_list_discovers_project_from_nested_directory(tmp_path: Path, mon
     project = init_project(tmp_path / "project")
     nested = project / "output" / "reports"
     nested.mkdir(parents=True)
-    with MappingService(str(project)).session() as session:
-        session.add(ReviewItem(raw_text="colr", suggested_text="color"))
-        session.commit()
+    import_blank_review_items(project, ["colr"])
     monkeypatch.chdir(nested)
 
     result = runner.invoke(app, ["review", "list", "--json"])
@@ -127,12 +116,17 @@ def test_review_list_discovers_project_from_nested_directory(tmp_path: Path, mon
 
 def test_review_accept_uses_active_project(tmp_path: Path, monkeypatch):
     project = init_project(tmp_path / "project")
-    with MappingService(str(project)).session() as session:
-        session.add(ReviewItem(raw_text="colr", suggested_text="color"))
-        session.commit()
+    import_blank_review_items(project, ["colr"])
     monkeypatch.chdir(project)
 
-    result = runner.invoke(app, ["review", "accept", "--review-item-id", "1"])
+    result = runner.invoke(app, [
+        "review",
+        "accept",
+        "--review-item-id",
+        "1",
+        "--normalized-text",
+        "color",
+    ])
 
     assert result.exit_code == 0
     assert json.loads(runner.invoke(app, ["review", "list", "--json"]).stdout) == []
@@ -140,9 +134,7 @@ def test_review_accept_uses_active_project(tmp_path: Path, monkeypatch):
 
 def test_review_accept_with_replacement_uses_active_project(tmp_path: Path, monkeypatch):
     project = init_project(tmp_path / "project")
-    with MappingService(str(project)).session() as session:
-        session.add(ReviewItem(raw_text="colr", suggested_text="color"))
-        session.commit()
+    import_blank_review_items(project, ["colr"])
     monkeypatch.chdir(project)
 
     result = runner.invoke(
@@ -169,9 +161,7 @@ def test_index_build_uses_active_project(mock_ensure, tmp_path: Path, monkeypatc
     model.get_sentence_embedding_dimension.return_value = 3
     mock_ensure.return_value = model
     project = init_project(tmp_path / "project")
-    with MappingService(str(project)).session() as session:
-        session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-        session.commit()
+    seed_mappings(project, [("colour", "color")])
     monkeypatch.chdir(project)
 
     result = runner.invoke(app, ["index", "build"])

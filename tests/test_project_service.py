@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from normflow.mapping_service import ExampleMapping, MappingService
+import normflow.mapping_service as mapping_module
+from normflow.mapping_service import MappingService
 from normflow.project_service import init_project
 
 
@@ -24,24 +25,14 @@ def test_accepts_initialized_project():
         assert service._path.resolve() == Path(tmpdir).resolve()
 
 
-def test_session_can_write_and_read_mappings():
-    """MappingService.session() should yield a session that can read/write mappings."""
+def test_persistence_is_not_exposed_by_the_mapping_interface():
+    """Sessions and SQLModel schemas remain Mapping implementation details."""
     with tempfile.TemporaryDirectory() as tmpdir:
         init_project(tmpdir)
         service = MappingService(tmpdir)
 
-        from sqlmodel import Session, select
-
-        # Write a mapping
-        with service.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.commit()
-
-        # Read it back
-        with service.session() as session:
-            mapping = session.exec(
-                select(ExampleMapping).where(ExampleMapping.raw_text == "colour")
-            ).first()
-
-        assert mapping is not None
-        assert mapping.normalized_text == "color"
+        assert not hasattr(service, "session")
+        assert not hasattr(mapping_module, "ExampleMapping")
+        assert not hasattr(mapping_module, "ReviewItem")
+        assert not hasattr(mapping_module, "SQLModel")
+        assert not hasattr(mapping_module, "Session")

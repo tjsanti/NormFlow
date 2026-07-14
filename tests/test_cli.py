@@ -5,14 +5,14 @@ import sqlite3
 import tempfile
 from contextlib import chdir
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from sqlmodel import Session
 from typer.testing import CliRunner
 
 from normflow.cli import app
-from normflow.mapping_service import ExampleMapping, MappingService
+from normflow.mapping_service import MappingService, ReviewItemInfo
 from normflow.project_service import init_project as _init_project
+from tests.helpers import seed_mappings
 
 
 _active_project: Path | None = None
@@ -96,9 +96,7 @@ def test_init_preserves_contents_and_repairs_existing_project(
     unrelated_directory = project_root / "documents"
     unrelated_directory.mkdir()
     (project_root / "input").rmdir()
-    with MappingService(str(project_root)).session() as session:
-        session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-        session.commit()
+    seed_mappings(project_root, [("colour", "color")])
     monkeypatch.chdir(project_root)
 
     result = runner.invoke(app, ["init"])
@@ -180,9 +178,10 @@ def test_init_rejects_project_selection_options(tmp_path: Path, monkeypatch):
     assert not (tmp_path / "normflow.db").exists()
 
 
-def test_init_refuses_unsupported_database_schema_before_mutation(
+def test_project_validation_rejects_unsupported_sqlite_schema_before_mutation(
     tmp_path: Path, monkeypatch,
 ):
+    # Persistence fixture: no domain operation should create an invalid Project.
     database = tmp_path / "normflow.db"
     with sqlite3.connect(database) as connection:
         connection.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
@@ -494,12 +493,7 @@ def test_export_writes_csv():
 
         init_project(str(project_path))
 
-        # Insert mappings directly via the service
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="hello", normalized_text="world"))
-            session.add(ExampleMapping(raw_text="foo", normalized_text="bar"))
-            session.commit()
+        seed_mappings(project_path, [("hello", "world"), ("foo", "bar")])
 
         result = runner.invoke(
             app,
@@ -523,10 +517,7 @@ def test_export_custom_columns():
 
         init_project(str(project_path))
 
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="hello", normalized_text="world"))
-            session.commit()
+        seed_mappings(project_path, [("hello", "world")])
 
         result = runner.invoke(
             app,
@@ -579,10 +570,7 @@ def test_suggest_exact_match_found():
 
         init_project(str(project_path))
 
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.commit()
+        seed_mappings(project_path, [("colour", "color")])
 
         result = runner.invoke(
             app,
@@ -605,10 +593,7 @@ def test_suggest_no_match_found():
 
         init_project(str(project_path))
 
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.commit()
+        seed_mappings(project_path, [("colour", "color")])
 
         result = runner.invoke(
             app,
@@ -628,10 +613,7 @@ def test_suggest_limit_respected():
 
         init_project(str(project_path))
 
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.commit()
+        seed_mappings(project_path, [("colour", "color")])
 
         result = runner.invoke(
             app,
@@ -650,10 +632,7 @@ def test_suggest_limit_default():
 
         init_project(str(project_path))
 
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.commit()
+        seed_mappings(project_path, [("colour", "color")])
 
         result = runner.invoke(
             app,
@@ -688,12 +667,7 @@ def test_suggest_batch_basic():
 
         init_project(str(project_path))
 
-        # Seed mappings
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.add(ExampleMapping(raw_text="centre", normalized_text="center"))
-            session.commit()
+        seed_mappings(project_path, [("colour", "color"), ("centre", "center")])
 
         # Input CSV with a raw text column
         _write_csv(csv_path, "id,item", "1,colour", "2,centre", "3,unknown")
@@ -723,10 +697,7 @@ def test_suggest_batch_no_match_blank():
 
         init_project(str(project_path))
 
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.commit()
+        seed_mappings(project_path, [("colour", "color")])
 
         _write_csv(csv_path, "text", "colour", "nope")
 
@@ -752,10 +723,7 @@ def test_suggest_batch_custom_output_column():
 
         init_project(str(project_path))
 
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.commit()
+        seed_mappings(project_path, [("colour", "color")])
 
         _write_csv(csv_path, "text", "colour")
 
@@ -777,10 +745,7 @@ def test_suggest_batch_output_to_file():
 
         init_project(str(project_path))
 
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.commit()
+        seed_mappings(project_path, [("colour", "color")])
 
         _write_csv(csv_path, "text", "colour")
 
@@ -801,10 +766,7 @@ def test_suggest_batch_excludes_entirely_blank_rows():
 
         init_project(str(project_path))
 
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.commit()
+        seed_mappings(project_path, [("colour", "color")])
 
         # Row 1: valid, Row 2: all blank, Row 3: valid
         csv_path.write_text("id,text\n1,colour\n,,\n3,centre\n")
@@ -828,10 +790,7 @@ def test_suggest_batch_includes_partial_rows_skips_processing():
 
         init_project(str(project_path))
 
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.commit()
+        seed_mappings(project_path, [("colour", "color")])
 
         # Row 1: valid, Row 2: has id but blank text, Row 3: valid
         csv_path.write_text("id,text\n1,colour\n2,\n3,centre\n")
@@ -857,10 +816,7 @@ def test_suggest_batch_preserves_extra_columns():
 
         init_project(str(project_path))
 
-        ms = MappingService(str(project_path))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
-            session.commit()
+        seed_mappings(project_path, [("colour", "color")])
 
         _write_csv(csv_path, "id,category,text,notes", "1,UK,colour,primary")
 
@@ -925,110 +881,86 @@ def test_suggest_batch_missing_input_file():
 # ---- review tests ----
 
 
-def _seed_review_items(project_path: Path, items: list[tuple[str, str]]) -> None:
-    """Seed Review Items for CLI adapter tests."""
-    from normflow.mapping_service import MappingService, ReviewItem
-
-    ms = MappingService(str(project_path))
-    with ms.session() as session:
-        for raw_text, suggested_text in items:
-            session.add(ReviewItem(
-                raw_text=raw_text,
-                suggested_text=suggested_text,
-            ))
-        session.commit()
+def _fake_mapping_service(
+    review_items: list[ReviewItemInfo] | None = None,
+) -> MagicMock:
+    """Return a Mapping interface fake for CLI adapter contracts."""
+    service = MagicMock(spec=MappingService)
+    service.list_review_items.return_value = review_items or []
+    return service
 
 
 def test_review_list_shows_review_items():
     """`normflow review list` shows pending Review Items."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_path = Path(tmpdir) / "proj"
-        init_project(str(project_path))
+    service = _fake_mapping_service([
+        {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"},
+        {"id": 2, "raw_text": "oxygen sensor", "suggested_text": "Oxygen Sensor"},
+    ])
 
-        _seed_review_items(project_path, [
-            ("o2 sensor", "O2 Sensor"),
-            ("oxygen sensor", "Oxygen Sensor"),
-        ])
-
+    with patch("normflow.cli._project_service", return_value=service):
         result = runner.invoke(
             app,
             ["review", "list"],
         )
-        assert result.exit_code == 0
-        assert "o2 sensor" in result.stdout
-        assert "oxygen sensor" in result.stdout
-        assert "oxygen sensor" in result.stdout
+
+    assert result.exit_code == 0
+    assert "o2 sensor" in result.stdout
+    assert "oxygen sensor" in result.stdout
+    service.list_review_items.assert_called_once_with()
 
 
 def test_review_list_empty_when_no_pending():
     """`normflow review list` is empty when no Review Items are pending."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_path = Path(tmpdir) / "proj"
-        init_project(str(project_path))
+    service = _fake_mapping_service()
 
+    with patch("normflow.cli._project_service", return_value=service):
         result = runner.invoke(
             app,
             ["review", "list"],
         )
-        assert result.exit_code == 0
+
+    assert result.exit_code == 0
+    assert result.stdout == ""
 
 
 def test_review_list_json_output():
     """`normflow review list --json` should return valid JSON array."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_path = Path(tmpdir) / "proj"
-        init_project(str(project_path))
+    service = _fake_mapping_service([
+        {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"},
+    ])
 
-        _seed_review_items(project_path, [
-            ("o2 sensor", "O2 Sensor"),
-        ])
-
+    with patch("normflow.cli._project_service", return_value=service):
         result = runner.invoke(
             app,
             ["review", "list", "--json"],
         )
-        assert result.exit_code == 0
-        data = json.loads(result.stdout)
-        assert isinstance(data, list)
-        assert len(data) == 1
-        assert data[0]["raw_text"] == "o2 sensor"
-        assert data[0]["suggested_text"] == "O2 Sensor"
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == [
+        {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
+    ]
 
 
-def test_review_accept_inserts_mapping_and_removes_review_item():
-    """`normflow review accept` accepts a Review Item."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_path = Path(tmpdir) / "proj"
-        init_project(str(project_path))
+def test_review_accept_forwards_review_item_id():
+    """`normflow review accept` forwards the selected Review Item."""
+    service = _fake_mapping_service()
 
-        _seed_review_items(project_path, [
-            ("o2 sensor", "O2 Sensor"),
-        ])
-
+    with patch("normflow.cli._project_service", return_value=service):
         result = runner.invoke(
             app,
             ["review", "accept", "--review-item-id", "1"],
         )
-        assert result.exit_code == 0
-        assert "Review Item 1 accepted." in result.stdout
 
-        # Verify mapping was inserted
-        with chdir(project_path):
-            info_result = runner.invoke(app, ["info"])
-        assert "Mappings:   1" in info_result.stdout
-        assert "Review Items: 0" in info_result.stdout
+    assert result.exit_code == 0
+    assert "Review Item 1 accepted." in result.stdout
+    service.accept_review_item.assert_called_once_with(1, None)
 
 
-def test_review_accept_inserts_mapping_with_replacement_text():
-    """`normflow review accept` accepts optional replacement normalized text."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_path = Path(tmpdir) / "proj"
-        init_project(str(project_path))
+def test_review_accept_forwards_replacement_text():
+    """`normflow review accept` forwards optional replacement normalized text."""
+    service = _fake_mapping_service()
 
-        _seed_review_items(project_path, [
-            ("o2 sensor", "O2 Sensor"),
-        ])
-
+    with patch("normflow.cli._project_service", return_value=service):
         result = runner.invoke(
             app,
             [
@@ -1040,15 +972,9 @@ def test_review_accept_inserts_mapping_with_replacement_text():
                 "Oxygen Sensor",
             ],
         )
-        assert result.exit_code == 0
-        assert "Review Item 1 accepted." in result.stdout
 
-        suggestion_result = runner.invoke(
-            app,
-            ["suggest", "o2 sensor", "--no-semantic", "--no-llm"],
-        )
-        suggestion = json.loads(suggestion_result.stdout)
-        assert suggestion["suggestions"][0]["suggested_text"] == "Oxygen Sensor"
+    assert result.exit_code == 0
+    service.accept_review_item.assert_called_once_with(1, "Oxygen Sensor")
 
 
 def test_legacy_review_accept_command_and_option_are_unavailable():
@@ -1064,14 +990,13 @@ def test_legacy_review_accept_command_and_option_are_unavailable():
 
 def test_review_accept_removed_item_fails():
     """A Review Item cannot be accepted twice because acceptance removes it."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_path = Path(tmpdir) / "proj"
-        init_project(str(project_path))
+    service = _fake_mapping_service()
+    service.accept_review_item.side_effect = [
+        None,
+        ValueError("Review Item with id 1 not found"),
+    ]
 
-        _seed_review_items(project_path, [
-            ("o2 sensor", "O2 Sensor"),
-        ])
-
+    with patch("normflow.cli._project_service", return_value=service):
         first = runner.invoke(
             app,
             ["review", "accept", "--review-item-id", "1"],
@@ -1087,10 +1012,12 @@ def test_review_accept_removed_item_fails():
 
 def test_review_accept_invalid_review_item_id_fails():
     """`normflow review accept` fails for an unknown Review Item."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_path = Path(tmpdir) / "proj"
-        init_project(str(project_path))
+    service = _fake_mapping_service()
+    service.accept_review_item.side_effect = ValueError(
+        "Review Item with id 999 not found"
+    )
 
+    with patch("normflow.cli._project_service", return_value=service):
         result = runner.invoke(
             app,
             [
@@ -1102,4 +1029,6 @@ def test_review_accept_invalid_review_item_id_fails():
                 "Something",
             ],
         )
-        assert result.exit_code != 0
+
+    assert result.exit_code != 0
+    assert "Review Item with id 999 not found" in result.stdout

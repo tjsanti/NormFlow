@@ -4,10 +4,9 @@ import csv
 import tempfile
 from pathlib import Path
 
-from sqlmodel import select
-
-from normflow.mapping_service import ExampleMapping, MappingService, ReviewItem
+from normflow.mapping_service import MappingService
 from normflow.project_service import init_project
+from tests.helpers import seed_mappings
 
 
 def _write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
@@ -23,11 +22,9 @@ def test_import_routes_exact_match_to_library_and_no_match_to_review_items():
         project = Path(tmpdir)
         init_project(str(project))
 
-        # Seed the library with one mapping
+        # Seed the library through the Mapping interface.
         ms = MappingService(str(project))
-        with ms.session() as session:
-            session.add(ExampleMapping(raw_text="United States", normalized_text="US"))
-            session.commit()
+        seed_mappings(project, [("United States", "US")])
 
         # CSV with 2 rows: one exact match, one unknown
         csv_path = project / "input.csv"
@@ -36,24 +33,17 @@ def test_import_routes_exact_match_to_library_and_no_match_to_review_items():
             {"name": "Nordic Confederation"},
         ], ["name"])
 
-        ms.import_records_for_review(str(csv_path), "name")
+        result = ms.import_records_for_review(str(csv_path), "name")
 
         # Exact match auto-committed (already existed, so no duplicate)
-        with ms.session() as session:
-            us_mappings = session.exec(
-                select(ExampleMapping).where(
-                    ExampleMapping.raw_text == "United States"
-                )
-            ).all()
-            assert len(us_mappings) == 1
+        assert result["auto_committed"] == 1
+        assert ms.project_info()["mappings"] == 1
+        assert ms.lookup("United States", semantic=False, llm=False)[0].suggested_text == "US"
 
         # Unknown value becomes a Review Item.
-        with ms.session() as session:
-            pending = session.exec(
-                select(ReviewItem)
-            ).all()
-            assert len(pending) == 1
-            assert pending[0].raw_text == "Nordic Confederation"
+        assert ms.list_review_items() == [
+            {"id": 1, "raw_text": "Nordic Confederation", "suggested_text": ""}
+        ]
 
 
 def test_import_deduplicates_identical_raw_text():
@@ -76,10 +66,7 @@ def test_import_deduplicates_identical_raw_text():
 
         result = ms.import_records_for_review(str(csv_path), "name")
 
-        with ms.session() as session:
-            pending = session.exec(select(ReviewItem)).all()
-            assert len(pending) == 1
-
+        assert len(ms.list_review_items()) == 1
         assert result["skipped"] == 4
         assert result["review_items"] == 1
 
@@ -120,16 +107,14 @@ def test_export_returns_original_csv_with_normalized_column():
         ms.import_records_for_review(str(csv_path), "name")
 
         # Both unmatched — accept one as-is, edit the other
-        with ms.session() as session:
-            us_review_item = session.exec(
-                select(ReviewItem).where(ReviewItem.raw_text == "United States")
-            ).first()
-            ca_review_item = session.exec(
-                select(ReviewItem).where(ReviewItem.raw_text == "Canada")
-            ).first()
+        review_items = {
+            item["raw_text"]: item for item in ms.list_review_items()
+        }
+        us_review_item = review_items["United States"]
+        ca_review_item = review_items["Canada"]
 
-        ms.accept_review_item(us_review_item.id, "US")
-        assert ca_review_item is not None
+        ms.accept_review_item(us_review_item["id"], "US")
+        assert ca_review_item["suggested_text"] == ""
 
         # Export — should return original CSV + normalized_text column
         result = ms.export_normalized_csv("name")
