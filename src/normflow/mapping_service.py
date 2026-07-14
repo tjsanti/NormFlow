@@ -18,7 +18,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Field as SField, SQLModel, Session, create_engine, func, select
 
-from .semantic_index import SemanticIndex
+from .semantic_index import SemanticIndex, SemanticIndexStatus
 from .suggestion_lookup import SuggestionItem, SuggestionLookup
 
 
@@ -52,6 +52,18 @@ class ProjectInfo(TypedDict):
     database: str
     mappings: int
     review_items: int
+    semantic_index_status: SemanticIndexStatus
+    semantic_index_warning: str | None
+
+
+class ImportRecordsResult(TypedDict):
+    """Batch Import routing counts plus semantic-index state."""
+
+    auto_committed: int
+    review_items: int
+    skipped: int
+    semantic_index_status: SemanticIndexStatus
+    semantic_index_warning: str | None
 
 # ---------------------------------------------------------------------------
 # Internal models
@@ -132,6 +144,10 @@ class MappingService:
         """Context manager for database sessions."""
         return Session(self._engine)
 
+    def _mark_mappings_changed(self) -> None:
+        """Keep the derived semantic index visibly behind Mapping commits."""
+        SemanticIndex(str(self._path)).mark_refresh_required()
+
     def _find_exact_mapping(self, raw_text: str) -> str | None:
         with self.session() as session:
             mapping = session.exec(
@@ -153,11 +169,14 @@ class MappingService:
                 select(func.count(ReviewItem.id))
             ).one()
 
+        index = SemanticIndex(str(self._path))
         return {
             "project": str(self._path),
             "database": str(self._db_path),
             "mappings": mapping_count,
             "review_items": review_item_count,
+            "semantic_index_status": index.status(),
+            "semantic_index_warning": index.warning(),
         }
 
     # ------------------------------------------------------------------
@@ -212,6 +231,8 @@ class MappingService:
                     session.add(ExampleMapping(raw_text=raw_text, normalized_text=normalized_text))
                     imported += 1
 
+            if imported:
+                self._mark_mappings_changed()
             session.commit()
 
         return imported, skipped
@@ -248,10 +269,36 @@ class MappingService:
         threshold: float = 0.85,
         limit: int = 1,
     ) -> list[SuggestionItem]:
+        if semantic or llm:
+            self._refresh_semantic_index_if_needed()
+        return self._lookup_with_current_index(
+            raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=limit,
+        )
+
+    def _lookup_with_current_index(
+        self,
+        raw_text: str,
+        *,
+        semantic: bool,
+        llm: bool,
+        threshold: float,
+        limit: int,
+    ) -> list[SuggestionItem]:
+        """Look up a Suggestion after this operation's one refresh attempt."""
         return SuggestionLookup(
             exact_lookup=self._find_exact_mapping,
             index=SemanticIndex(str(self._path)),
         ).lookup(raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=limit)
+
+    def _refresh_semantic_index_if_needed(self) -> None:
+        if SemanticIndex(str(self._path)).status() == "fresh":
+            return
+        try:
+            self.build_index()
+        except Exception:
+            # Preserve the previous index as a visible stale fallback. Adapters
+            # report the still-non-fresh Project status to the user.
+            return
 
     def lookup_batch(
         self,
@@ -263,6 +310,8 @@ class MappingService:
         llm: bool = True,
         threshold: float = 0.85,
     ) -> str:
+        if semantic or llm:
+            self._refresh_semantic_index_if_needed()
         available, rows = self._read_csv(csv_path, column)
 
         out_fieldnames = list(rows[0].keys()) if rows else available
@@ -281,7 +330,9 @@ class MappingService:
             out_row = dict(row)
 
             if raw_text:
-                results = self.lookup(raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=1)
+                results = self._lookup_with_current_index(
+                    raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=1,
+                )
                 if results:
                     out_row[output_column] = results[0].suggested_text
                 else:
@@ -315,7 +366,9 @@ class MappingService:
         semantic: bool = True,
         llm: bool = True,
         threshold: float = 0.85,
-    ) -> dict:
+    ) -> ImportRecordsResult:
+        if semantic or llm:
+            self._refresh_semantic_index_if_needed()
         _, rows = self._read_csv(csv_path, column)
 
         self._store_batch_csv(csv_path)
@@ -326,6 +379,7 @@ class MappingService:
 
         auto_committed = 0
         review_items = 0
+        mappings_added = False
 
         with self.session() as session:
             existing_raw = {r for r in session.exec(select(ExampleMapping.raw_text)).all()}
@@ -337,7 +391,9 @@ class MappingService:
                     skipped += 1
                     continue
 
-                results = self.lookup(raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=1)
+                results = self._lookup_with_current_index(
+                    raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=1,
+                )
 
                 if results:
                     result = results[0]
@@ -346,6 +402,7 @@ class MappingService:
                         if raw_text not in existing_raw:
                             session.add(ExampleMapping(raw_text=raw_text, normalized_text=result.suggested_text))
                             existing_raw.add(raw_text)
+                            mappings_added = True
                         auto_committed += 1
                     else:
                         # LLM suggestion — store it on a Review Item.
@@ -356,12 +413,17 @@ class MappingService:
                     session.add(ReviewItem(raw_text=raw_text, suggested_text=""))
                     review_items += 1
 
+            if mappings_added:
+                self._mark_mappings_changed()
             session.commit()
 
+        info = self.project_info()
         return {
             "auto_committed": auto_committed,
             "review_items": review_items,
             "skipped": skipped,
+            "semantic_index_status": info["semantic_index_status"],
+            "semantic_index_warning": info["semantic_index_warning"],
         }
 
     def export_normalized_csv(
@@ -440,6 +502,7 @@ class MappingService:
                 )
             )
             session.delete(item)
+            self._mark_mappings_changed()
             session.commit()
 
     def accept_review_items(self, record_ids: list[int]) -> BulkAcceptResult:
@@ -475,6 +538,7 @@ class MappingService:
                 ))
                 session.delete(item)
             try:
+                self._mark_mappings_changed()
                 session.commit()
             except SQLAlchemyError as error:
                 session.rollback()
@@ -492,7 +556,13 @@ class MappingService:
             mappings = session.exec(select(ExampleMapping)).all()
         mapping_pairs = [(m.raw_text, m.normalized_text) for m in mappings]
         idx = SemanticIndex(str(self._path))
-        return idx.build(mapping_pairs)
+        previous_status = idx.status()
+        try:
+            return idx.build(mapping_pairs)
+        except Exception:
+            if previous_status != "fresh":
+                idx.mark_refresh_failed()
+            raise
 
     def clear_index(self) -> None:
         idx = SemanticIndex(str(self._path))

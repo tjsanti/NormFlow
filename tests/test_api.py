@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 import re
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 import pytest
@@ -28,6 +29,8 @@ def test_application_is_bound_to_one_canonical_project():
             "database": str(project_root / "normflow.db"),
             "mappings": 0,
             "review_items": 0,
+            "semantic_index_status": "missing",
+            "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
         }
 
 
@@ -47,10 +50,32 @@ def test_bound_application_imports_and_lists_review_items_without_a_project_sele
             "auto_committed": 0,
             "review_items": 1,
             "skipped": 0,
+            "semantic_index_status": "missing",
+            "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
         }
         assert review_items.json() == [
             {"id": 1, "raw_text": "o2 sensor", "suggested_text": ""}
         ]
+
+
+def test_import_reports_failed_automatic_index_refresh():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = init_project(str(Path(tmpdir) / "project"))
+        client = TestClient(create_app(resolve_project(project_root)))
+
+        with patch(
+            "normflow.semantic_index._ensure_model",
+            side_effect=RuntimeError("model unavailable"),
+        ):
+            imported = client.post(
+                "/import/records?column=name&llm=false",
+                files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
+            )
+
+        assert imported.status_code == 200
+        assert imported.json()["semantic_index_status"] == "missing"
+        assert "semantic and LLM Suggestions are unavailable" in imported.json()["semantic_index_warning"]
+        assert "normflow index build" in imported.json()["semantic_index_warning"]
 
 
 def test_bound_application_retains_mapping_import_export_and_index_http_contract():
@@ -79,6 +104,8 @@ def test_bound_application_retains_mapping_import_export_and_index_http_contract
             "auto_committed": 1,
             "review_items": 0,
             "skipped": 0,
+            "semantic_index_status": "missing",
+            "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
         }
         assert exported.status_code == 200
         assert exported.text == "name,normalized_text\no2 sensor,Oxygen Sensor\n"
@@ -214,6 +241,8 @@ def test_review_items_route_lists_pending_work():
             "auto_committed": 0,
             "review_items": 1,
             "skipped": 0,
+            "semantic_index_status": "missing",
+            "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
         }
 
         response = client.get("/review-items")

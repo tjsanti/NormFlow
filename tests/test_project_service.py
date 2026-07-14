@@ -24,6 +24,29 @@ def test_accepts_initialized_project():
         assert service._path.resolve() == Path(tmpdir).resolve()
 
 
+def test_project_info_reports_missing_semantic_index():
+    """A new Project should report that no semantic index exists yet."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        init_project(tmpdir)
+
+        info = MappingService(tmpdir).project_info()
+
+        assert info["semantic_index_status"] == "missing"
+
+
+def test_project_info_reports_legacy_index_as_unverified():
+    """An index without freshness metadata should be rebuilt before trusted use."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project = init_project(tmpdir)
+        index_dir = project / ".normflow" / "faiss_index"
+        index_dir.mkdir(parents=True)
+        (index_dir / "index.faiss").write_bytes(b"legacy")
+
+        info = MappingService(tmpdir).project_info()
+
+        assert info["semantic_index_status"] == "unverified"
+
+
 def test_session_can_write_and_read_mappings():
     """MappingService.session() should yield a session that can read/write mappings."""
     with tempfile.TemporaryDirectory() as tmpdir:

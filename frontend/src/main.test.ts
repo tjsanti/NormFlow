@@ -7,6 +7,8 @@ const projectInfo = {
   database: "/Users/example/projects/customer-names/normflow.db",
   mappings: 12,
   review_items: 4,
+  semantic_index_status: "fresh",
+  semantic_index_warning: null,
 };
 
 function okJson(value: unknown): Response {
@@ -81,6 +83,25 @@ describe("Bound Project launch", () => {
     await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
     expect(document.querySelector("h1")?.textContent).toBe("customer-names");
     expect(document.querySelector(".project-path")?.textContent).toBe(project.project);
+  });
+
+  test("keeps semantic index refresh status visible without blocking Review", async () => {
+    const project = {
+      ...projectInfo,
+      semantic_index_status: "refresh_required",
+      semantic_index_warning: "The semantic index will refresh before the next semantic Suggestion.",
+    };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(okJson(project))
+      .mockResolvedValueOnce(okJson([])));
+
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
+    const status = document.querySelector<HTMLElement>("#semantic-index-status");
+    expect(status?.textContent).toContain(project.semantic_index_warning);
+    expect(status?.getAttribute("aria-live")).toBe("polite");
+    expect(document.querySelector<HTMLButtonElement>("#refresh-review-items")?.disabled).toBe(false);
   });
 });
 

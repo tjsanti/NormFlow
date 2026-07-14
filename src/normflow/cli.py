@@ -23,6 +23,29 @@ def _project_service() -> MappingService:
     return MappingService(str(project.root))
 
 
+def _notify_semantic_refresh(service: MappingService, *, enabled: bool) -> bool:
+    """Tell an interactive caller before a lazy semantic refresh may block."""
+    if not enabled:
+        return False
+    status = service.project_info()["semantic_index_status"]
+    if status == "fresh":
+        return False
+    if status == "missing":
+        message = "Building semantic index before Suggestions…"
+    else:
+        message = "Semantic index is out of date; rebuilding before Suggestions…"
+    typer.echo(message, err=True)
+    return True
+
+
+def _notify_semantic_refresh_failure(service: MappingService, *, attempted: bool) -> None:
+    if not attempted:
+        return
+    info = service.project_info()
+    if info["semantic_index_status"] != "fresh" and info["semantic_index_warning"]:
+        typer.echo(info["semantic_index_warning"], err=True)
+
+
 @app.command()
 def version() -> None:
     """Show the NormFlow version."""
@@ -95,6 +118,7 @@ def info() -> None:
     print(f"Database:   {project.database}")
     print(f"Mappings:   {statistics['mappings']}")
     print(f"Review Items: {statistics['review_items']}")
+    print(f"Semantic index: {statistics['semantic_index_status']}")
 
 
 @app.command(name="import")
@@ -141,9 +165,14 @@ def suggest_cmd(
 ) -> None:
     """Return Suggestions for a single raw text value."""
     try:
-        items = _project_service().lookup(
+        service = _project_service()
+        refresh_attempted = _notify_semantic_refresh(
+            service, enabled=not no_semantic or not no_llm,
+        )
+        items = service.lookup(
             raw_text, semantic=not no_semantic, llm=not no_llm, threshold=semantic_threshold, limit=limit,
         )
+        _notify_semantic_refresh_failure(service, attempted=refresh_attempted)
         import json as _json
         print(_json.dumps({"raw_text": raw_text, "suggestions": [s.model_dump() for s in items]}, indent=2))
     except ValueError as e:
@@ -163,9 +192,14 @@ def suggest_batch_cmd(
 ) -> None:
     """Suggest normalized text for every row in a CSV file."""
     try:
-        result_csv = _project_service().lookup_batch(
+        service = _project_service()
+        refresh_attempted = _notify_semantic_refresh(
+            service, enabled=not no_semantic or not no_llm,
+        )
+        result_csv = service.lookup_batch(
             csv_path, column, output_column, semantic=not no_semantic, llm=not no_llm, threshold=semantic_threshold,
         )
+        _notify_semantic_refresh_failure(service, attempted=refresh_attempted)
         if output:
             out_path = Path(output).expanduser().resolve()
             out_path.write_text(result_csv, encoding="utf-8")

@@ -83,6 +83,22 @@ class TestSemanticIndexBuild:
         # Only 5 valid mappings indexed (not the 2 blank ones)
         assert count == 5
 
+    @patch(_INDEX_PATCH)
+    def test_rebuild_keeps_only_current_and_previous_generation(self, mock_ensure, project):
+        mock = MagicMock()
+        mock.encode.side_effect = lambda texts, **kw: [
+            [0.1 * i, 0.2 * i, 0.3 * i] for i in range(len(texts))
+        ]
+        mock_ensure.return_value = mock
+        idx = SemanticIndex(str(project))
+
+        idx.build(SEED_PAIRS)
+        idx.build(SEED_PAIRS)
+        idx.build(SEED_PAIRS)
+
+        generations = project / ".normflow" / "faiss_index" / "generations"
+        assert len([path for path in generations.iterdir() if path.is_dir()]) == 2
+
 
 class TestSemanticIndexLoad:
     """SemanticIndex.load() restores a persisted index."""

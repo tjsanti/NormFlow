@@ -17,6 +17,7 @@ from .mapping_service import (
     ReviewItemNotFoundError,
 )
 from .project import Project
+from .semantic_index import SemanticIndexStatus
 
 router = APIRouter()
 
@@ -38,6 +39,8 @@ class ProjectInfoResponse(BaseModel):
     database: str
     mappings: int
     review_items: int
+    semantic_index_status: SemanticIndexStatus
+    semantic_index_warning: str | None
 
 
 class ImportMappingsResponse(BaseModel):
@@ -49,6 +52,8 @@ class ImportRecordsResponse(BaseModel):
     auto_committed: int
     review_items: int
     skipped: int
+    semantic_index_status: SemanticIndexStatus
+    semantic_index_warning: str | None
 
 
 class ReviewItemResponse(BaseModel):

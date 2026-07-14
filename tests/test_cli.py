@@ -85,6 +85,7 @@ def test_init_creates_discoverable_project_in_current_directory(
     assert unrelated_directory.is_dir()
     assert info_result.exit_code == 0
     assert f"Project:    {project_root.resolve()}" in info_result.stdout
+    assert "Semantic index: missing" in info_result.stdout
 
 
 def test_init_preserves_contents_and_repairs_existing_project(

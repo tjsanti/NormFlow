@@ -3,12 +3,20 @@
 import sqlite3
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
 from normflow.mapping_service import BulkAcceptResult, MappingService, ReviewItem
 from normflow.project_service import init_project
+
+
+def _build_empty_semantic_index(service: MappingService) -> None:
+    model = MagicMock()
+    model.get_sentence_embedding_dimension.return_value = 3
+    with patch("normflow.semantic_index._ensure_model", return_value=model):
+        service.build_index()
 
 
 def test_opening_legacy_project_migrates_only_pending_suggestions_to_review_items():
@@ -77,6 +85,7 @@ def test_accept_trims_mapping_text_and_removes_review_item():
         project = Path(tmpdir)
         init_project(str(project))
         service = MappingService(str(project))
+        _build_empty_semantic_index(service)
         with service.session() as session:
             session.add(ReviewItem(raw_text="o2 sensor", suggested_text="  Oxygen Sensor  "))
             session.commit()
@@ -90,6 +99,8 @@ def test_accept_trims_mapping_text_and_removes_review_item():
             "database": str((project / "normflow.db").resolve()),
             "mappings": 1,
             "review_items": 0,
+            "semantic_index_status": "refresh_required",
+            "semantic_index_warning": "The semantic index will refresh before the next semantic Suggestion.",
         }
 
 
@@ -98,6 +109,7 @@ def test_bulk_accept_creates_all_mappings_and_removes_all_selected_items():
         project = Path(tmpdir)
         init_project(str(project))
         service = MappingService(str(project))
+        _build_empty_semantic_index(service)
         with service.session() as session:
             session.add_all([
                 ReviewItem(raw_text="o2 sensor", suggested_text="  Oxygen Sensor  "),
@@ -115,6 +127,7 @@ def test_bulk_accept_creates_all_mappings_and_removes_all_selected_items():
         assert service.lookup("o2 sensor", semantic=False, llm=False)[0].suggested_text == "Oxygen Sensor"
         assert service.lookup("fuel pump", semantic=False, llm=False)[0].suggested_text == "Fuel Pump"
         assert service.project_info()["mappings"] == 2
+        assert service.project_info()["semantic_index_status"] == "refresh_required"
 
 
 @pytest.mark.parametrize(

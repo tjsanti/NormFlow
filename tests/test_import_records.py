@@ -3,6 +3,7 @@
 import csv
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from sqlmodel import select
 
@@ -82,6 +83,33 @@ def test_import_deduplicates_identical_raw_text():
 
         assert result["skipped"] == 4
         assert result["review_items"] == 1
+
+
+@patch("normflow.semantic_index._ensure_model")
+def test_semantic_auto_commit_marks_index_for_one_later_refresh(mock_ensure):
+    """A Batch uses one snapshot, then dirties it after adding a Mapping."""
+    model = MagicMock()
+    model.encode.return_value = [[1.0, 0.0, 0.0]]
+    model.get_sentence_embedding_dimension.return_value = 3
+    mock_ensure.return_value = model
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project = Path(tmpdir)
+        init_project(str(project))
+        service = MappingService(str(project))
+        with service.session() as session:
+            session.add(ExampleMapping(raw_text="colour", normalized_text="color"))
+            session.commit()
+        service.build_index()
+        csv_path = project / "input.csv"
+        _write_csv(csv_path, [{"name": "colr"}], ["name"])
+
+        result = service.import_records_for_review(
+            str(csv_path), "name", llm=False, threshold=0.5,
+        )
+
+        assert result["auto_committed"] == 1
+        assert service.project_info()["semantic_index_status"] == "refresh_required"
 
 
 def test_import_stores_original_csv_in_project():
