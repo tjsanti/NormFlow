@@ -449,6 +449,25 @@ def test_import_skips_duplicates():
         assert "2 skipped" in r2.stdout
 
 
+def test_import_skips_repeated_new_raw_text_in_one_csv():
+    """`normflow import` should insert a repeated new raw_text only once."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_path = Path(tmpdir) / "proj"
+        csv_path = project_path / "mappings.csv"
+
+        init_project(str(project_path))
+        _write_csv(csv_path, "source,target", "hello,world", "hello,other")
+
+        result = runner.invoke(
+            app,
+            ["import", str(csv_path), "--source-column", "source", "--target-column", "target"],
+        )
+
+        assert result.exit_code == 0
+        assert "Imported 1 new mapping" in result.stdout
+        assert "1 skipped" in result.stdout
+
+
 def test_import_invalid_column():
     """`normflow import` should error when source column is missing from CSV."""
     with tempfile.TemporaryDirectory() as tmpdir:

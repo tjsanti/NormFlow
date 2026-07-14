@@ -14,7 +14,6 @@ from typer.testing import CliRunner
 from tests.helpers import seed_mappings
 from normflow.cli import app
 from normflow.mapping_service import MappingService
-from normflow.semantic_index import SemanticIndex
 from normflow.project_service import init_project as _init_project
 
 _active_project: Path | None = None
@@ -65,8 +64,7 @@ class TestSuggestSemanticFallback:
             init_project(str(project_path))
             seed_mappings(project_path, [("colour", "color")])
 
-            idx = SemanticIndex(str(project_path))
-            idx.build([("colour", "color")])
+            MappingService(str(project_path)).build_index()
 
             suggestions = MappingService(str(project_path)).lookup(
                 "colr", semantic=True, threshold=0.5,
@@ -90,8 +88,7 @@ class TestSuggestSemanticFallback:
             init_project(str(project_path))
             seed_mappings(project_path, [("colour", "color")])
 
-            idx = SemanticIndex(str(project_path))
-            idx.build([("colour", "color")])
+            MappingService(str(project_path)).build_index()
 
             suggestions = MappingService(str(project_path)).lookup("colour", semantic=True)
 
@@ -150,8 +147,7 @@ class TestSuggestSemanticFallback:
             init_project(str(project_path))
             seed_mappings(project_path, [("colour", "color"), ("centre", "center")])
 
-            idx = SemanticIndex(str(project_path))
-            idx.build([("colour", "color"), ("centre", "center")])
+            MappingService(str(project_path)).build_index()
 
             suggestions = MappingService(str(project_path)).lookup(
                 "colr", semantic=True, threshold=0.85, llm=False,
@@ -194,6 +190,37 @@ class TestSuggestSemanticFallback:
 
             assert suggestions[0].suggested_text == "center"
             assert service.project_info()["semantic_index_status"] == "fresh"
+
+    @patch(_INDEX_PATCH)
+    def test_index_built_from_older_mapping_snapshot_remains_refresh_required(self, mock_ensure):
+        """Publishing an index must not hide a Mapping committed during its build."""
+        mock_model = MagicMock()
+        mock_model.get_sentence_embedding_dimension.return_value = 3
+        mock_ensure.return_value = mock_model
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            service = MappingService(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
+            concurrent_csv = project_path / "concurrent.csv"
+            concurrent_csv.write_text("raw,clean\ncentre,center\n", encoding="utf-8")
+            committed = False
+
+            def encode(texts, **_kwargs):
+                nonlocal committed
+                if not committed:
+                    committed = True
+                    MappingService(project_path).import_mappings(
+                        str(concurrent_csv), "raw", "clean",
+                    )
+                return [[1.0, 0.0, 0.0] for _ in texts]
+
+            mock_model.encode.side_effect = encode
+
+            service.build_index()
+
+            assert service.project_info()["semantic_index_status"] == "refresh_required"
 
     @patch(_INDEX_PATCH)
     def test_failed_lazy_refresh_preserves_stale_fallback_and_warning(self, mock_ensure):
@@ -278,7 +305,7 @@ class TestSuggestSemanticFallback:
             generation = (index_dir / "current").read_text(encoding="utf-8").strip()
             active_dir = index_dir / "generations" / generation
             shutil.copy2(active_dir / "index.faiss", index_dir / "index.faiss")
-            shutil.copy2(active_dir / "mapping_table.pkl", index_dir / "mapping_table.pkl")
+            (index_dir / "mapping_table.pkl").write_bytes(b"legacy pickle must not be loaded")
             (index_dir / "current").unlink()
             assert service.project_info()["semantic_index_status"] == "unverified"
 

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
-import pickle
 import shutil
 import tempfile
 from functools import cache
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 from uuid import uuid4
 
 import faiss
@@ -61,13 +61,27 @@ class SemanticIndex:
         generation = self._current_generation()
         return self._generations_dir / generation if generation else self._index_dir
 
-    def status(self) -> SemanticIndexStatus:
+    def status(self, current_mapping_revision: int | None = None) -> SemanticIndexStatus:
         """Return the persisted freshness state of this Project's index."""
         if not self.exists():
             return "missing"
-        if self._refresh_required_path.exists():
+        active_dir = self._active_index_dir()
+        if (active_dir / "mapping_table.pkl").exists():
+            return "unverified"
+        if not (active_dir / "mapping_table.json").exists():
+            return "unverified"
+        if current_mapping_revision is not None:
+            try:
+                indexed_revision = int(
+                    (active_dir / "mapping_revision").read_text(encoding="utf-8").strip()
+                )
+            except (FileNotFoundError, OSError, ValueError):
+                return "unverified"
+            if indexed_revision != current_mapping_revision:
+                return "refresh_required"
+        elif self._refresh_required_path.exists():
             return "refresh_required"
-        if (self._active_index_dir() / "freshness").exists():
+        if (active_dir / "freshness").exists():
             return "fresh"
         return "unverified"
 
@@ -75,26 +89,25 @@ class SemanticIndex:
         """Record that existing index data predates the current Mappings."""
         if not self.exists():
             return
-        self._refresh_required_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._refresh_required_path.with_suffix(".tmp")
-        temporary.write_text("refresh required\n", encoding="utf-8")
-        os.replace(temporary, self._refresh_required_path)
-
-    def clear_refresh_required(self) -> None:
-        """Restore a non-dirty index state after a Mapping transaction rolls back."""
-        self._refresh_required_path.unlink(missing_ok=True)
+        self._publish_marker(self._refresh_required_path, "refresh required\n")
 
     def mark_refresh_failed(self) -> None:
         """Persist an actionable warning after an automatic or manual failure."""
-        self._refresh_failed_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._refresh_failed_path.with_suffix(".tmp")
-        temporary.write_text("refresh failed\n", encoding="utf-8")
-        os.replace(temporary, self._refresh_failed_path)
+        self._publish_marker(self._refresh_failed_path, "refresh failed\n")
 
-    def warning(self) -> str | None:
+    def _publish_marker(self, destination: Path, contents: str) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.parent / f".{destination.name}-{uuid4().hex}.tmp"
+        try:
+            temporary.write_text(contents, encoding="utf-8")
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def warning(self, current_mapping_revision: int | None = None) -> str | None:
         """Describe non-fresh index behavior for adapters and users."""
         if self._refresh_failed_path.exists():
-            if self.status() == "missing":
+            if self.status(current_mapping_revision) == "missing":
                 return (
                     "Automatic semantic index refresh failed; semantic and LLM Suggestions "
                     "are unavailable. Exact matching remains available. Run `normflow index "
@@ -104,7 +117,7 @@ class SemanticIndex:
                 "Automatic semantic index refresh failed; Suggestions may use earlier "
                 "Mappings. Run `normflow index build` to retry."
             )
-        status = self.status()
+        status = self.status(current_mapping_revision)
         if status == "refresh_required":
             return "The semantic index will refresh before the next semantic Suggestion."
         if status == "unverified":
@@ -113,7 +126,13 @@ class SemanticIndex:
             return "The semantic index will be built before the next semantic Suggestion."
         return None
 
-    def build(self, mappings: list[tuple[str, str]]) -> int:
+    def build(
+        self,
+        mappings: list[tuple[str, str]],
+        *,
+        mapping_revision: int | None = None,
+        current_mapping_revision: Callable[[], int] | None = None,
+    ) -> int:
         """Build index from mapping pairs. Returns number of entries."""
         seen: set[str] = set()
         raw_texts: list[str] = []
@@ -130,7 +149,7 @@ class SemanticIndex:
         if not raw_texts:
             dim = _ensure_model().get_sentence_embedding_dimension()
             index = faiss.IndexFlatIP(dim)
-            self._save(index, table)
+            self._save(index, table, mapping_revision, current_mapping_revision)
             return 0
 
         embeddings = _ensure_model().encode(raw_texts, normalize_embeddings=True)
@@ -140,7 +159,7 @@ class SemanticIndex:
         index = faiss.IndexFlatIP(dim)
         index.add(embeddings)
 
-        self._save(index, table)
+        self._save(index, table, mapping_revision, current_mapping_revision)
         return len(table)
 
     def search(
@@ -192,12 +211,29 @@ class SemanticIndex:
         active_dir = self._active_index_dir()
         if not (active_dir / "index.faiss").exists():
             return None
+        mapping_table_path = active_dir / "mapping_table.json"
+        if not mapping_table_path.exists():
+            return None
         index = faiss.read_index(str(active_dir / "index.faiss"))
-        with open(active_dir / "mapping_table.pkl", "rb") as f:
-            mapping_table = pickle.load(f)  # noqa: S301
+        with open(mapping_table_path, encoding="utf-8") as f:
+            serialized_table = json.load(f)
+        if not isinstance(serialized_table, list) or any(
+            not isinstance(pair, list)
+            or len(pair) != 2
+            or not all(isinstance(value, str) for value in pair)
+            for pair in serialized_table
+        ):
+            raise ValueError("Invalid semantic index mapping table")
+        mapping_table = [(pair[0], pair[1]) for pair in serialized_table]
         return index, mapping_table
 
-    def _save(self, index: faiss.Index, mapping_table: list[tuple[str, str]]) -> None:
+    def _save(
+        self,
+        index: faiss.Index,
+        mapping_table: list[tuple[str, str]],
+        mapping_revision: int | None,
+        current_mapping_revision: Callable[[], int] | None,
+    ) -> None:
         self._generations_dir.mkdir(parents=True, exist_ok=True)
         previous_generation = self._current_generation()
         existing_generations = {
@@ -213,8 +249,12 @@ class SemanticIndex:
 
         try:
             faiss.write_index(index, str(temporary_dir / "index.faiss"))
-            with open(temporary_dir / "mapping_table.pkl", "wb") as f:
-                pickle.dump(mapping_table, f)
+            with open(temporary_dir / "mapping_table.json", "w", encoding="utf-8") as f:
+                json.dump(mapping_table, f)
+            if mapping_revision is not None:
+                (temporary_dir / "mapping_revision").write_text(
+                    f"{mapping_revision}\n", encoding="utf-8"
+                )
             (temporary_dir / "freshness").write_text("verified\n", encoding="utf-8")
 
             os.replace(temporary_dir, generation_dir)
@@ -222,8 +262,13 @@ class SemanticIndex:
             os.replace(temporary_pointer, self._current_path)
             published = True
 
-            self._refresh_required_path.unlink(missing_ok=True)
-            self._refresh_failed_path.unlink(missing_ok=True)
+            if (
+                mapping_revision is None
+                or current_mapping_revision is None
+                or current_mapping_revision() == mapping_revision
+            ):
+                self._refresh_required_path.unlink(missing_ok=True)
+                self._refresh_failed_path.unlink(missing_ok=True)
             for old_generation in existing_generations - {previous_generation}:
                 shutil.rmtree(self._generations_dir / old_generation, ignore_errors=True)
         finally:

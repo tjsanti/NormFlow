@@ -1,5 +1,7 @@
 """Tests for the semantic index service."""
 
+import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -128,6 +130,60 @@ class TestSemanticIndexLoad:
     def test_exists_false_when_no_index(self, project):
         idx = SemanticIndex(str(project))
         assert idx.exists() is False
+
+    @patch(_INDEX_PATCH)
+    def test_mapping_table_round_trips_through_json(self, mock_ensure, project):
+        model = MagicMock()
+        model.encode.return_value = [[1.0, 0.0, 0.0] for _ in SEED_PAIRS]
+        mock_ensure.return_value = model
+        idx = SemanticIndex(str(project))
+
+        idx.build(SEED_PAIRS)
+
+        index_dir = project / ".normflow" / "faiss_index"
+        generation = (index_dir / "current").read_text(encoding="utf-8").strip()
+        active_dir = index_dir / "generations" / generation
+        assert json.loads((active_dir / "mapping_table.json").read_text(encoding="utf-8")) == [
+            list(pair) for pair in SEED_PAIRS
+        ]
+        assert not (active_dir / "mapping_table.pkl").exists()
+        assert idx.load()[1] == SEED_PAIRS
+
+
+class TestSemanticIndexMarkers:
+    """Freshness markers publish atomically without sharing temporary files."""
+
+    def test_marker_publications_use_distinct_temporary_files(self, project):
+        index_file = project / ".normflow" / "faiss_index" / "index.faiss"
+        index_file.parent.mkdir(parents=True)
+        index_file.touch()
+        idx = SemanticIndex(str(project))
+
+        with patch("normflow.semantic_index.os.replace", wraps=os.replace) as replace:
+            idx.mark_refresh_required()
+            idx.mark_refresh_required()
+            idx.mark_refresh_failed()
+            idx.mark_refresh_failed()
+
+        temporary_paths = [Path(call.args[0]) for call in replace.call_args_list]
+        assert len(set(temporary_paths)) == 4
+        assert all(not path.exists() for path in temporary_paths)
+
+    @pytest.mark.parametrize("method_name", ["mark_refresh_required", "mark_refresh_failed"])
+    def test_failed_marker_publication_removes_temporary_file(self, project, method_name):
+        index_file = project / ".normflow" / "faiss_index" / "index.faiss"
+        index_file.parent.mkdir(parents=True)
+        index_file.touch()
+        idx = SemanticIndex(str(project))
+
+        with (
+            patch("normflow.semantic_index.os.replace", side_effect=OSError("disk full")),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            getattr(idx, method_name)()
+
+        marker_temporary_files = (project / ".normflow").glob(".semantic_index_*.tmp")
+        assert list(marker_temporary_files) == []
 
 
 class TestSemanticIndexSearch:

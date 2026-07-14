@@ -14,7 +14,7 @@ from functools import cache
 from pathlib import Path
 from typing import TypedDict
 
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import (
     Field as SField,
@@ -108,6 +108,15 @@ class _ReviewItem(_SQLModel, table=True):
     created_at: datetime = SField(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class _MappingRevision(_SQLModel, table=True):
+    """Persisted version of the Project's Mapping collection."""
+
+    __tablename__ = "mappingrevision"
+
+    id: int = SField(default=1, primary_key=True)
+    revision: int = 0
+
+
 @cache
 def _make_engine(db_url: str):
     return create_engine(f"sqlite:///{db_url}")
@@ -127,6 +136,7 @@ class MappingService:
         self._engine = _make_engine(str(self._db_path))
         self.validate()
         self._migrate_legacy_suggestions()
+        self._ensure_mapping_revision()
 
     @classmethod
     def initialize(cls, project_path: str | Path) -> "MappingService":
@@ -154,6 +164,14 @@ class MappingService:
             ))
             connection.execute(text("DROP TABLE suggestion"))
 
+    def _ensure_mapping_revision(self) -> None:
+        """Add revision state to Projects created before revision tracking."""
+        with self._engine.begin() as connection:
+            _MappingRevision.__table__.create(connection, checkfirst=True)
+            connection.execute(text(
+                "INSERT OR IGNORE INTO mappingrevision (id, revision) VALUES (1, 0)"
+            ))
+
     def validate(self) -> None:
         if not self._db_path.exists():
             msg = f"Not a NormFlow Project: no database found at {self._db_path}"
@@ -164,17 +182,26 @@ class MappingService:
         return _Session(self._engine)
 
     def _commit_mapping_changes(self, session: _Session) -> None:
-        """Commit Mapping writes without leaving false semantic-index state."""
+        """Commit Mapping writes and their revision as one transaction."""
         index = SemanticIndex(str(self._path))
-        refresh_was_required = index.status() == "refresh_required"
+        session.exec(
+            update(_MappingRevision)
+            .where(_MappingRevision.id == 1)
+            .values(revision=_MappingRevision.revision + 1)
+        )
         try:
             index.mark_refresh_required()
             session.commit()
         except Exception:
             session.rollback()
-            if not refresh_was_required:
-                index.clear_refresh_required()
             raise
+
+    def _current_mapping_revision(self) -> int:
+        with self._session() as session:
+            revision = session.get(_MappingRevision, 1)
+        if revision is None:
+            raise RuntimeError("Project Mapping revision is missing")
+        return revision.revision
 
     def _find_exact_mapping(self, raw_text: str) -> str | None:
         with self._session() as session:
@@ -196,6 +223,10 @@ class MappingService:
             review_item_count = session.exec(
                 select(func.count(_ReviewItem.id))
             ).one()
+            revision = session.get(_MappingRevision, 1)
+
+        if revision is None:
+            raise RuntimeError("Project Mapping revision is missing")
 
         index = SemanticIndex(str(self._path))
         return {
@@ -203,8 +234,8 @@ class MappingService:
             "database": str(self._db_path),
             "mappings": mapping_count,
             "review_items": review_item_count,
-            "semantic_index_status": index.status(),
-            "semantic_index_warning": index.warning(),
+            "semantic_index_status": index.status(revision.revision),
+            "semantic_index_warning": index.warning(revision.revision),
         }
 
     # ------------------------------------------------------------------
@@ -242,7 +273,7 @@ class MappingService:
 
         with self._session() as session:
             # ponytail: load existing raw_texts into set — O(1) lookup vs O(n) queries
-            existing = session.exec(select(_ExampleMapping.raw_text)).all()
+            existing = set(session.exec(select(_ExampleMapping.raw_text)).all())
 
             imported = 0
             skipped = 0
@@ -257,6 +288,7 @@ class MappingService:
                     skipped += 1
                 else:
                     session.add(_ExampleMapping(raw_text=raw_text, normalized_text=normalized_text))
+                    existing.add(raw_text)
                     imported += 1
 
             if imported:
@@ -320,7 +352,7 @@ class MappingService:
         ).lookup(raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=limit)
 
     def _refresh_semantic_index_if_needed(self) -> None:
-        if SemanticIndex(str(self._path)).status() == "fresh":
+        if SemanticIndex(str(self._path)).status(self._current_mapping_revision()) == "fresh":
             return
         try:
             self.build_index()
@@ -580,12 +612,19 @@ class MappingService:
 
     def build_index(self) -> int:
         with self._session() as session:
+            revision = session.get(_MappingRevision, 1)
             mappings = session.exec(select(_ExampleMapping)).all()
+        if revision is None:
+            raise RuntimeError("Project Mapping revision is missing")
         mapping_pairs = [(m.raw_text, m.normalized_text) for m in mappings]
         idx = SemanticIndex(str(self._path))
-        previous_status = idx.status()
+        previous_status = idx.status(revision.revision)
         try:
-            return idx.build(mapping_pairs)
+            return idx.build(
+                mapping_pairs,
+                mapping_revision=revision.revision,
+                current_mapping_revision=self._current_mapping_revision,
+            )
         except Exception:
             if previous_status != "fresh":
                 idx.mark_refresh_failed()

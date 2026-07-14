@@ -367,6 +367,32 @@ describe("Review queue", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  test("a stale Save and Accept refreshes the queue instead of restoring the obsolete row", async () => {
+    const item = { id: 4, raw_text: "first raw", suggested_text: "First" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson(projectInfo))
+      .mockResolvedValueOnce(okJson([item]))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ detail: "Review Item 4 is no longer pending" }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      ))
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 3 }))
+      .mockResolvedValueOnce(okJson([]));
+    vi.stubGlobal("fetch", fetchMock);
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("tbody")).not.toBeNull());
+    [...document.querySelectorAll<HTMLButtonElement>("tbody button")]
+      .find((button) => button.textContent === "Edit")!.click();
+    [...document.querySelectorAll<HTMLButtonElement>("tbody button")]
+      .find((button) => button.textContent === "Save and Accept")!.click();
+
+    await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
+    expect(document.querySelector("tbody input[type=text]")).toBeNull();
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/project/info");
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/review-items");
+  });
+
   test("accepting a suggested item removes it, updates counts, and refreshes server state", async () => {
     const remaining = [{ id: 9, raw_text: "second raw", suggested_text: "Second" }];
     const fetchMock = vi.fn()

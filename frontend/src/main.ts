@@ -217,18 +217,26 @@ function renderReviewItems(root: HTMLElement, items: ReviewItem[]): void {
         });
         if (!response.ok) {
           const error = await response.json() as { detail?: string };
-          throw new Error(error.detail ?? `Could not accept Review Item (${response.status}).`);
+          throw Object.assign(
+            new Error(error.detail ?? `Could not accept Review Item (${response.status}).`),
+            { stale: response.status === 409 },
+          );
         }
         showNotice(root, `Review Item ${item.id} accepted.`);
         await refreshProject(root);
       } catch (error) {
+        const stale = error instanceof Error && "stale" in error && error.stale === true;
         showNotice(
           root,
           error instanceof Error ? error.message : "Could not accept Review Item.",
           true,
         );
-        save.disabled = false;
-        cancel.disabled = false;
+        if (stale) {
+          await refreshProject(root);
+        } else {
+          save.disabled = false;
+          cancel.disabled = false;
+        }
       }
     };
     save.addEventListener("click", () => void submitEdit());
