@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from tests.helpers import seed_mappings
 from normflow.cli import app
-from normflow.mapping_service import ExampleMapping, MappingService
+from normflow.mapping_service import MappingService
 from normflow.semantic_index import SemanticIndex
 from normflow.project_service import init_project as _init_project
 
@@ -99,26 +99,37 @@ class TestSuggestSemanticFallback:
             assert suggestions[0].method == "exact"
             assert suggestions[0].confidence == 1.0
 
-    def test_no_semantic_flag_returns_empty_on_miss(self):
+    def test_exact_only_lookup_returns_empty_on_miss(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             project_path = Path(tmpdir) / "proj"
             init_project(str(project_path))
             seed_mappings(project_path, [("colour", "color")])
 
-            suggestions = MappingService(str(project_path)).lookup("colr", semantic=False)
+            suggestions = MappingService(str(project_path)).lookup(
+                "colr", semantic=False, llm=False,
+            )
 
             assert suggestions == []
 
-    def test_no_index_returns_empty_on_miss(self):
+    @patch(_INDEX_PATCH)
+    def test_missing_index_is_built_before_semantic_lookup(self, mock_ensure):
+        model = MagicMock()
+        model.encode.return_value = [[1.0, 0.0, 0.0]]
+        model.get_sentence_embedding_dimension.return_value = 3
+        mock_ensure.return_value = model
+
         with tempfile.TemporaryDirectory() as tmpdir:
             project_path = Path(tmpdir) / "proj"
             init_project(str(project_path))
             seed_mappings(project_path, [("colour", "color")])
 
-            # Don't build index -- semantic should degrade gracefully
-            suggestions = MappingService(str(project_path)).lookup("colr", semantic=True)
+            service = MappingService(str(project_path))
+            suggestions = service.lookup(
+                "colr", semantic=True, llm=False, threshold=0.5,
+            )
 
-            assert suggestions == []
+            assert suggestions[0].suggested_text == "color"
+            assert service.project_info()["semantic_index_status"] == "fresh"
 
     @patch(_INDEX_PATCH)
     def test_threshold_filters_results(self, mock_ensure):
@@ -384,7 +395,7 @@ class TestSuggestCLI:
             assert len(data["suggestions"]) > 0
             assert data["suggestions"][0]["method"] == "semantic"
 
-    def test_no_semantic_flag_disables_fallback(self):
+    def test_exact_only_flags_disable_fallback(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             project_path = Path(tmpdir) / "proj"
             init_project(str(project_path))
@@ -392,7 +403,7 @@ class TestSuggestCLI:
 
             result = runner.invoke(
                 app,
-                ["suggest", "colr", "--no-semantic"],
+                ["suggest", "colr", "--no-semantic", "--no-llm"],
             )
             assert result.exit_code == 0
             data = json.loads(result.stdout)

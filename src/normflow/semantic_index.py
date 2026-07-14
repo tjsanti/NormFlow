@@ -80,6 +80,10 @@ class SemanticIndex:
         temporary.write_text("refresh required\n", encoding="utf-8")
         os.replace(temporary, self._refresh_required_path)
 
+    def clear_refresh_required(self) -> None:
+        """Restore a non-dirty index state after a Mapping transaction rolls back."""
+        self._refresh_required_path.unlink(missing_ok=True)
+
     def mark_refresh_failed(self) -> None:
         """Persist an actionable warning after an automatic or manual failure."""
         self._refresh_failed_path.parent.mkdir(parents=True, exist_ok=True)
@@ -151,6 +155,9 @@ class SemanticIndex:
             return []
 
         index, table = loaded
+
+        if index.ntotal == 0 or limit <= 0:
+            return []
 
         query_embedding = _ensure_model().encode([query_text], normalize_embeddings=True)
         query_vec = np.asarray(query_embedding, dtype="float32")

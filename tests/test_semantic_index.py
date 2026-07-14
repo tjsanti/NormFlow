@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from normflow.mapping_service import ExampleMapping, MappingService
+from normflow.mapping_service import MappingService
 from normflow.semantic_index import SemanticIndex
 from tests.helpers import seed_mappings
 from normflow.project_service import init_project
@@ -132,6 +132,19 @@ class TestSemanticIndexLoad:
 
 class TestSemanticIndexSearch:
     """SemanticIndex.search() returns results above threshold."""
+
+    @patch(_INDEX_PATCH)
+    def test_search_empty_index_returns_no_results(self, mock_ensure, project):
+        model = MagicMock()
+        model.get_sentence_embedding_dimension.return_value = 3
+        mock_ensure.return_value = model
+        index = SemanticIndex(str(project))
+        index.build([])
+
+        results = index.search("anything")
+
+        assert results == []
+        model.encode.assert_not_called()
 
     @patch(_INDEX_PATCH)
     def test_search_returns_close_matches(self, mock_ensure, project):

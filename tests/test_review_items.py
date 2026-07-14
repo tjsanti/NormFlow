@@ -3,21 +3,12 @@
 import sqlite3
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from normflow.mapping_service import BulkAcceptResult, MappingService, ReviewItem
+from normflow.mapping_service import BulkAcceptResult, MappingService
 from normflow.project_service import init_project
-
-
-def _build_empty_semantic_index(service: MappingService) -> None:
-    model = MagicMock()
-    model.get_sentence_embedding_dimension.return_value = 3
-    with patch("normflow.semantic_index._ensure_model", return_value=model):
-        service.build_index()
-
+from tests.helpers import import_blank_review_items, import_suggested_review_items
 
 def test_opening_legacy_project_migrates_only_pending_suggestions_to_review_items():
     """Opening an existing Project preserves pending work and approved Mappings."""
@@ -85,10 +76,11 @@ def test_accept_trims_mapping_text_and_removes_review_item():
         project = Path(tmpdir)
         init_project(str(project))
         service = MappingService(str(project))
-        _build_empty_semantic_index(service)
-        with service.session() as session:
-            session.add(ReviewItem(raw_text="o2 sensor", suggested_text="  Oxygen Sensor  "))
-            session.commit()
+        import_suggested_review_items(
+            project,
+            [("o2 sensor", "  Oxygen Sensor  ")],
+        )
+        initial_mapping_count = service.project_info()["mappings"]
 
         service.accept_review_item(1)
 
@@ -97,7 +89,7 @@ def test_accept_trims_mapping_text_and_removes_review_item():
         assert service.project_info() == {
             "project": str(project.resolve()),
             "database": str((project / "normflow.db").resolve()),
-            "mappings": 1,
+            "mappings": initial_mapping_count + 1,
             "review_items": 0,
             "semantic_index_status": "refresh_required",
             "semantic_index_warning": "The semantic index will refresh before the next semantic Suggestion.",
@@ -109,14 +101,12 @@ def test_bulk_accept_creates_all_mappings_and_removes_all_selected_items():
         project = Path(tmpdir)
         init_project(str(project))
         service = MappingService(str(project))
-        _build_empty_semantic_index(service)
-        with service.session() as session:
-            session.add_all([
-                ReviewItem(raw_text="o2 sensor", suggested_text="  Oxygen Sensor  "),
-                ReviewItem(raw_text="fuel pump", suggested_text="Fuel Pump"),
-                ReviewItem(raw_text="keep me", suggested_text="Keep Me"),
-            ])
-            session.commit()
+        import_suggested_review_items(project, [
+            ("o2 sensor", "  Oxygen Sensor  "),
+            ("fuel pump", "Fuel Pump"),
+            ("keep me", "Keep Me"),
+        ])
+        initial_mapping_count = service.project_info()["mappings"]
 
         result = service.accept_review_items([1, 2])
 
@@ -126,7 +116,7 @@ def test_bulk_accept_creates_all_mappings_and_removes_all_selected_items():
         ]
         assert service.lookup("o2 sensor", semantic=False, llm=False)[0].suggested_text == "Oxygen Sensor"
         assert service.lookup("fuel pump", semantic=False, llm=False)[0].suggested_text == "Fuel Pump"
-        assert service.project_info()["mappings"] == 2
+        assert service.project_info()["mappings"] == initial_mapping_count + 2
         assert service.project_info()["semantic_index_status"] == "refresh_required"
 
 
@@ -153,15 +143,13 @@ def test_bulk_accept_stale_item_rolls_back_the_full_selection():
         project = Path(tmpdir)
         init_project(str(project))
         service = MappingService(str(project))
-        with service.session() as session:
-            session.add(ReviewItem(raw_text="o2 sensor", suggested_text="Oxygen Sensor"))
-            session.commit()
+        import_blank_review_items(project, ["o2 sensor"])
 
         with pytest.raises(ValueError, match="Review Items with IDs 99 are no longer pending"):
             service.accept_review_items([1, 99])
 
         assert service.list_review_items() == [
-            {"id": 1, "raw_text": "o2 sensor", "suggested_text": "Oxygen Sensor"}
+            {"id": 1, "raw_text": "o2 sensor", "suggested_text": ""}
         ]
         assert service.project_info()["mappings"] == 0
 
@@ -171,18 +159,18 @@ def test_bulk_accept_blank_suggestion_rolls_back_the_full_selection():
         project = Path(tmpdir)
         init_project(str(project))
         service = MappingService(str(project))
-        with service.session() as session:
-            session.add_all([
-                ReviewItem(raw_text="o2 sensor", suggested_text="Oxygen Sensor"),
-                ReviewItem(raw_text="unknown", suggested_text="  "),
-            ])
-            session.commit()
+        import_suggested_review_items(
+            project,
+            [("o2 sensor", "Oxygen Sensor")],
+        )
+        import_blank_review_items(project, ["unknown"])
+        initial_mapping_count = service.project_info()["mappings"]
 
         with pytest.raises(ValueError, match="Review Items with IDs 2 have blank Suggestions"):
             service.accept_review_items([1, 2])
 
         assert len(service.list_review_items()) == 2
-        assert service.project_info()["mappings"] == 0
+        assert service.project_info()["mappings"] == initial_mapping_count
 
 
 def test_bulk_accept_mapping_failure_rolls_back_the_full_selection():
@@ -190,12 +178,12 @@ def test_bulk_accept_mapping_failure_rolls_back_the_full_selection():
         project = Path(tmpdir)
         init_project(str(project))
         service = MappingService(str(project))
-        with service.session() as session:
-            session.add_all([
-                ReviewItem(raw_text="o2 sensor", suggested_text="Oxygen Sensor"),
-                ReviewItem(raw_text="fuel pump", suggested_text="Fuel Pump"),
-            ])
-            session.commit()
+        import_suggested_review_items(project, [
+            ("o2 sensor", "Oxygen Sensor"),
+            ("fuel pump", "Fuel Pump"),
+        ])
+        initial_mapping_count = service.project_info()["mappings"]
+        assert service.project_info()["semantic_index_status"] == "fresh"
         with sqlite3.connect(project / "normflow.db") as connection:
             connection.execute(
                 """
@@ -209,7 +197,8 @@ def test_bulk_accept_mapping_failure_rolls_back_the_full_selection():
             service.accept_review_items([1, 2])
 
         assert len(service.list_review_items()) == 2
-        assert service.project_info()["mappings"] == 0
+        assert service.project_info()["mappings"] == initial_mapping_count
+        assert service.project_info()["semantic_index_status"] == "fresh"
 
 
 def test_accept_rejects_blank_text_without_changing_review_item_or_mappings():
@@ -217,9 +206,7 @@ def test_accept_rejects_blank_text_without_changing_review_item_or_mappings():
         project = Path(tmpdir)
         init_project(str(project))
         service = MappingService(str(project))
-        with service.session() as session:
-            session.add(ReviewItem(raw_text="unknown", suggested_text="   "))
-            session.commit()
+        import_blank_review_items(project, ["unknown"])
 
         try:
             service.accept_review_item(1)
@@ -229,7 +216,7 @@ def test_accept_rejects_blank_text_without_changing_review_item_or_mappings():
             raise AssertionError("blank normalized text was accepted")
 
         assert service.list_review_items() == [
-            {"id": 1, "raw_text": "unknown", "suggested_text": "   "}
+            {"id": 1, "raw_text": "unknown", "suggested_text": ""}
         ]
         assert service.project_info()["mappings"] == 0
 
@@ -239,9 +226,8 @@ def test_accept_uses_trimmed_replacement_text_and_removes_review_item():
         project = Path(tmpdir)
         init_project(str(project))
         service = MappingService(str(project))
-        with service.session() as session:
-            session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
-            session.commit()
+        import_suggested_review_items(project, [("o2 sensor", "Oxygen Sensor")])
+        assert service.project_info()["semantic_index_status"] == "fresh"
 
         service.accept_review_item(1, "  Oxygen Sensor  ")
 
@@ -254,15 +240,13 @@ def test_accept_rejects_blank_replacement_text_without_changing_state():
         project = Path(tmpdir)
         init_project(str(project))
         service = MappingService(str(project))
-        with service.session() as session:
-            session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
-            session.commit()
+        import_blank_review_items(project, ["o2 sensor"])
 
         with pytest.raises(ValueError, match="Normalized text must not be blank"):
             service.accept_review_item(1, " \t ")
 
         assert service.list_review_items() == [
-            {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
+            {"id": 1, "raw_text": "o2 sensor", "suggested_text": ""}
         ]
         assert service.project_info()["mappings"] == 0
 
@@ -272,9 +256,9 @@ def test_accept_rolls_back_review_item_removal_when_mapping_insert_fails():
         project = Path(tmpdir)
         init_project(str(project))
         service = MappingService(str(project))
-        with service.session() as session:
-            session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
-            session.commit()
+        import_suggested_review_items(project, [("o2 sensor", "Oxygen Sensor")])
+        initial_mapping_count = service.project_info()["mappings"]
+        assert service.project_info()["semantic_index_status"] == "fresh"
         with sqlite3.connect(project / "normflow.db") as connection:
             connection.execute(
                 """
@@ -287,9 +271,10 @@ def test_accept_rolls_back_review_item_removal_when_mapping_insert_fails():
             service.accept_review_item(1, "Oxygen Sensor")
 
         assert service.list_review_items() == [
-            {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
+            {"id": 1, "raw_text": "o2 sensor", "suggested_text": "Oxygen Sensor"}
         ]
-        assert service.project_info()["mappings"] == 0
+        assert service.project_info()["mappings"] == initial_mapping_count
+        assert service.project_info()["semantic_index_status"] == "fresh"
 
 
 def test_review_item_ids_are_not_reused_after_acceptance():
