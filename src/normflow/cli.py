@@ -5,7 +5,7 @@ import typer
 
 from . import __version__
 from .llm_config import load_llm_config
-from .mapping_service import MappingService
+from .mapping_service import BatchImportError, MappingService
 from .project import resolve_project
 from .project_service import init_project
 
@@ -135,6 +135,32 @@ def import_cmd(
         print(f"Imported {imported} new mappings. {skipped} skipped.")
     except (ValueError, FileNotFoundError) as e:
         print(f"Error: {e}")
+        raise typer.Exit(1) from None
+
+
+@app.command(name="batch-import")
+def batch_import_cmd(
+    csv_path: str = typer.Argument(..., help="Path to the Batch CSV file."),
+    column: str = typer.Option(
+        ...,
+        "--column",
+        help="CSV column that holds the raw text values.",
+    ),
+) -> None:
+    """Run the canonical Batch Import for the active Project."""
+    import json
+    import os
+
+    try:
+        project = resolve_project(Path.cwd())
+        load_llm_config(project, os.environ)
+        result = MappingService(str(project.root)).import_records_for_review(
+            csv_path,
+            column,
+        )
+        print(json.dumps(result, indent=2))
+    except (BatchImportError, ValueError, FileNotFoundError) as error:
+        print(f"Error: {error}")
         raise typer.Exit(1) from None
 
 

@@ -3,8 +3,10 @@
 import json
 import sqlite3
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import chdir
 from pathlib import Path
+from threading import Event
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -29,7 +31,15 @@ class ProjectCliRunner(CliRunner):
     """Invoke Project-dependent commands from the initialized Project root."""
 
     def invoke(self, cli, args=None, **kwargs):
-        project_commands = {"import", "export", "suggest", "suggest-batch", "review", "index"}
+        project_commands = {
+            "batch-import",
+            "import",
+            "export",
+            "suggest",
+            "suggest-batch",
+            "review",
+            "index",
+        }
         if (
             args
             and args[0] in project_commands
@@ -440,6 +450,192 @@ def test_serve_command_is_not_public():
 def _write_csv(path: Path, header: str, *rows: str) -> None:
     """Write a CSV file. Each row should be a full CSV line (e.g. 'hello,world')."""
     path.write_text(header + "\n" + "\n".join(rows) + "\n")
+
+
+def test_batch_import_runs_complete_fallback_chain_and_returns_json(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """`normflow batch-import` synchronously reports the canonical Batch result."""
+    project_path = init_project(tmp_path / "project")
+    csv_path = project_path / "batch.csv"
+    _write_csv(
+        csv_path,
+        "raw",
+        "colour",
+        "colr",
+        "new phrase",
+        "colr",
+    )
+    seed_mappings(project_path, [("colour", "color")])
+    (project_path / ".env").write_text(
+        "OPENAI_API_KEY=project-secret\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_MODEL", raising=False)
+
+    encoder = MagicMock()
+    vectors = {
+        "colour": [1.0, 0.0, 0.0],
+        "colr": [1.0, 0.0, 0.0],
+        "new phrase": [0.0, 1.0, 0.0],
+    }
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        vectors[text] for text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 3
+    client = MagicMock()
+    client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="New Phrase"))]
+    )
+
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        patch("normflow.llm_matcher.build_client", return_value=client),
+    ):
+        result = runner.invoke(
+            app,
+            ["batch-import", str(csv_path), "--column", "raw"],
+        )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "auto_committed": 2,
+        "review_items": 1,
+        "skipped": 1,
+        "semantic_index_status": "refresh_required",
+        "semantic_index_warning": (
+            "The semantic index will refresh before the next semantic Suggestion."
+        ),
+    }
+    assert "project-secret" not in result.output
+    assert MappingService(project_path).list_review_items() == [
+        {"id": 1, "raw_text": "new phrase", "suggested_text": "New Phrase"}
+    ]
+
+
+def test_batch_import_waits_for_delayed_provider_completion(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The CLI remains in flight until the provider-backed Batch finishes."""
+    project_path = init_project(tmp_path / "project")
+    csv_path = project_path / "batch.csv"
+    _write_csv(csv_path, "raw", "new phrase")
+    seed_mappings(project_path, [("colour", "color")])
+    (project_path / ".env").write_text(
+        "OPENAI_API_KEY=project-secret\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_MODEL", raising=False)
+
+    encoder = MagicMock()
+    vectors = {
+        "colour": [1.0, 0.0],
+        "new phrase": [0.0, 1.0],
+    }
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        vectors[text] for text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 2
+
+    provider_started = Event()
+    allow_provider_completion = Event()
+
+    def delayed_completion(**_kwargs):
+        provider_started.set()
+        if not allow_provider_completion.wait(timeout=5):
+            raise RuntimeError("test did not release the provider")
+        return MagicMock(
+            choices=[MagicMock(message=MagicMock(content="New Phrase"))]
+        )
+
+    client = MagicMock()
+    client.chat.completions.create.side_effect = delayed_completion
+
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        patch("normflow.llm_matcher.build_client", return_value=client),
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        invocation = executor.submit(
+            runner.invoke,
+            app,
+            ["batch-import", str(csv_path), "--column", "raw"],
+        )
+        assert provider_started.wait(timeout=5)
+        try:
+            assert not invocation.done()
+        finally:
+            allow_provider_completion.set()
+        result = invocation.result(timeout=5)
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["review_items"] == 1
+    assert MappingService(project_path).list_review_items() == [
+        {"id": 1, "raw_text": "new phrase", "suggested_text": "New Phrase"}
+    ]
+
+
+def test_batch_import_provider_failure_is_actionable_and_atomic(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """A failed CLI Batch Import reports exit 1 and preserves Project state."""
+    project_path = init_project(tmp_path / "project")
+    seed_mappings(project_path, [("colour", "color")])
+    service = MappingService(project_path)
+
+    previous_batch = project_path / "previous.csv"
+    _write_csv(previous_batch, "raw", "preserved")
+    service.import_records_for_review(
+        str(previous_batch), "raw", semantic=False, llm=False
+    )
+
+    failed_batch = project_path / "failed.csv"
+    _write_csv(failed_batch, "raw", "colr", "provider fail")
+    (project_path / ".env").write_text(
+        "OPENAI_API_KEY=project-secret\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_MODEL", raising=False)
+
+    encoder = MagicMock()
+    vectors = {
+        "colour": [1.0, 0.0],
+        "colr": [1.0, 0.0],
+        "provider fail": [0.0, 1.0],
+    }
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        vectors[text] for text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 2
+    client = MagicMock()
+    client.chat.completions.create.side_effect = RuntimeError("provider unavailable")
+
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        patch("normflow.llm_matcher.build_client", return_value=client),
+    ):
+        result = runner.invoke(
+            app,
+            ["batch-import", str(failed_batch), "--column", "raw"],
+        )
+
+    assert result.exit_code == 1
+    assert "provider unavailable" in result.output
+    assert "no changes were made" in result.output
+    assert "project-secret" not in result.output
+    assert service.project_info()["mappings"] == 1
+    assert service.list_review_items() == [
+        {"id": 1, "raw_text": "preserved", "suggested_text": ""}
+    ]
+    assert (project_path / ".batches" / "current.csv").read_bytes() == (
+        previous_batch.read_bytes()
+    )
 
 
 def test_import_creates_mappings():
