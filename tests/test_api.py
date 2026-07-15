@@ -10,7 +10,6 @@ import pytest
 
 from normflow.api import create_app, get_project_service
 from normflow.mapping_service import (
-    BatchImportError,
     BulkAcceptError,
     BulkAcceptPersistenceError,
     BulkAcceptResult,
@@ -18,6 +17,7 @@ from normflow.mapping_service import (
     MappingService,
     ReviewItemNotFoundError,
 )
+from normflow.batch_import import BatchImportExecutionError
 from normflow.project import resolve_project
 from normflow.project_service import init_project
 
@@ -106,11 +106,17 @@ def test_import_records_reports_actionable_provider_failure():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = init_project(str(Path(tmpdir) / "project"))
         client, service = _client_with_fake_service(str(project_root))
-        service.import_records_for_review.side_effect = BatchImportError(
+        detail = (
             "Batch Import failed because the LLM provider could not generate a "
             "Suggestion: connection refused. Check the configured LLM credentials, "
             "endpoint, model, and network connection; no changes were made."
         )
+        service.run_batch_import.side_effect = BatchImportExecutionError({
+            "id": "run-1", "status": "failed", "input_name": "records.csv",
+            "input_fingerprint": "fingerprint", "created_at": "now",
+            "started_at": "now", "updated_at": "now", "terminal_at": "now",
+            "result": None, "error": detail, "replacement_run_id": None,
+        })
 
         response = client.post(
             "/import/records?column=name",

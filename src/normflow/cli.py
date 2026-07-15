@@ -4,6 +4,11 @@ from pathlib import Path
 import typer
 
 from . import __version__
+from .batch_import import (
+    BatchImportExecutionError,
+    BatchImportRunNotFoundError,
+    ProjectBusyError,
+)
 from .llm_config import load_llm_config
 from .mapping_service import BatchImportError, MappingService
 from .project import resolve_project
@@ -154,13 +159,64 @@ def batch_import_cmd(
     try:
         project = resolve_project(Path.cwd())
         load_llm_config(project, os.environ)
-        result = MappingService(str(project.root)).import_records_for_review(
+        result = MappingService(str(project.root)).run_batch_import(
             csv_path,
             column,
+            on_started=lambda run: typer.echo(run["id"], err=True),
         )
         print(json.dumps(result, indent=2))
+    except ProjectBusyError as error:
+        if error.active_run:
+            print(json.dumps(error.active_run, indent=2))
+        else:
+            typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(3) from None
+    except BatchImportExecutionError as error:
+        print(json.dumps(error.run, indent=2))
+        raise typer.Exit(1) from None
     except (BatchImportError, ValueError, FileNotFoundError) as error:
         print(f"Error: {error}")
+        raise typer.Exit(1) from None
+
+
+@app.command(name="batch-import-status")
+def batch_import_status_cmd(
+    run_id: str | None = typer.Argument(None, help="Run ID; defaults to active/latest."),
+) -> None:
+    """Print durable Batch Import Run status as JSON."""
+    import json
+    try:
+        print(json.dumps(_project_service().batch_import_status(run_id), indent=2))
+    except (BatchImportRunNotFoundError, ValueError) as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(1) from None
+
+
+@app.command(name="batch-import-retry")
+def batch_import_retry_cmd(
+    run_id: str = typer.Argument(..., help="Failed or interrupted Run ID."),
+    csv_path: str = typer.Argument(..., help="Resubmitted Batch CSV file."),
+    column: str = typer.Option(..., "--column", help="CSV raw text column."),
+) -> None:
+    """Explicitly retry a failed or interrupted Batch Import Run."""
+    import json
+    import os
+    try:
+        project = resolve_project(Path.cwd())
+        load_llm_config(project, os.environ)
+        run = MappingService(project.root).retry_batch_import(
+            run_id, csv_path, column,
+            on_started=lambda active: typer.echo(active["id"], err=True),
+        )
+        print(json.dumps(run, indent=2))
+    except ProjectBusyError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(3) from None
+    except BatchImportExecutionError as error:
+        print(json.dumps(error.run, indent=2))
+        raise typer.Exit(1) from None
+    except (BatchImportRunNotFoundError, ValueError, FileNotFoundError) as error:
+        typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(1) from None
 
 

@@ -24,6 +24,28 @@ interface ImportRecordsResult {
   semantic_index_warning: string | null;
 }
 
+interface BatchImportRun {
+  id: string;
+  status: "active" | "succeeded" | "failed" | "interrupted";
+  result: ImportRecordsResult | null;
+  error: string | null;
+}
+
+async function waitForBatchImport(response: Response): Promise<ImportRecordsResult> {
+  let run = await response.json() as BatchImportRun;
+  const location = response.headers.get("Location") ?? `/batch-import-runs/${run.id}`;
+  while (run.status === "active") {
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    const status = await fetch(location);
+    if (!status.ok) throw new Error(`Could not observe Batch Import (${status.status}).`);
+    run = await status.json() as BatchImportRun;
+  }
+  if (run.status !== "succeeded" || !run.result) {
+    throw new Error(run.error ?? `Batch Import ended ${run.status}.`);
+  }
+  return run.result;
+}
+
 let focusRefresh: (() => void) | undefined;
 
 function setFocusRefresh(refresh?: () => void): void {
@@ -492,14 +514,14 @@ function setupBatchImport(root: HTMLElement, importState: ImportState): void {
       const body = new FormData();
       body.append("file", file);
       const response = await fetch(
-        `/import/records?column=${encodeURIComponent(source.value)}`,
+        `/batch-import-runs?column=${encodeURIComponent(source.value)}`,
         { method: "POST", body },
       );
       if (!response.ok) {
         const error = await response.json() as { detail?: string };
         throw new Error(error.detail ?? `Could not import Batch (${response.status}).`);
       }
-      const result = await response.json() as ImportRecordsResult;
+      const result = await waitForBatchImport(response);
       form.reset();
       resetHeaderSelection();
       const reviewLabel = result.review_items === 1 ? "Review Item" : "Review Items";

@@ -501,7 +501,10 @@ def test_batch_import_runs_complete_fallback_chain_and_returns_json(
         )
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == {
+    terminal = json.loads(result.stdout)
+    assert terminal["status"] == "succeeded"
+    assert result.stderr.strip() == terminal["id"]
+    assert terminal["result"] == {
         "auto_committed": 2,
         "review_items": 1,
         "skipped": 1,
@@ -574,7 +577,7 @@ def test_batch_import_waits_for_delayed_provider_completion(
         result = invocation.result(timeout=5)
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout)["review_items"] == 1
+    assert json.loads(result.stdout)["result"]["review_items"] == 1
     assert MappingService(project_path).list_review_items() == [
         {"id": 1, "raw_text": "new phrase", "suggested_text": "New Phrase"}
     ]
