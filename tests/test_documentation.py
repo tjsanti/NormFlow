@@ -73,7 +73,10 @@ def test_domain_docs_define_the_batch_import_run_contract():
     context = (ROOT / "CONTEXT.md").read_text(encoding="utf-8")
     adr = ROOT / "docs" / "adr" / "0001-batch-import-coordination.md"
 
-    assert re.search(r"\*\*Batch Import Run\*\*:.*identified attempt", context)
+    assert re.search(
+        r"\*\*Batch Import Run\*\*:\s+One identified attempt",
+        context,
+    )
     assert adr.exists()
 
     decision = adr.read_text(encoding="utf-8")

@@ -569,22 +569,30 @@ class MappingService:
 
     def _snapshot_batch_import_state(self, destination: Path) -> None:
         """Persist an opaque snapshot owned by the Mapping and index modules."""
-        destination.mkdir(parents=True, exist_ok=False)
-        with self._session() as session:
-            revision = session.get(_MappingRevision, 1)
-            state: _BatchImportRecoveryState = {
-                "mapping_ids": list(session.exec(select(_ExampleMapping.id)).all()),
-                "review_item_ids": list(session.exec(select(_ReviewItem.id)).all()),
-                "revision": revision.revision if revision else 0,
-                "retained": (self._batch_csv_dir() / "current.csv").exists(),
-            }
-        (destination / "mapping.json").write_text(
-            json.dumps(state), encoding="utf-8"
-        )
-        retained = self._batch_csv_dir() / "current.csv"
-        if retained.exists():
-            shutil.copy2(retained, destination / "retained.csv")
-        SemanticIndex(str(self._path)).snapshot(destination / "semantic")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(
+            prefix=f".{destination.name}-", suffix=".tmp", dir=destination.parent,
+        ))
+        try:
+            with self._session() as session:
+                revision = session.get(_MappingRevision, 1)
+                state: _BatchImportRecoveryState = {
+                    "mapping_ids": list(session.exec(select(_ExampleMapping.id)).all()),
+                    "review_item_ids": list(session.exec(select(_ReviewItem.id)).all()),
+                    "revision": revision.revision if revision else 0,
+                    "retained": (self._batch_csv_dir() / "current.csv").exists(),
+                }
+            (temporary / "mapping.json").write_text(
+                json.dumps(state), encoding="utf-8"
+            )
+            retained = self._batch_csv_dir() / "current.csv"
+            if retained.exists():
+                shutil.copy2(retained, temporary / "retained.csv")
+            SemanticIndex(str(self._path)).snapshot(temporary / "semantic")
+            os.replace(temporary, destination)
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
 
     def _restore_batch_import_state(self, snapshot: Path) -> None:
         """Restore a snapshot without exposing Mapping or index persistence."""

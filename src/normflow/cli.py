@@ -210,7 +210,10 @@ def batch_import_retry_cmd(
         )
         print(json.dumps(run, indent=2))
     except ProjectBusyError as error:
-        typer.echo(f"Error: {error}", err=True)
+        if error.active_run:
+            print(json.dumps(error.active_run, indent=2))
+        else:
+            typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(3) from None
     except BatchImportExecutionError as error:
         print(json.dumps(error.run, indent=2))

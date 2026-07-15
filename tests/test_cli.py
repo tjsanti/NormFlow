@@ -9,8 +9,10 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
+from normflow.batch_import import BatchImportExecutionError, ProjectBusyError
 from normflow.cli import app
 from normflow.mapping_service import MappingService, ReviewItemInfo
 from normflow.project_service import init_project as _init_project
@@ -33,6 +35,8 @@ class ProjectCliRunner(CliRunner):
     def invoke(self, cli, args=None, **kwargs):
         project_commands = {
             "batch-import",
+            "batch-import-retry",
+            "batch-import-status",
             "import",
             "export",
             "export-batch",
@@ -640,6 +644,43 @@ def test_batch_import_provider_failure_is_actionable_and_atomic(
     assert (project_path / ".batches" / "current.csv").read_bytes() == (
         previous_batch.read_bytes()
     )
+
+
+def test_batch_import_retry_reports_the_active_run_as_json(tmp_path: Path):
+    project_path = init_project(tmp_path / "project")
+    csv_path = project_path / "batch.csv"
+    _write_csv(csv_path, "raw", "new phrase")
+    (project_path / ".env").write_text("OPENAI_API_KEY=test-key\n", encoding="utf-8")
+    active_run = {"id": "active-run", "status": "active"}
+
+    with patch.object(
+        MappingService,
+        "retry_batch_import",
+        side_effect=ProjectBusyError(active_run),
+    ):
+        result = runner.invoke(
+            app,
+            ["batch-import-retry", "failed-run", str(csv_path), "--column", "raw"],
+        )
+
+    assert result.exit_code == 3
+    assert json.loads(result.stdout) == active_run
+
+
+def test_batch_import_status_resolves_the_initialized_project(tmp_path: Path, monkeypatch):
+    project_path = init_project(tmp_path / "project")
+    malformed = project_path / "malformed.csv"
+    _write_csv(malformed, "other", "value")
+    with pytest.raises(BatchImportExecutionError) as failed:
+        MappingService(project_path).run_batch_import(malformed, "raw")
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    monkeypatch.chdir(ambient)
+
+    result = runner.invoke(app, ["batch-import-status", failed.value.run["id"]])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["id"] == failed.value.run["id"]
 
 
 def test_import_creates_mappings():

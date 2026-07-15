@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from normflow.batch_import import ProjectBusyError
+from normflow.batch_import import BatchImportExecutionError, ProjectBusyError
 from normflow.cli import app
 from normflow.mapping_service import MappingService
 from normflow.api import create_app
@@ -61,6 +61,78 @@ def test_batch_import_run_is_durable_from_start_through_terminal_status(tmp_path
     assert terminal["status"] == "succeeded"
     assert terminal["result"]["review_items"] == 1
     assert MappingService(project).batch_import_status(terminal["id"]) == terminal
+
+
+def test_started_callback_failure_marks_the_durable_run_failed(tmp_path: Path):
+    project = init_project(tmp_path / "project")
+    service = MappingService(project)
+    batch = _csv(tmp_path / "records.csv", "o2 sensor")
+
+    with pytest.raises(BatchImportExecutionError, match="observer failed") as raised:
+        service.run_batch_import(
+            batch,
+            "name",
+            on_started=lambda _run: (_ for _ in ()).throw(RuntimeError("observer failed")),
+        )
+
+    assert raised.value.run["status"] == "failed"
+    assert service.batch_import_status(raised.value.run["id"])["status"] == "failed"
+    assert service.active_batch_import_run() is None
+
+
+def test_incomplete_snapshot_is_never_restored_over_live_project_state(tmp_path: Path):
+    project = init_project(tmp_path / "project")
+    service = MappingService(project)
+    mappings = tmp_path / "mappings.csv"
+    mappings.write_text("raw,clean\noxygen,Oxygen\n", encoding="utf-8")
+    service.import_mappings(mappings, "raw", "clean")
+    service.build_index()
+    batch = _csv(tmp_path / "records.csv", "o2 sensor")
+
+    def fail_partial_snapshot(destination: Path) -> None:
+        destination.mkdir(parents=True)
+        raise OSError("snapshot interrupted")
+
+    with (
+        patch(
+            "normflow.mapping_service.SemanticIndex.snapshot",
+            side_effect=fail_partial_snapshot,
+        ),
+        pytest.raises(BatchImportExecutionError, match="snapshot interrupted"),
+    ):
+        service.run_batch_import(batch, "name")
+
+    assert service.project_info()["semantic_index_status"] == "fresh"
+    assert not list((project / ".batches" / "runs").glob("*.snapshot*"))
+
+
+def test_recovery_discards_an_unpublished_snapshot_directory(tmp_path: Path):
+    project = init_project(tmp_path / "project")
+    batch = _csv(tmp_path / "records.csv", "o2 sensor")
+    program = f"""
+import os
+from pathlib import Path
+from unittest.mock import patch
+from normflow.mapping_service import MappingService
+def crash_snapshot(self, destination):
+    temporary = destination.parent / f'.{{destination.name}}-partial.tmp'
+    temporary.mkdir(parents=True)
+    os._exit(9)
+with patch.object(MappingService, '_snapshot_batch_import_state', crash_snapshot):
+    MappingService({str(project)!r}).run_batch_import({str(batch)!r}, 'name')
+"""
+
+    crashed = subprocess.run(
+        [sys.executable, "-c", program], check=False, timeout=10,
+    )
+    runs_dir = project / ".batches" / "runs"
+    assert crashed.returncode == 9
+    assert list(runs_dir.glob(".*.snapshot-*.tmp"))
+
+    recovered = MappingService(project).batch_import_status()
+
+    assert recovered["status"] == "interrupted"
+    assert not list(runs_dir.glob(".*.snapshot-*.tmp"))
 
 
 def test_independent_service_writer_fails_fast_while_batch_run_owns_project(tmp_path: Path):
@@ -277,7 +349,9 @@ def test_status_recovers_run_after_owning_process_crashes(tmp_path: Path):
         "on_started=lambda run: os._exit(9))"
     )
 
-    crashed = subprocess.run([sys.executable, "-c", program], check=False)
+    crashed = subprocess.run(
+        [sys.executable, "-c", program], check=False, timeout=10,
+    )
     mappings = tmp_path / "mappings.csv"
     mappings.write_text("raw,clean\ncolour,color\n", encoding="utf-8")
     assert MappingService(project).import_mappings(mappings, "raw", "clean") == (1, 0)
@@ -311,7 +385,9 @@ def test_http_collection_status_and_explicit_retry(tmp_path: Path):
         f"{str(batch)!r}, 'name', "
         "on_started=lambda run: os._exit(9))"
     )
-    subprocess.run([sys.executable, "-c", interrupted_program], check=False)
+    subprocess.run(
+        [sys.executable, "-c", interrupted_program], check=False, timeout=10,
+    )
     interrupted = MappingService(project).batch_import_status()
 
     latest = client.get("/batch-import-runs")
@@ -350,7 +426,7 @@ def test_all_http_project_writers_report_shared_active_run_conflict(tmp_path: Pa
         f"{str(retry_csv)!r}, 'name', "
         "on_started=lambda run: os._exit(9))"
     )
-    subprocess.run([sys.executable, "-c", crash], check=False)
+    subprocess.run([sys.executable, "-c", crash], check=False, timeout=10)
     retryable_id = MappingService(project).batch_import_status()["id"]
     held = _csv(tmp_path / "held.csv", "held")
     started, release = Event(), Event()
@@ -473,14 +549,29 @@ def test_http_observer_disconnect_does_not_stop_provider_backed_run(tmp_path: Pa
 def test_committed_process_crash_is_reconciled_as_succeeded(tmp_path: Path):
     project = init_project(tmp_path / "project")
     batch = _csv(tmp_path / "records.csv", "committed")
-    program = (
-        "import os; from normflow.mapping_service import MappingService; "
-        f"MappingService({str(project)!r}).run_batch_import("
-        f"{str(batch)!r}, 'name', "
-        "on_committed=lambda run: os._exit(9))"
+    program = f"""
+import os
+from unittest.mock import MagicMock, patch
+from normflow.mapping_service import MappingService
+encoder = MagicMock()
+encoder.encode.side_effect = lambda texts, **kwargs: [[1.0, 0.0] for text in texts]
+encoder.get_sentence_embedding_dimension.return_value = 2
+provider = MagicMock()
+provider.chat.completions.create.return_value = MagicMock(
+    choices=[MagicMock(message=MagicMock(content='Normalized'))]
+)
+with (
+    patch('normflow.semantic_index._ensure_model', return_value=encoder),
+    patch('normflow.llm_matcher.build_client', return_value=provider),
+):
+    MappingService({str(project)!r}).run_batch_import(
+        {str(batch)!r}, 'name', on_committed=lambda run: os._exit(9)
     )
+"""
 
-    crashed = subprocess.run([sys.executable, "-c", program,], check=False)
+    crashed = subprocess.run(
+        [sys.executable, "-c", program], check=False, timeout=10,
+    )
     recovered = MappingService(project).batch_import_status()
 
     assert crashed.returncode == 9

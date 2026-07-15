@@ -257,6 +257,8 @@ class BatchImportRuns:
         snapshot = self.runs_dir / f"{run_id}.snapshot"
         if snapshot.exists():
             shutil.rmtree(snapshot)
+        for temporary in self.runs_dir.glob(f".{run_id}.snapshot-*.tmp"):
+            shutil.rmtree(temporary, ignore_errors=True)
 
     def _cleanup_batch_temporaries(self) -> None:
         self._cleanup_temporaries()
@@ -351,10 +353,10 @@ class BatchImportRuns:
                 ]
             for interrupted_id in interrupted_ids:
                 (self.runs_dir / f"{interrupted_id}.csv").unlink(missing_ok=True)
-            active = self._get(run_id)
-            if on_started:
-                on_started(active)
             try:
+                active = self._get(run_id)
+                if on_started:
+                    on_started(active)
                 shutil.copy2(source, staged)
                 fingerprint = hashlib.sha256(staged.read_bytes()).hexdigest()
                 with self._connection() as connection:

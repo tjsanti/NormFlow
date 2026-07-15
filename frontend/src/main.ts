@@ -31,11 +31,22 @@ interface BatchImportRun {
   error: string | null;
 }
 
+function errorDetailMessage(detail: unknown, fallback: string): string {
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && "message" in detail) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return fallback;
+}
+
 async function waitForBatchImport(response: Response): Promise<ImportRecordsResult> {
   let run = await response.json() as BatchImportRun;
   const location = response.headers.get("Location") ?? `/batch-import-runs/${run.id}`;
+  let delay = 100;
   while (run.status === "active") {
-    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    await new Promise((resolve) => window.setTimeout(resolve, delay));
+    delay = Math.min(delay * 2, 2_000);
     const status = await fetch(location);
     if (!status.ok) throw new Error(`Could not observe Batch Import (${status.status}).`);
     run = await status.json() as BatchImportRun;
@@ -195,19 +206,30 @@ function renderReviewItems(root: HTMLElement, items: ReviewItem[]): void {
         body: JSON.stringify({ review_item_ids: reviewItemIds }),
       });
       if (!response.ok) {
-        const error = await response.json() as { detail?: string };
-        throw new Error(error.detail ?? `Could not accept selected Review Items (${response.status}).`);
+        const error = await response.json() as { detail?: unknown };
+        throw Object.assign(
+          new Error(errorDetailMessage(
+            error.detail,
+            `Could not accept selected Review Items (${response.status}).`,
+          )),
+          { stale: response.status === 409 },
+        );
       }
       const result = await response.json() as { accepted: number };
       showNotice(root, `Accepted ${result.accepted} Review Items.`);
       await refreshProject(root);
     } catch (error) {
+      const stale = error instanceof Error && "stale" in error && error.stale === true;
       showNotice(
         root,
         error instanceof Error ? error.message : "Could not accept selected Review Items.",
         true,
       );
-      updateBulkControls();
+      if (stale) {
+        await refreshProject(root);
+      } else {
+        updateBulkControls();
+      }
     }
   });
 
@@ -518,8 +540,11 @@ function setupBatchImport(root: HTMLElement, importState: ImportState): void {
         { method: "POST", body },
       );
       if (!response.ok) {
-        const error = await response.json() as { detail?: string };
-        throw new Error(error.detail ?? `Could not import Batch (${response.status}).`);
+        const error = await response.json() as { detail?: unknown };
+        throw new Error(errorDetailMessage(
+          error.detail,
+          `Could not import Batch (${response.status}).`,
+        ));
       }
       const result = await waitForBatchImport(response);
       form.reset();

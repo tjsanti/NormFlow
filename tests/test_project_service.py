@@ -25,9 +25,11 @@ def test_many_projects_do_not_retain_database_descriptors(tmp_path: Path):
         (constrained_limit, original_limit[1]),
     )
     try:
+        services = []
         for index in range(20):
             project = init_project(tmp_path / f"project-{index}")
-            assert MappingService(project).project_info()["mappings"] == 0
+            services.append(MappingService(project))
+            assert services[-1].project_info()["mappings"] == 0
     finally:
         resource.setrlimit(resource.RLIMIT_NOFILE, original_limit)
 

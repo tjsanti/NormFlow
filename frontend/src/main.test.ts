@@ -449,7 +449,16 @@ describe("Batch Import", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([]))
-      .mockReturnValueOnce(importResponse);
+      .mockReturnValueOnce(importResponse)
+      .mockResolvedValueOnce(okJson({
+        id: "run-1", status: "active", error: null, result: null,
+      }))
+      .mockResolvedValueOnce(okJson({
+        id: "run-1", status: "succeeded", error: null,
+        result: { auto_committed: 0, review_items: 0, skipped: 0 },
+      }))
+      .mockResolvedValueOnce(okJson(projectInfo))
+      .mockResolvedValueOnce(okJson([]));
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
@@ -479,13 +488,20 @@ describe("Batch Import", () => {
     expect([...document.querySelectorAll("button")]
       .some((button) => button.textContent?.includes("Cancel"))).toBe(false);
 
-    resolveImport(okJson({
-      id: "run-1", status: "succeeded", error: null,
-      result: { auto_committed: 0, review_items: 0, skipped: 0 },
+    resolveImport(new Response(JSON.stringify({
+      id: "run-1", status: "active", error: null, result: null,
+    }), {
+      status: 202,
+      headers: {
+        "Content-Type": "application/json",
+        Location: "/batch-import-runs/run-1/status",
+      },
     }));
     await vi.waitFor(() => expect(
       form.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled,
     ).toBe(false));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/batch-import-runs/run-1/status");
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/batch-import-runs/run-1/status");
   });
 
   test("reports Batch counts, resets, refreshes, and opens newly pending Review Items", async () => {
@@ -494,6 +510,9 @@ describe("Batch Import", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([]))
+      .mockResolvedValueOnce(okJson({
+        id: "run-2", status: "active", error: null, result: null,
+      }))
       .mockResolvedValueOnce(okJson({
         id: "run-2", status: "succeeded", error: null,
         result: {
@@ -536,8 +555,9 @@ describe("Batch Import", () => {
     expect(source.disabled).toBe(true);
     expect(source.value).toBe("");
     expect(document.querySelector("#semantic-index-status")?.textContent).toContain(warning);
-    expect(fetchMock).toHaveBeenNthCalledWith(4, "/project/info");
-    expect(fetchMock).toHaveBeenNthCalledWith(5, "/review-items");
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/batch-import-runs/run-2");
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/project/info");
+    expect(fetchMock).toHaveBeenNthCalledWith(6, "/review-items");
   });
 
   test("stays on Import after a successful Batch creates no pending Review Items", async () => {
@@ -602,12 +622,15 @@ describe("Batch Import", () => {
     expect(document.querySelector("#review-tab")?.getAttribute("aria-selected")).toBe("true");
 
     rejectImport(new Response(JSON.stringify({
-      detail: "Check the configured LLM endpoint and network connection; no changes were made.",
+      detail: {
+        message: "The Project is currently being changed; try again later.",
+        active_run: { id: "run-4", status: "active" },
+      },
     }), { status: 502, headers: { "Content-Type": "application/json" } }));
 
     await vi.waitFor(() => expect(document.querySelector("#notices [role=alert]")).not.toBeNull());
     expect(document.querySelector("#notices [role=alert]")?.textContent)
-      .toContain("LLM endpoint and network connection");
+      .toContain("currently being changed");
     expect(fileInput.files?.[0]).toBe(file);
     expect(source.value).toBe("name");
     expect(source.disabled).toBe(false);
@@ -759,6 +782,31 @@ describe("Review queue", () => {
     expect(document.querySelector<HTMLButtonElement>("#accept-selected")!.disabled).toBe(false);
     expect(document.querySelector("[role=alert]")?.textContent).toContain("no changes were made");
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  test("stale bulk acceptance refreshes the queue and drops the obsolete selection", async () => {
+    const item = { id: 4, raw_text: "first raw", suggested_text: "First" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson(projectInfo))
+      .mockResolvedValueOnce(okJson([item]))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ detail: "Review Item 4 is no longer pending" }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      ))
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([]));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelectorAll("tbody tr")).toHaveLength(1));
+    document.querySelector<HTMLInputElement>('tbody input[type="checkbox"]')!.click();
+    document.querySelector<HTMLButtonElement>("#accept-selected")!.click();
+
+    await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
+    expect(document.querySelector("[role=alert]")?.textContent).toContain("no longer pending");
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/project/info");
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/review-items");
   });
 
   test("Edit opens one prefilled inline input and Escape or Cancel restores the row", async () => {
