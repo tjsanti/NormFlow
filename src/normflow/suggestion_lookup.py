@@ -1,17 +1,25 @@
 """Suggestion lookup: exact, semantic, then LLM fallback."""
 
 from collections.abc import Callable
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from .llm_matcher import suggest as default_llm_suggest
 
 
+class SuggestionProviderError(RuntimeError):
+    """The configured LLM provider could not generate a Suggestion."""
+
+
+SuggestionMethod = Literal["exact", "semantic", "llm"]
+
+
 class SuggestionItem(BaseModel):
     """A single suggestion returned by lookup."""
 
     suggested_text: str
-    method: str
+    method: SuggestionMethod
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
@@ -36,6 +44,7 @@ class SuggestionLookup:
         llm: bool = True,
         threshold: float = 0.85,
         limit: int = 1,
+        raise_provider_errors: bool = False,
     ) -> list[SuggestionItem]:
         suggestions: list[SuggestionItem] = []
 
@@ -60,11 +69,17 @@ class SuggestionLookup:
             if examples:
                 try:
                     normalized = self._llm_suggest(raw_text, examples)
+                    if raise_provider_errors and not normalized.strip():
+                        raise SuggestionProviderError(
+                            "the LLM provider returned a blank Suggestion"
+                        )
                     suggestions.append(SuggestionItem(
                         suggested_text=normalized,
                         method="llm",
                     ))
-                except Exception:
+                except Exception as error:
+                    if raise_provider_errors:
+                        raise SuggestionProviderError(str(error)) from error
                     pass  # ponytail: silent fallback, user re-tries or edits manually
 
         return suggestions[:limit]

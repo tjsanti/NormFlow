@@ -283,11 +283,44 @@ def test_project_info_reports_damaged_nearest_marker_without_parent_fallback(
     assert "recover" in result.stdout.lower()
 
 
+def test_ui_rejects_invalid_llm_configuration_before_startup(
+    tmp_path: Path, monkeypatch,
+):
+    project_root = init_project(str(tmp_path / "project"))
+    monkeypatch.chdir(project_root)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_MODEL", raising=False)
+
+    with (
+        patch("socket.socket") as socket_factory,
+        patch("httpx.Client.send") as send_http_request,
+        patch("uvicorn.run") as run_server,
+        patch("webbrowser.open") as open_browser,
+    ):
+        result = runner.invoke(app, ["ui"])
+
+    assert result.exit_code == 1
+    assert result.stdout.strip() == (
+        "Error: OPENAI_API_KEY is required and must not be blank."
+    )
+    socket_factory.assert_not_called()
+    send_http_request.assert_not_called()
+    run_server.assert_not_called()
+    open_browser.assert_not_called()
+
+
 def test_ui_discovers_project_and_launches_bound_local_server_from_subdirectory(
     tmp_path: Path, monkeypatch,
 ):
     """`normflow ui` binds the browser server to the canonical active Project."""
     project_root = init_project(str(tmp_path / "project"))
+    (project_root / ".env").write_text(
+        "OPENAI_API_KEY=project-key\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_MODEL", raising=False)
     nested = project_root / "input" / "incoming"
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
@@ -319,6 +352,7 @@ def test_ui_no_open_starts_same_bound_server_without_opening_browser(
 ):
     """`normflow ui --no-open` leaves browser launching to the user."""
     project_root = init_project(str(tmp_path / "project"))
+    monkeypatch.setenv("OPENAI_API_KEY", "shell-key")
     monkeypatch.chdir(project_root)
     bound_app = object()
 
@@ -344,6 +378,7 @@ def test_ui_no_open_starts_same_bound_server_without_opening_browser(
 
 def test_ui_fixed_port_is_checked_and_used(tmp_path: Path, monkeypatch):
     project_root = init_project(str(tmp_path / "project"))
+    monkeypatch.setenv("OPENAI_API_KEY", "shell-key")
     monkeypatch.chdir(project_root)
 
     with (
@@ -363,6 +398,7 @@ def test_ui_fixed_port_is_checked_and_used(tmp_path: Path, monkeypatch):
 
 def test_ui_unavailable_fixed_port_fails_usefully(tmp_path: Path, monkeypatch):
     project_root = init_project(str(tmp_path / "project"))
+    monkeypatch.setenv("OPENAI_API_KEY", "shell-key")
     monkeypatch.chdir(project_root)
 
     with (
@@ -383,6 +419,7 @@ def test_ui_unavailable_fixed_port_fails_usefully(tmp_path: Path, monkeypatch):
 
 def test_ui_rejects_invalid_ports_and_host_selection(tmp_path: Path, monkeypatch):
     project_root = init_project(str(tmp_path / "project"))
+    monkeypatch.setenv("OPENAI_API_KEY", "shell-key")
     monkeypatch.chdir(project_root)
 
     assert runner.invoke(app, ["ui", "--port", "0"]).exit_code != 0

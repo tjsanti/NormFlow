@@ -7,14 +7,16 @@ model imports are internal.
 
 import csv
 import io
+import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
 from typing import TypedDict
 
-from sqlalchemy import inspect, text, update
+from sqlalchemy import delete, inspect, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import (
     Field as SField,
@@ -26,11 +28,19 @@ from sqlmodel import (
 )
 
 from .semantic_index import SemanticIndex, SemanticIndexStatus
-from .suggestion_lookup import SuggestionItem, SuggestionLookup
+from .suggestion_lookup import (
+    SuggestionItem,
+    SuggestionLookup,
+    SuggestionProviderError,
+)
 
 
 class ReviewItemNotFoundError(ValueError):
     """The requested Review Item is no longer pending."""
+
+
+class BatchImportError(RuntimeError):
+    """A Batch Import could not complete without partial Project changes."""
 
 
 class BulkAcceptError(ValueError):
@@ -248,20 +258,40 @@ class MappingService:
             msg = f"CSV file not found: {csv_file}"
             raise FileNotFoundError(msg)
 
-        with open(csv_file, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            if reader.fieldnames is None:
-                msg = "CSV file is empty or has no header row"
-                raise ValueError(msg)
-
-            available = list(reader.fieldnames)
-            required = (required_columns,) if isinstance(required_columns, str) else required_columns
-            for column in required:
-                if column not in available:
-                    msg = f"CSV does not contain a column named '{column}'. Available columns: {', '.join(available)}"
+        available: list[str] = []
+        try:
+            with open(csv_file, newline="", encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f, strict=True)
+                if reader.fieldnames is None:
+                    msg = "CSV file is empty or has no header row"
                     raise ValueError(msg)
 
-            return available, list(reader)
+                available = list(reader.fieldnames)
+                required = (required_columns,) if isinstance(required_columns, str) else required_columns
+                for column in required:
+                    if column not in available:
+                        msg = f"CSV does not contain a column named '{column}'. Available columns: {', '.join(available)}"
+                        raise ValueError(msg)
+
+                rows = list(reader)
+                for row_number, row in enumerate(rows, start=2):
+                    for column in required:
+                        if row.get(column) is None:
+                            raise ValueError(
+                                f"CSV row {row_number} does not contain a value "
+                                f"for selected column '{column}'"
+                            )
+
+                return available, rows
+        except UnicodeDecodeError as error:
+            raise ValueError("CSV must be UTF-8 text") from error
+        except csv.Error as error:
+            available_detail = (
+                f" Available columns: {', '.join(available)}" if available else ""
+            )
+            raise ValueError(
+                f"CSV could not be parsed: {error}.{available_detail}"
+            ) from error
 
     def import_mappings(
         self,
@@ -269,6 +299,8 @@ class MappingService:
         source_column: str,
         target_column: str,
     ) -> tuple[int, int]:
+        if source_column == target_column:
+            raise ValueError("Source and target columns must differ")
         _, rows = self._read_csv(csv_path, (source_column, target_column))
 
         with self._session() as session:
@@ -278,8 +310,10 @@ class MappingService:
             imported = 0
             skipped = 0
             for row in rows:
-                raw_text = row[source_column].strip()
-                normalized_text = row[target_column].strip()
+                raw_value = row[source_column]
+                normalized_value = row[target_column]
+                raw_text = raw_value.strip()
+                normalized_text = normalized_value.strip()
 
                 if not raw_text or not normalized_text:
                     continue
@@ -344,12 +378,20 @@ class MappingService:
         llm: bool,
         threshold: float,
         limit: int,
+        raise_provider_errors: bool = False,
     ) -> list[SuggestionItem]:
         """Look up a Suggestion after this operation's one refresh attempt."""
         return SuggestionLookup(
             exact_lookup=self._find_exact_mapping,
             index=SemanticIndex(str(self._path)),
-        ).lookup(raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=limit)
+        ).lookup(
+            raw_text,
+            semantic=semantic,
+            llm=llm,
+            threshold=threshold,
+            limit=limit,
+            raise_provider_errors=raise_provider_errors,
+        )
 
     def _refresh_semantic_index_if_needed(self) -> None:
         if SemanticIndex(str(self._path)).status(self._current_mapping_revision()) == "fresh":
@@ -414,10 +456,70 @@ class MappingService:
         d.mkdir(exist_ok=True)
         return d
 
-    def _store_batch_csv(self, csv_path: str) -> None:
+    def _stage_batch_csv(self, csv_path: str) -> Path:
         src = Path(csv_path).expanduser().resolve()
-        dst = self._batch_csv_dir() / "current.csv"
-        shutil.copy2(src, dst)
+        descriptor, staged_name = tempfile.mkstemp(
+            dir=self._batch_csv_dir(), prefix=".current-", suffix=".tmp",
+        )
+        os.close(descriptor)
+        staged = Path(staged_name)
+        try:
+            shutil.copy2(src, staged)
+        except Exception:
+            staged.unlink(missing_ok=True)
+            raise
+        return staged
+
+    def _suspend_batch_csv(self) -> Path | None:
+        current = self._batch_csv_dir() / "current.csv"
+        if not current.exists():
+            return None
+        descriptor, backup_name = tempfile.mkstemp(
+            dir=self._batch_csv_dir(), prefix=".previous-", suffix=".tmp",
+        )
+        os.close(descriptor)
+        backup = Path(backup_name)
+        try:
+            os.replace(current, backup)
+        except Exception:
+            backup.unlink(missing_ok=True)
+            raise
+        return backup
+
+    def _restore_batch_csv(self, backup: Path | None) -> None:
+        current = self._batch_csv_dir() / "current.csv"
+        if backup is None:
+            current.unlink(missing_ok=True)
+        else:
+            try:
+                os.replace(backup, current)
+            except Exception:
+                current.unlink(missing_ok=True)
+                backup.unlink(missing_ok=True)
+                raise
+
+    def _compensate_batch_changes(
+        self,
+        mapping_ids: list[int],
+        review_item_ids: list[int],
+        previous_mapping_revision: int | None,
+    ) -> None:
+        with self._session() as session:
+            if mapping_ids:
+                session.exec(
+                    delete(_ExampleMapping).where(_ExampleMapping.id.in_(mapping_ids))
+                )
+            if review_item_ids:
+                session.exec(
+                    delete(_ReviewItem).where(_ReviewItem.id.in_(review_item_ids))
+                )
+            if previous_mapping_revision is not None:
+                session.exec(
+                    update(_MappingRevision)
+                    .where(_MappingRevision.id == 1)
+                    .values(revision=previous_mapping_revision)
+                )
+            session.commit()
 
     def import_records_for_review(
         self,
@@ -431,8 +533,7 @@ class MappingService:
         if semantic or llm:
             self._refresh_semantic_index_if_needed()
         _, rows = self._read_csv(csv_path, column)
-
-        self._store_batch_csv(csv_path)
+        staged_batch = self._stage_batch_csv(csv_path)
 
         values = [row.get(column, "").strip() for row in rows]
         unique_values = list(dict.fromkeys(raw_text for raw_text in values if raw_text))
@@ -441,43 +542,106 @@ class MappingService:
         auto_committed = 0
         review_items = 0
         mappings_added = False
+        added_mappings: list[_ExampleMapping] = []
+        added_review_items: list[_ReviewItem] = []
 
-        with self._session() as session:
-            existing_raw = {r for r in session.exec(select(_ExampleMapping.raw_text)).all()}
-            existing_review_items = {r for r in session.exec(select(_ReviewItem.raw_text)).all()}
+        try:
+            with self._session() as session:
+                existing_raw = {r for r in session.exec(select(_ExampleMapping.raw_text)).all()}
+                existing_review_items = {r for r in session.exec(select(_ReviewItem.raw_text)).all()}
 
-            for raw_text in unique_values:
-                # Skip if already awaiting review from a prior import.
-                if raw_text in existing_review_items:
-                    skipped += 1
-                    continue
+                for raw_text in unique_values:
+                    # Skip if already awaiting review from a prior import.
+                    if raw_text in existing_review_items:
+                        skipped += 1
+                        continue
 
-                results = self._lookup_with_current_index(
-                    raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=1,
-                )
+                    try:
+                        results = self._lookup_with_current_index(
+                            raw_text,
+                            semantic=semantic,
+                            llm=llm,
+                            threshold=threshold,
+                            limit=1,
+                            raise_provider_errors=True,
+                        )
+                    except SuggestionProviderError as error:
+                        raise BatchImportError(
+                            "Batch Import failed because the LLM provider could not "
+                            f"generate a Suggestion: {error}. Check the configured LLM "
+                            "credentials, endpoint, model, and network connection; no "
+                            "changes were made."
+                        ) from error
 
-                if results:
-                    result = results[0]
-                    if result.method in ("exact", "semantic"):
-                        # Auto-commit to library if not already there
-                        if raw_text not in existing_raw:
-                            session.add(_ExampleMapping(raw_text=raw_text, normalized_text=result.suggested_text))
-                            existing_raw.add(raw_text)
-                            mappings_added = True
-                        auto_committed += 1
+                    if results:
+                        result = results[0]
+                        if result.method in ("exact", "semantic"):
+                            # Auto-commit to library if not already there
+                            if raw_text not in existing_raw:
+                                mapping = _ExampleMapping(
+                                    raw_text=raw_text,
+                                    normalized_text=result.suggested_text,
+                                )
+                                session.add(mapping)
+                                added_mappings.append(mapping)
+                                existing_raw.add(raw_text)
+                                mappings_added = True
+                            auto_committed += 1
+                        else:
+                            # LLM suggestion — store it on a Review Item.
+                            review_item = _ReviewItem(
+                                raw_text=raw_text,
+                                suggested_text=result.suggested_text,
+                            )
+                            session.add(review_item)
+                            added_review_items.append(review_item)
+                            review_items += 1
                     else:
-                        # LLM suggestion — store it on a Review Item.
-                        session.add(_ReviewItem(raw_text=raw_text, suggested_text=result.suggested_text))
+                        # No match — create a Review Item for manual entry.
+                        review_item = _ReviewItem(raw_text=raw_text, suggested_text="")
+                        session.add(review_item)
+                        added_review_items.append(review_item)
                         review_items += 1
-                else:
-                    # No match — create a Review Item for manual entry.
-                    session.add(_ReviewItem(raw_text=raw_text, suggested_text=""))
-                    review_items += 1
 
-            if mappings_added:
-                self._commit_mapping_changes(session)
-            else:
-                session.commit()
+                session.flush()
+                mapping_ids = [
+                    mapping.id for mapping in added_mappings if mapping.id is not None
+                ]
+                review_item_ids = [
+                    item.id for item in added_review_items if item.id is not None
+                ]
+                revision = session.get(_MappingRevision, 1)
+                previous_mapping_revision = (
+                    revision.revision if mappings_added and revision else None
+                )
+                backup = self._suspend_batch_csv()
+                try:
+                    if mappings_added:
+                        self._commit_mapping_changes(session)
+                    else:
+                        session.commit()
+                except Exception:
+                    self._restore_batch_csv(backup)
+                    raise
+                try:
+                    os.replace(staged_batch, self._batch_csv_dir() / "current.csv")
+                except Exception:
+                    try:
+                        self._compensate_batch_changes(
+                            mapping_ids,
+                            review_item_ids,
+                            previous_mapping_revision,
+                        )
+                        self._restore_batch_csv(backup)
+                    except Exception:
+                        if backup is not None:
+                            backup.unlink(missing_ok=True)
+                        raise
+                    raise
+                if backup is not None:
+                    backup.unlink(missing_ok=True)
+        finally:
+            staged_batch.unlink(missing_ok=True)
 
         info = self.project_info()
         return {

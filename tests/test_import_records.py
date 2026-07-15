@@ -1,9 +1,12 @@
 """Tests for batch import → review workflow."""
 
 import csv
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from normflow.mapping_service import MappingService
 from normflow.project_service import init_project
@@ -74,6 +77,248 @@ def test_import_deduplicates_identical_raw_text():
         assert len(ms.list_review_items()) == 1
         assert result["skipped"] == 4
         assert result["review_items"] == 1
+
+
+@pytest.mark.parametrize(
+    ("provider_response", "failure_detail"),
+    [
+        (RuntimeError("missing API credential"), "missing API credential"),
+        (RuntimeError("invalid provider endpoint"), "invalid provider endpoint"),
+        (RuntimeError("configured model was not found"), "configured model was not found"),
+        (RuntimeError("network connection timed out"), "network connection timed out"),
+        (RuntimeError("provider unavailable"), "provider unavailable"),
+        (
+            MagicMock(choices=[MagicMock(message=MagicMock(content="   "))]),
+            "blank Suggestion",
+        ),
+    ],
+    ids=[
+        "credential",
+        "endpoint",
+        "model",
+        "network",
+        "provider",
+        "blank-response",
+    ],
+)
+def test_provider_failure_aborts_batch_without_replacing_retained_batch(
+    provider_response,
+    failure_detail,
+):
+    """A failed Batch Import leaves all Project state at its prior snapshot."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project = Path(tmpdir)
+        init_project(str(project))
+        service = MappingService(project)
+        seed_mappings(project, [("colour", "color")])
+
+        previous_batch = project / "previous.csv"
+        _write_csv(previous_batch, [{"name": "preserved"}], ["name"])
+        service.import_records_for_review(
+            str(previous_batch), "name", semantic=False, llm=False,
+        )
+
+        encoder = MagicMock()
+        vectors = {
+            "colour": [1.0, 0.0, 0.0],
+            "colr": [1.0, 0.0, 0.0],
+            "provider fail": [0.0, 1.0, 0.0],
+        }
+        encoder.encode.side_effect = lambda texts, **_kwargs: [
+            vectors[text] for text in texts
+        ]
+        encoder.get_sentence_embedding_dimension.return_value = 2
+        client = MagicMock()
+        if isinstance(provider_response, Exception):
+            client.chat.completions.create.side_effect = provider_response
+        else:
+            client.chat.completions.create.return_value = provider_response
+
+        failed_batch = project / "failed.csv"
+        _write_csv(
+            failed_batch,
+            [{"name": "colr"}, {"name": "provider fail"}],
+            ["name"],
+        )
+
+        with (
+            patch("normflow.semantic_index._ensure_model", return_value=encoder),
+            patch("normflow.llm_matcher.build_client", return_value=client),
+        ):
+            service.build_index()
+            with pytest.raises(
+                RuntimeError,
+                match=(
+                    f"Batch Import failed.*{failure_detail}.*no changes were made"
+                ),
+            ):
+                service.import_records_for_review(str(failed_batch), "name")
+
+        assert service.project_info()["mappings"] == 1
+        assert service.list_review_items() == [
+            {"id": 1, "raw_text": "preserved", "suggested_text": ""}
+        ]
+        assert (project / ".batches" / "current.csv").read_bytes() == (
+            previous_batch.read_bytes()
+        )
+
+
+def test_csv_staging_failure_rolls_back_batch_and_retains_previous_csv():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project = Path(tmpdir)
+        init_project(str(project))
+        service = MappingService(project)
+
+        previous_batch = project / "previous.csv"
+        _write_csv(previous_batch, [{"name": "preserved"}], ["name"])
+        service.import_records_for_review(
+            str(previous_batch), "name", semantic=False, llm=False,
+        )
+        retained_batch = project / ".batches" / "current.csv"
+
+        next_batch = project / "next.csv"
+        _write_csv(next_batch, [{"name": "new item"}], ["name"])
+        with (
+            patch(
+                "normflow.mapping_service.shutil.copy2",
+                side_effect=OSError("disk full"),
+            ),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            service.import_records_for_review(
+                str(next_batch), "name", semantic=False, llm=False,
+            )
+
+        assert service.list_review_items() == [
+            {"id": 1, "raw_text": "preserved", "suggested_text": ""}
+        ]
+        assert retained_batch.read_bytes() == previous_batch.read_bytes()
+        assert list(retained_batch.parent.iterdir()) == [retained_batch]
+
+
+def test_csv_publication_failure_compensates_committed_batch_and_restores_csv():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project = Path(tmpdir)
+        init_project(str(project))
+        service = MappingService(project)
+
+        previous_batch = project / "previous.csv"
+        _write_csv(previous_batch, [{"name": "preserved"}], ["name"])
+        service.import_records_for_review(
+            str(previous_batch), "name", semantic=False, llm=False,
+        )
+        retained_batch = project / ".batches" / "current.csv"
+
+        next_batch = project / "next.csv"
+        _write_csv(next_batch, [{"name": "new item"}], ["name"])
+
+        real_replace = os.replace
+        committed_before_publication = False
+
+        def fail_new_csv_publication(source, destination):
+            nonlocal committed_before_publication
+            if Path(source).name.startswith(".current-"):
+                committed_before_publication = service.list_review_items() == [
+                    {"id": 1, "raw_text": "preserved", "suggested_text": ""},
+                    {"id": 2, "raw_text": "new item", "suggested_text": ""},
+                ]
+                raise OSError("publication failed")
+            return real_replace(source, destination)
+
+        with (
+            patch(
+                "normflow.mapping_service.os.replace",
+                side_effect=fail_new_csv_publication,
+            ),
+            pytest.raises(OSError, match="publication failed"),
+        ):
+            service.import_records_for_review(
+                str(next_batch), "name", semantic=False, llm=False,
+            )
+
+        assert committed_before_publication
+        assert service.list_review_items() == [
+            {"id": 1, "raw_text": "preserved", "suggested_text": ""},
+        ]
+        assert retained_batch.read_bytes() == previous_batch.read_bytes()
+        assert list(retained_batch.parent.iterdir()) == [retained_batch]
+
+
+def test_database_commit_failure_restores_previous_csv_and_rolls_back_batch():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project = Path(tmpdir)
+        init_project(str(project))
+        service = MappingService(project)
+
+        previous_batch = project / "previous.csv"
+        _write_csv(previous_batch, [{"name": "preserved"}], ["name"])
+        service.import_records_for_review(
+            str(previous_batch), "name", semantic=False, llm=False,
+        )
+        retained_batch = project / ".batches" / "current.csv"
+
+        next_batch = project / "next.csv"
+        _write_csv(next_batch, [{"name": "new item"}], ["name"])
+        with (
+            patch(
+                "normflow.mapping_service._Session.commit",
+                side_effect=RuntimeError("commit failed"),
+            ),
+            pytest.raises(RuntimeError, match="commit failed"),
+        ):
+            service.import_records_for_review(
+                str(next_batch), "name", semantic=False, llm=False,
+            )
+
+        assert service.list_review_items() == [
+            {"id": 1, "raw_text": "preserved", "suggested_text": ""}
+        ]
+        assert retained_batch.read_bytes() == previous_batch.read_bytes()
+        assert list(retained_batch.parent.iterdir()) == [retained_batch]
+
+
+def test_database_and_csv_restore_failure_leaves_no_inconsistent_batch_csv():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project = Path(tmpdir)
+        init_project(str(project))
+        service = MappingService(project)
+
+        previous_batch = project / "previous.csv"
+        _write_csv(previous_batch, [{"name": "preserved"}], ["name"])
+        service.import_records_for_review(
+            str(previous_batch), "name", semantic=False, llm=False,
+        )
+        retained_batch = project / ".batches" / "current.csv"
+
+        next_batch = project / "next.csv"
+        _write_csv(next_batch, [{"name": "new item"}], ["name"])
+        real_replace = os.replace
+
+        def fail_previous_csv_restore(source, destination):
+            if Path(source).name.startswith(".previous-"):
+                raise OSError("restore failed")
+            return real_replace(source, destination)
+
+        with (
+            patch(
+                "normflow.mapping_service.os.replace",
+                side_effect=fail_previous_csv_restore,
+            ),
+            patch(
+                "normflow.mapping_service._Session.commit",
+                side_effect=RuntimeError("commit failed"),
+            ),
+            pytest.raises(OSError, match="restore failed"),
+        ):
+            service.import_records_for_review(
+                str(next_batch), "name", semantic=False, llm=False,
+            )
+
+        assert service.list_review_items() == [
+            {"id": 1, "raw_text": "preserved", "suggested_text": ""}
+        ]
+        assert not retained_batch.exists()
+        assert list(retained_batch.parent.iterdir()) == []
 
 
 @patch("normflow.semantic_index._ensure_model")

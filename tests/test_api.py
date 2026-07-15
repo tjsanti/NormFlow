@@ -10,6 +10,7 @@ import pytest
 
 from normflow.api import create_app, get_project_service
 from normflow.mapping_service import (
+    BatchImportError,
     BulkAcceptError,
     BulkAcceptPersistenceError,
     BulkAcceptResult,
@@ -101,6 +102,67 @@ def test_import_reports_failed_automatic_index_refresh():
         assert "normflow index build" in imported.json()["semantic_index_warning"]
 
 
+def test_import_records_reports_actionable_provider_failure():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = init_project(str(Path(tmpdir) / "project"))
+        client, service = _client_with_fake_service(str(project_root))
+        service.import_records_for_review.side_effect = BatchImportError(
+            "Batch Import failed because the LLM provider could not generate a "
+            "Suggestion: connection refused. Check the configured LLM credentials, "
+            "endpoint, model, and network connection; no changes were made."
+        )
+
+        response = client.post(
+            "/import/records?column=name",
+            files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
+        )
+
+        assert response.status_code == 502
+        assert response.json() == {
+            "detail": (
+                "Batch Import failed because the LLM provider could not generate a "
+                "Suggestion: connection refused. Check the configured LLM credentials, "
+                "endpoint, model, and network connection; no changes were made."
+            )
+        }
+
+
+@pytest.mark.parametrize(
+    ("contents", "detail"),
+    [
+        (
+            b"other\nvalue\n",
+            "CSV does not contain a column named 'name'. Available columns: other",
+        ),
+        (b"name\n\xff\n", "CSV must be UTF-8 text"),
+        (
+            b'name,notes\n"o2 sensor,urgent\n',
+            "CSV could not be parsed: unexpected end of data. "
+            "Available columns: name, notes",
+        ),
+    ],
+    ids=["missing-header", "non-utf8", "malformed"],
+)
+def test_import_records_reports_actionable_csv_validation_errors(
+    tmp_path: Path,
+    contents: bytes,
+    detail: str,
+):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(
+        create_app(resolve_project(project_root)),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/import/records?column=name",
+        files={"file": ("records.csv", contents, "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": detail}
+
+
 def test_bound_application_retains_mapping_import_export_and_index_http_contract():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = init_project(str(Path(tmpdir) / "project"))
@@ -133,6 +195,150 @@ def test_bound_application_retains_mapping_import_export_and_index_http_contract
         assert exported.status_code == 200
         assert exported.text == "name,normalized_text\no2 sensor,Oxygen Sensor\n"
         assert "/index/build" in client.get("/openapi.json").json()["paths"]
+
+
+def test_mapping_import_validation_reports_available_csv_headers(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(
+        create_app(resolve_project(project_root)),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/import/mappings?source_column=missing&target_column=approved",
+        files={
+            "file": (
+                "mappings.csv",
+                b"raw,approved\no2 sensor,Oxygen Sensor\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": (
+            "CSV does not contain a column named 'missing'. "
+            "Available columns: raw, approved"
+        )
+    }
+
+
+def test_mapping_import_rejects_matching_source_and_target_columns(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(create_app(resolve_project(project_root)))
+
+    response = client.post(
+        "/import/mappings?source_column=raw&target_column=raw",
+        files={
+            "file": (
+                "mappings.csv",
+                b"raw,approved\no2 sensor,Oxygen Sensor\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Source and target columns must differ"}
+    assert client.get("/project/info").json()["mappings"] == 0
+
+
+def test_mapping_import_reports_short_rows_with_available_headers(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(
+        create_app(resolve_project(project_root)),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/import/mappings?source_column=raw&target_column=approved",
+        files={"file": ("mappings.csv", b"raw,approved\no2 sensor\n", "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "CSV row 2 does not contain a value for selected column 'approved'"
+    }
+
+
+def test_batch_import_reports_the_row_and_selected_column_for_a_short_row(
+    tmp_path: Path,
+):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(
+        create_app(resolve_project(project_root)),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/import/records?column=name&semantic=false&llm=false",
+        files={"file": ("records.csv", b"id,name\n1\n", "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "CSV row 2 does not contain a value for selected column 'name'"
+    }
+
+
+def test_mapping_import_rejects_non_utf8_csv_with_a_useful_error(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(
+        create_app(resolve_project(project_root)),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/import/mappings?source_column=raw&target_column=approved",
+        files={"file": ("mappings.csv", b"raw,approved\n\xff,value\n", "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "CSV must be UTF-8 text"}
+
+
+def test_mapping_import_accepts_utf8_csv_with_a_leading_bom(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(create_app(resolve_project(project_root)))
+
+    response = client.post(
+        "/import/mappings?source_column=raw&target_column=approved",
+        files={
+            "file": (
+                "mappings.csv",
+                b"\xef\xbb\xbfraw,approved\no2 sensor,Oxygen Sensor\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"imported": 1, "skipped": 0}
+
+
+def test_mapping_import_reports_malformed_csv_with_available_headers(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(create_app(resolve_project(project_root)))
+
+    response = client.post(
+        "/import/mappings?source_column=raw&target_column=approved",
+        files={
+            "file": (
+                "mappings.csv",
+                b'raw,approved\n"o2 sensor,Oxygen Sensor\n',
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": (
+            "CSV could not be parsed: unexpected end of data. "
+            "Available columns: raw, approved"
+        )
+    }
 
 
 def test_bound_application_cannot_be_retargeted_by_cwd_header_or_query(

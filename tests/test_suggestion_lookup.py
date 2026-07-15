@@ -1,6 +1,14 @@
 """Tests for Suggestion lookup fallback behavior."""
 
-from normflow.suggestion_lookup import SuggestionLookup
+import pytest
+from pydantic import ValidationError
+
+from normflow.suggestion_lookup import SuggestionItem, SuggestionLookup
+
+
+def test_suggestion_method_rejects_unknown_routing_values():
+    with pytest.raises(ValidationError):
+        SuggestionItem(suggested_text="normalized", method="unknown")
 
 
 def test_llm_fallback_uses_examples_when_exact_and_semantic_miss():

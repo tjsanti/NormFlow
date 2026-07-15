@@ -30,6 +30,17 @@ def test_readme_documents_safe_ui_automation_and_project_switching():
     assert re.search(r"stop.*(?:cd|change director).*normflow ui", readme, re.IGNORECASE | re.DOTALL)
 
 
+def test_readme_documents_server_side_llm_configuration():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "OPENAI_API_KEY" in readme
+    assert "OPENAI_BASE_URL" in readme
+    assert "NORMFLOW_LLM_MODEL" in readme
+    assert re.search(r"Project.*\.env", readme, re.IGNORECASE | re.DOTALL)
+    assert re.search(r"shell.*(?:precedence|override|preferred)", readme, re.IGNORECASE)
+    assert re.search(r"server.side", readme, re.IGNORECASE)
+
+
 def test_maintained_interfaces_use_project_vocabulary():
     maintained = [ROOT / "README.md", ROOT / "src" / "normflow", ROOT / "frontend" / "src"]
     obsolete = []

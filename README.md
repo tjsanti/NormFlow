@@ -50,6 +50,27 @@ normflow ui --no-open --port 43123
 
 The port must be available on localhost. Without `--port`, NormFlow chooses a free port.
 
+### Configure the LLM
+
+`normflow ui` requires server-side LLM configuration before it starts the local
+server or opens a browser:
+
+| Variable | Requirement |
+|----------|-------------|
+| `OPENAI_API_KEY` | Required and nonblank. |
+| `OPENAI_BASE_URL` | Optional; when set, it must be a valid HTTP(S) URL. |
+| `NORMFLOW_LLM_MODEL` | Optional; defaults to `gpt-4o-mini`, but cannot be explicitly blank. |
+
+Set these variables in the shell, or put them in an optional `.env` file at the
+active Project root. NormFlow resolves the active Project first, so its `.env`
+is found when `normflow ui` is launched from a nested Project directory. Existing
+shell values take precedence over Project `.env` values.
+
+Credentials remain in the server process: they are not stored in the Project
+database or sent to the browser. Launch validation parses local configuration
+only and makes no provider or network request. Invalid configuration exits with
+an error before the server or browser starts.
+
 ### Project contents
 
 Initialization creates:

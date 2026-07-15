@@ -25,6 +25,10 @@ A raw text input awaiting human review. It may contain a Suggestion or have no p
 A pair of strings — the messy original text and its approved clean version.
 _Avoid_: Normalization, Standardization, Standard
 
+**Mapping Import**:
+The CSV workflow for adding already-approved source and target text pairs directly as Mappings. It does not generate Suggestions or Review Items.
+_Avoid_: Seed Import
+
 **Batch Import**:
-The CSV workflow: user uploads a CSV of raw records, system matches each unique raw_text against the mapping library, and routes results: exact or semantic matches auto-commit to the library; LLM suggestions and no-matches become pending Review Items. The original CSV is preserved in the Project for export. On export, the original CSV is returned with a normalized_text column filled in.
+The CSV workflow that processes each unique raw text through the complete fallback chain—exact match, semantic match, then an LLM-generated Suggestion—and is valid even with an empty Mapping library; exact or semantic matches auto-commit as Mappings, while LLM Suggestions and no-matches become pending Review Items. A failed Batch Import commits nothing, while a successful one becomes the Project's sole retained Batch CSV for export with a normalized text column.
 _Avoid_: Ingestion, Pipeline, ETL
