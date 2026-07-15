@@ -67,3 +67,21 @@ def test_readme_documents_unified_review_item_acceptance():
     assert "--normalized-text \"Oxygen Sensor\"" in readme
     assert "edit-and-accept" not in readme
     assert "--record-id" not in readme
+
+
+def test_domain_docs_define_the_batch_import_run_contract():
+    context = (ROOT / "CONTEXT.md").read_text(encoding="utf-8")
+    adr = ROOT / "docs" / "adr" / "0001-batch-import-coordination.md"
+
+    assert re.search(r"\*\*Batch Import Run\*\*:.*identified attempt", context)
+    assert adr.exists()
+
+    decision = adr.read_text(encoding="utf-8")
+    assert re.search(r"^Status: Accepted$", decision, re.MULTILINE)
+    for heading in (
+        "## Coordination and ownership",
+        "## Run lifecycle and recovery",
+        "## CLI and HTTP contract",
+        "## Acceptance scenarios",
+    ):
+        assert heading in decision
