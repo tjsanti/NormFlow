@@ -161,6 +161,114 @@ def test_bound_application_retains_mapping_import_export_and_index_http_contract
         assert "/index/build" in client.get("/openapi.json").json()["paths"]
 
 
+def test_mapping_import_validation_reports_available_csv_headers(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(
+        create_app(resolve_project(project_root)),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/import/mappings?source_column=missing&target_column=approved",
+        files={
+            "file": (
+                "mappings.csv",
+                b"raw,approved\no2 sensor,Oxygen Sensor\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": (
+            "CSV does not contain a column named 'missing'. "
+            "Available columns: raw, approved"
+        )
+    }
+
+
+def test_mapping_import_rejects_matching_source_and_target_columns(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(create_app(resolve_project(project_root)))
+
+    response = client.post(
+        "/import/mappings?source_column=raw&target_column=raw",
+        files={
+            "file": (
+                "mappings.csv",
+                b"raw,approved\no2 sensor,Oxygen Sensor\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Source and target columns must differ"}
+    assert client.get("/project/info").json()["mappings"] == 0
+
+
+def test_mapping_import_reports_short_rows_with_available_headers(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(
+        create_app(resolve_project(project_root)),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/import/mappings?source_column=raw&target_column=approved",
+        files={"file": ("mappings.csv", b"raw,approved\no2 sensor\n", "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": (
+            "CSV row 2 does not contain values for all selected columns. "
+            "Available columns: raw, approved"
+        )
+    }
+
+
+def test_mapping_import_rejects_non_utf8_csv_with_a_useful_error(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(
+        create_app(resolve_project(project_root)),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/import/mappings?source_column=raw&target_column=approved",
+        files={"file": ("mappings.csv", b"raw,approved\n\xff,value\n", "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "CSV must be UTF-8 text"}
+
+
+def test_mapping_import_reports_malformed_csv_with_available_headers(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(create_app(resolve_project(project_root)))
+
+    response = client.post(
+        "/import/mappings?source_column=raw&target_column=approved",
+        files={
+            "file": (
+                "mappings.csv",
+                b'raw,approved\n"o2 sensor,Oxygen Sensor\n',
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": (
+            "CSV could not be parsed: unexpected end of data. "
+            "Available columns: raw, approved"
+        )
+    }
+
+
 def test_bound_application_cannot_be_retargeted_by_cwd_header_or_query(
     tmp_path: Path,
     monkeypatch,

@@ -18,6 +18,13 @@ function okJson(value: unknown): Response {
   });
 }
 
+function chooseFile(input: HTMLInputElement, contents: string, name = "mappings.csv"): File {
+  const file = new File([contents], name, { type: "text/csv" });
+  Object.defineProperty(input, "files", { configurable: true, value: [file] });
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  return file;
+}
+
 describe("Bound Project launch", () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="app"></div>';
@@ -26,6 +33,46 @@ describe("Bound Project launch", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  test("shows the Project summary above accessible Import and Review Items tabs", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(okJson(projectInfo))
+      .mockResolvedValueOnce(okJson([])));
+
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
+    const tabs = [...document.querySelectorAll<HTMLElement>('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Import", "Review Items"]);
+    expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+    expect(document.querySelector<HTMLElement>("#import-panel")?.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>("#review-panel")?.hidden).toBe(false);
+    expect(document.querySelector("header")!.compareDocumentPosition(tabs[0]))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  test("keyboard tab selection remains selected across Project refreshes", async () => {
+    const emptyProject = { ...projectInfo, review_items: 0 };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson(emptyProject))
+      .mockResolvedValueOnce(okJson([]))
+      .mockResolvedValueOnce(okJson(emptyProject))
+      .mockResolvedValueOnce(okJson([]));
+    vi.stubGlobal("fetch", fetchMock);
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
+    const importTab = document.querySelector<HTMLButtonElement>("#import-tab")!;
+    const reviewTab = document.querySelector<HTMLButtonElement>("#review-tab")!;
+    importTab.focus();
+    importTab.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+
+    expect(reviewTab.getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(reviewTab);
+    document.querySelector<HTMLButtonElement>("#refresh-review-items")!.click();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(reviewTab.getAttribute("aria-selected")).toBe("true");
   });
 
   test("immediately loads review for the server-bound canonical Project", async () => {
@@ -44,7 +91,7 @@ describe("Bound Project launch", () => {
     expect(document.body.textContent).toContain(projectInfo.project);
     expect(document.body.textContent).toContain("12 Mappings");
     expect(document.body.textContent).toContain("4 pending Review Items");
-    expect(document.querySelector("form")).toBeNull();
+    expect(document.querySelector("#import-panel form")).not.toBeNull();
     expect(document.querySelector("#project-path")).toBeNull();
     expect(document.body.textContent).not.toContain("Switch Project");
     expect(document.body.textContent).not.toContain("Recent Projects");
@@ -102,6 +149,163 @@ describe("Bound Project launch", () => {
     expect(status?.textContent).toContain(project.semantic_index_warning);
     expect(status?.getAttribute("aria-live")).toBe("polite");
     expect(document.querySelector<HTMLButtonElement>("#refresh-review-items")?.disabled).toBe(false);
+  });
+});
+
+describe("Mapping Import", () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="app"></div>';
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("opens Import when no work is pending and selects only exact standard CSV headers", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([])));
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
+    expect(document.querySelector("#import-tab")?.getAttribute("aria-selected")).toBe("true");
+    const fileInput = document.querySelector<HTMLInputElement>('#import-panel input[type="file"]')!;
+    chooseFile(fileInput, "name,raw_text,notes,normalized_text\r\nN,O2 sensor,n,Oxygen Sensor\r\n");
+
+    const source = document.querySelector<HTMLSelectElement>("#mapping-source-column")!;
+    const target = document.querySelector<HTMLSelectElement>("#mapping-target-column")!;
+    await vi.waitFor(() => expect(source.options).toHaveLength(5));
+    expect([...source.options].map((option) => option.textContent)).toEqual([
+      "Choose a header", "name", "raw_text", "notes", "normalized_text",
+    ]);
+    expect(source.value).toBe("raw_text");
+    expect(target.value).toBe("normalized_text");
+    expect(source.required).toBe(true);
+    expect(target.required).toBe(true);
+  });
+
+  test("does not guess nonstandard headers and rejects matching source and target selections", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([]));
+    vi.stubGlobal("fetch", fetchMock);
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#mapping-file")).not.toBeNull());
+    chooseFile(document.querySelector<HTMLInputElement>("#mapping-file")!, "source,target\nA,B\n");
+    const source = document.querySelector<HTMLSelectElement>("#mapping-source-column")!;
+    const target = document.querySelector<HTMLSelectElement>("#mapping-target-column")!;
+    await vi.waitFor(() => expect(source.disabled).toBe(false));
+    expect(source.value).toBe("");
+    expect(target.value).toBe("");
+
+    source.value = "source";
+    target.value = "source";
+    document.querySelector<HTMLFormElement>("#mapping-import-form")!
+      .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+
+    expect(document.querySelector("[role=alert]")?.textContent)
+      .toContain("Source and target headers must differ");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("submits multipart data once, reports counts, refreshes the Project, and resets", async () => {
+    let resolveImport!: (response: Response) => void;
+    const importResponse = new Promise<Response>((resolve) => { resolveImport = resolve; });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([]))
+      .mockReturnValueOnce(importResponse)
+      .mockResolvedValueOnce(okJson({ ...projectInfo, mappings: 14, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([]));
+    vi.stubGlobal("fetch", fetchMock);
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#mapping-file")).not.toBeNull());
+    const file = chooseFile(
+      document.querySelector<HTMLInputElement>("#mapping-file")!,
+      "raw_text,normalized_text\nO2 sensor,Oxygen Sensor\n",
+    );
+    const source = document.querySelector<HTMLSelectElement>("#mapping-source-column")!;
+    await vi.waitFor(() => expect(source.value).toBe("raw_text"));
+    const form = document.querySelector<HTMLFormElement>("#mapping-import-form")!;
+    form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    expect(submit.disabled).toBe(true);
+    expect(submit.textContent).toBe("Importing…");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [url, request] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(url).toBe("/import/mappings?source_column=raw_text&target_column=normalized_text");
+    expect(request.method).toBe("POST");
+    expect((request.body as FormData).get("file")).toBe(file);
+
+    resolveImport(okJson({ imported: 2, skipped: 1 }));
+    await vi.waitFor(() => expect(submit.disabled).toBe(false));
+    expect(document.querySelector("[role=status]")?.textContent)
+      .toContain("Imported 2 Mappings; skipped 1");
+    expect(document.querySelector("header")?.textContent).toContain("14 Mappings");
+    expect(source.disabled).toBe(true);
+    expect(source.value).toBe("");
+    expect(document.querySelector("#import-tab")?.getAttribute("aria-selected")).toBe("true");
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  test("surfaces the API detail and preserves the selected file and headers for retry", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([]))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        detail: "CSV does not contain a column named 'clean'. Available columns: raw, approved",
+      }), { status: 400, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#mapping-file")).not.toBeNull());
+    const fileInput = document.querySelector<HTMLInputElement>("#mapping-file")!;
+    const file = chooseFile(fileInput, "raw,approved\nO2 sensor,Oxygen Sensor\n");
+    const source = document.querySelector<HTMLSelectElement>("#mapping-source-column")!;
+    const target = document.querySelector<HTMLSelectElement>("#mapping-target-column")!;
+    await vi.waitFor(() => expect(source.disabled).toBe(false));
+    source.value = "raw";
+    target.value = "approved";
+    document.querySelector<HTMLFormElement>("#mapping-import-form")!
+      .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(document.querySelector("[role=alert]")).not.toBeNull());
+    expect(document.querySelector("[role=alert]")?.textContent).toContain("Available columns: raw, approved");
+    expect(fileInput.files?.[0]).toBe(file);
+    expect(source.value).toBe("raw");
+    expect(target.value).toBe("approved");
+    expect(document.querySelector<HTMLButtonElement>('#mapping-import-form button[type="submit"]')?.disabled)
+      .toBe(false);
+  });
+
+  test("clears stale headers as soon as a different CSV is selected", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([])));
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#mapping-file")).not.toBeNull());
+    const fileInput = document.querySelector<HTMLInputElement>("#mapping-file")!;
+    const source = document.querySelector<HTMLSelectElement>("#mapping-source-column")!;
+    const target = document.querySelector<HTMLSelectElement>("#mapping-target-column")!;
+    chooseFile(fileInput, "raw,approved\nA,B\n");
+    await vi.waitFor(() => expect(source.options).toHaveLength(3));
+    source.value = "raw";
+    target.value = "approved";
+
+    chooseFile(fileInput, "", "empty.csv");
+    expect(source.disabled).toBe(true);
+    expect(target.disabled).toBe(true);
+    expect(source.value).toBe("");
+    expect(target.value).toBe("");
+    await vi.waitFor(() => expect(document.querySelector("[role=alert]")?.textContent)
+      .toContain("empty"));
+    expect(source.disabled).toBe(true);
   });
 });
 

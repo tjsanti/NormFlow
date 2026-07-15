@@ -256,20 +256,31 @@ class MappingService:
             msg = f"CSV file not found: {csv_file}"
             raise FileNotFoundError(msg)
 
-        with open(csv_file, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            if reader.fieldnames is None:
-                msg = "CSV file is empty or has no header row"
-                raise ValueError(msg)
-
-            available = list(reader.fieldnames)
-            required = (required_columns,) if isinstance(required_columns, str) else required_columns
-            for column in required:
-                if column not in available:
-                    msg = f"CSV does not contain a column named '{column}'. Available columns: {', '.join(available)}"
+        available: list[str] = []
+        try:
+            with open(csv_file, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f, strict=True)
+                if reader.fieldnames is None:
+                    msg = "CSV file is empty or has no header row"
                     raise ValueError(msg)
 
-            return available, list(reader)
+                available = list(reader.fieldnames)
+                required = (required_columns,) if isinstance(required_columns, str) else required_columns
+                for column in required:
+                    if column not in available:
+                        msg = f"CSV does not contain a column named '{column}'. Available columns: {', '.join(available)}"
+                        raise ValueError(msg)
+
+                return available, list(reader)
+        except UnicodeDecodeError as error:
+            raise ValueError("CSV must be UTF-8 text") from error
+        except csv.Error as error:
+            available_detail = (
+                f" Available columns: {', '.join(available)}" if available else ""
+            )
+            raise ValueError(
+                f"CSV could not be parsed: {error}.{available_detail}"
+            ) from error
 
     def import_mappings(
         self,
@@ -277,7 +288,9 @@ class MappingService:
         source_column: str,
         target_column: str,
     ) -> tuple[int, int]:
-        _, rows = self._read_csv(csv_path, (source_column, target_column))
+        if source_column == target_column:
+            raise ValueError("Source and target columns must differ")
+        available, rows = self._read_csv(csv_path, (source_column, target_column))
 
         with self._session() as session:
             # ponytail: load existing raw_texts into set — O(1) lookup vs O(n) queries
@@ -285,9 +298,16 @@ class MappingService:
 
             imported = 0
             skipped = 0
-            for row in rows:
-                raw_text = row[source_column].strip()
-                normalized_text = row[target_column].strip()
+            for row_number, row in enumerate(rows, start=2):
+                raw_value = row[source_column]
+                normalized_value = row[target_column]
+                if raw_value is None or normalized_value is None:
+                    raise ValueError(
+                        f"CSV row {row_number} does not contain values for all "
+                        f"selected columns. Available columns: {', '.join(available)}"
+                    )
+                raw_text = raw_value.strip()
+                normalized_text = normalized_value.strip()
 
                 if not raw_text or not normalized_text:
                     continue

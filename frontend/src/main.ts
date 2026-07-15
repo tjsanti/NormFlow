@@ -1,4 +1,5 @@
 import "./style.css";
+import { readCsvHeaders } from "./csv";
 
 interface ProjectInfo {
   project: string;
@@ -315,7 +316,114 @@ async function refreshProject(root: HTMLElement): Promise<void> {
   await refreshReviewItems(root);
 }
 
+type ProjectTab = "import" | "review";
+
+function selectProjectTab(root: HTMLElement, selected: ProjectTab): void {
+  root.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+    .forEach((tab) => {
+      const active = tab.dataset.tab === selected;
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
+    });
+  root.querySelector<HTMLElement>("#import-panel")!.hidden = selected !== "import";
+  root.querySelector<HTMLElement>("#review-panel")!.hidden = selected !== "review";
+}
+
+function setupMappingImport(root: HTMLElement): void {
+  const form = root.querySelector<HTMLFormElement>("#mapping-import-form")!;
+  const fileInput = root.querySelector<HTMLInputElement>("#mapping-file")!;
+  const source = root.querySelector<HTMLSelectElement>("#mapping-source-column")!;
+  const target = root.querySelector<HTMLSelectElement>("#mapping-target-column")!;
+  const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+  let submitting = false;
+
+  function populate(select: HTMLSelectElement, headers: string[], preferred: string): void {
+    select.replaceChildren(new Option("Choose a header", ""));
+    headers.forEach((header) => select.add(new Option(header, header)));
+    select.value = headers.includes(preferred) ? preferred : "";
+    select.disabled = false;
+  }
+
+  function resetHeaderSelections(): void {
+    source.replaceChildren(new Option("Choose a header", ""));
+    target.replaceChildren(new Option("Choose a header", ""));
+    source.disabled = true;
+    target.disabled = true;
+    target.setCustomValidity("");
+  }
+
+  fileInput.addEventListener("change", async () => {
+    resetHeaderSelections();
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    try {
+      const headers = await readCsvHeaders(file);
+      populate(source, headers, "raw_text");
+      populate(target, headers, "normalized_text");
+    } catch (error) {
+      showNotice(
+        root,
+        error instanceof Error ? error.message : "Could not read the selected CSV.",
+        true,
+      );
+    }
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submitting) return;
+    if (!fileInput.files?.[0] || !source.value || !target.value) {
+      showNotice(root, "Choose a CSV file and both source and target headers.", true);
+      return;
+    }
+    if (source.value === target.value) {
+      target.setCustomValidity("Source and target headers must differ.");
+      showNotice(root, "Source and target headers must differ.", true);
+      target.focus();
+      return;
+    }
+    target.setCustomValidity("");
+
+    submitting = true;
+    submit.disabled = true;
+    submit.textContent = "Importing…";
+    try {
+      const body = new FormData();
+      body.append("file", fileInput.files[0]);
+      const response = await fetch(
+        `/import/mappings?source_column=${encodeURIComponent(source.value)}`
+          + `&target_column=${encodeURIComponent(target.value)}`,
+        { method: "POST", body },
+      );
+      if (!response.ok) {
+        const error = await response.json() as { detail?: string };
+        throw new Error(error.detail ?? `Could not import Mappings (${response.status}).`);
+      }
+      const result = await response.json() as { imported: number; skipped: number };
+      form.reset();
+      resetHeaderSelections();
+      showNotice(root, `Imported ${result.imported} Mappings; skipped ${result.skipped}.`);
+      await refreshProject(root);
+    } catch (error) {
+      showNotice(
+        root,
+        error instanceof Error ? error.message : "Could not import Mappings.",
+        true,
+      );
+    } finally {
+      submitting = false;
+      submit.disabled = false;
+      submit.textContent = "Import Mappings";
+    }
+  });
+
+  [source, target].forEach((select) => select.addEventListener("change", () => {
+    if (source.value !== target.value) target.setCustomValidity("");
+  }));
+}
+
 function showProject(root: HTMLElement, project: ProjectInfo): void {
+  const initialTab: ProjectTab = project.review_items > 0 ? "review" : "import";
   root.innerHTML = `
     <header>
       <div>
@@ -330,17 +438,75 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
     </header>
     <div id="semantic-index-status" aria-live="polite"></div>
     <main class="review-project">
-      <div class="review-heading">
-        <div><span class="eyebrow">Pending work</span><h2>Review Items</h2></div>
-        <button type="button" id="refresh-review-items">Refresh</button>
-      </div>
+      <nav class="project-tabs" role="tablist" aria-label="Project workflows">
+        <button type="button" role="tab" id="import-tab" data-tab="import"
+          aria-controls="import-panel">Import</button>
+        <button type="button" role="tab" id="review-tab" data-tab="review"
+          aria-controls="review-panel">Review Items</button>
+      </nav>
       <div id="notices" aria-live="polite"></div>
-      <section id="review-queue" aria-label="Review Items"></section>
+      <section id="import-panel" role="tabpanel" aria-labelledby="import-tab">
+        <section class="import-workflow" aria-labelledby="mapping-import-heading">
+          <div class="review-heading">
+            <div>
+              <span class="eyebrow">Optional workflow</span>
+              <h2 id="mapping-import-heading">Mapping Import</h2>
+            </div>
+          </div>
+          <p>Import already-approved source and target text pairs from a CSV.</p>
+          <form id="mapping-import-form">
+            <label for="mapping-file">CSV file</label>
+            <input id="mapping-file" name="file" type="file" accept=".csv,text/csv" required>
+            <div class="header-selectors">
+              <div>
+                <label for="mapping-source-column">Source header</label>
+                <select id="mapping-source-column" required disabled>
+                  <option value="">Choose a header</option>
+                </select>
+              </div>
+              <div>
+                <label for="mapping-target-column">Target header</label>
+                <select id="mapping-target-column" required disabled>
+                  <option value="">Choose a header</option>
+                </select>
+              </div>
+            </div>
+            <button type="submit">Import Mappings</button>
+          </form>
+        </section>
+      </section>
+      <section id="review-panel" role="tabpanel" aria-labelledby="review-tab">
+        <div class="review-heading">
+          <div><span class="eyebrow">Pending work</span><h2>Review Items</h2></div>
+          <button type="button" id="refresh-review-items">Refresh</button>
+        </div>
+        <section id="review-queue" aria-label="Review Items"></section>
+      </section>
     </main>
   `;
   root.querySelector("h1")!.textContent = projectName(project.project);
   root.querySelector<HTMLElement>(".project-path")!.textContent = project.project;
   updateProjectSummary(root, project);
+  selectProjectTab(root, initialTab);
+  const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => {
+      selectProjectTab(root, tab.dataset.tab as ProjectTab);
+    });
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex: number | undefined;
+      if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+      if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === "Home") nextIndex = 0;
+      if (event.key === "End") nextIndex = tabs.length - 1;
+      if (nextIndex === undefined) return;
+      event.preventDefault();
+      const next = tabs[nextIndex];
+      selectProjectTab(root, next.dataset.tab as ProjectTab);
+      next.focus();
+    });
+  });
+  setupMappingImport(root);
   root.querySelector("#refresh-review-items")!.addEventListener(
     "click",
     () => void refreshProject(root),
