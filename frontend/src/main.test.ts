@@ -25,6 +25,37 @@ function chooseFile(input: HTMLInputElement, contents: string, name = "mappings.
   return file;
 }
 
+class ControlledFileReader {
+  result: string | null = null;
+  private listeners: Partial<Record<"load" | "error", () => void>> = {};
+
+  addEventListener(type: "load" | "error", listener: () => void): void {
+    this.listeners[type] = listener;
+  }
+
+  readAsText(): void {}
+
+  resolve(contents: string): void {
+    this.result = contents;
+    this.listeners.load?.();
+  }
+
+  reject(): void {
+    this.listeners.error?.();
+  }
+}
+
+function useControlledFileReaders(): ControlledFileReader[] {
+  const readers: ControlledFileReader[] = [];
+  vi.stubGlobal("FileReader", class extends ControlledFileReader {
+    constructor() {
+      super();
+      readers.push(this);
+    }
+  });
+  return readers;
+}
+
 describe("Bound Project launch", () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="app"></div>';
@@ -309,6 +340,51 @@ describe("Mapping Import", () => {
     await vi.waitFor(() => expect(document.querySelector("[role=alert]")?.textContent)
       .toContain("empty"));
     expect(source.disabled).toBe(true);
+  });
+
+  test("ignores headers from an older file selection that finishes last", async () => {
+    const readers = useControlledFileReaders();
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([])));
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#mapping-file")).not.toBeNull());
+    const fileInput = document.querySelector<HTMLInputElement>("#mapping-file")!;
+    const source = document.querySelector<HTMLSelectElement>("#mapping-source-column")!;
+    chooseFile(fileInput, "old_source,old_target\nA,B\n", "old.csv");
+    chooseFile(fileInput, "new_source,new_target\nC,D\n", "new.csv");
+
+    readers[1].resolve("new_source,new_target\nC,D\n");
+    await vi.waitFor(() => expect(source.options[1]?.textContent).toBe("new_source"));
+    readers[0].resolve("old_source,old_target\nA,B\n");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect([...source.options].map((option) => option.textContent)).toEqual([
+      "Choose a header", "new_source", "new_target",
+    ]);
+  });
+
+  test("ignores a read error from an older file selection", async () => {
+    const readers = useControlledFileReaders();
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([])));
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#mapping-file")).not.toBeNull());
+    const fileInput = document.querySelector<HTMLInputElement>("#mapping-file")!;
+    const source = document.querySelector<HTMLSelectElement>("#mapping-source-column")!;
+    chooseFile(fileInput, "old_source,old_target\nA,B\n", "old.csv");
+    chooseFile(fileInput, "new_source,new_target\nC,D\n", "new.csv");
+
+    readers[1].resolve("new_source,new_target\nC,D\n");
+    await vi.waitFor(() => expect(source.options[1]?.textContent).toBe("new_source"));
+    readers[0].reject();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(document.querySelector("[role=alert]")).toBeNull();
+    expect(source.options[1]?.textContent).toBe("new_source");
   });
 });
 

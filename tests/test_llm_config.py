@@ -54,7 +54,7 @@ def test_load_llm_config_requires_nonblank_api_key(tmp_path, environment):
     project_root.mkdir()
     project = Project(root=project_root, database=project_root / "normflow.db")
 
-    with pytest.raises(ValueError, match="OPENAI_API_KEY.*required.*blank"):
+    with pytest.raises(ValueError, match=r"OPENAI_API_KEY.*required.*blank"):
         load_llm_config(project, environment)
 
 
@@ -63,7 +63,7 @@ def test_load_llm_config_rejects_explicitly_blank_model(tmp_path):
     project_root.mkdir()
     project = Project(root=project_root, database=project_root / "normflow.db")
 
-    with pytest.raises(ValueError, match="NORMFLOW_LLM_MODEL.*blank"):
+    with pytest.raises(ValueError, match=r"NORMFLOW_LLM_MODEL.*blank"):
         load_llm_config(
             project,
             {"OPENAI_API_KEY": "test-key", "NORMFLOW_LLM_MODEL": "  "},
@@ -79,7 +79,7 @@ def test_load_llm_config_rejects_invalid_configured_base_url(tmp_path, base_url)
     project_root.mkdir()
     project = Project(root=project_root, database=project_root / "normflow.db")
 
-    with pytest.raises(ValueError, match="OPENAI_BASE_URL.*valid HTTP.*URL"):
+    with pytest.raises(ValueError, match=r"OPENAI_BASE_URL.*valid HTTP.*URL"):
         load_llm_config(
             project,
             {"OPENAI_API_KEY": "test-key", "OPENAI_BASE_URL": base_url},

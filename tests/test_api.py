@@ -258,10 +258,27 @@ def test_mapping_import_reports_short_rows_with_available_headers(tmp_path: Path
 
     assert response.status_code == 400
     assert response.json() == {
-        "detail": (
-            "CSV row 2 does not contain values for all selected columns. "
-            "Available columns: raw, approved"
-        )
+        "detail": "CSV row 2 does not contain a value for selected column 'approved'"
+    }
+
+
+def test_batch_import_reports_the_row_and_selected_column_for_a_short_row(
+    tmp_path: Path,
+):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(
+        create_app(resolve_project(project_root)),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/import/records?column=name&semantic=false&llm=false",
+        files={"file": ("records.csv", b"id,name\n1\n", "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "CSV row 2 does not contain a value for selected column 'name'"
     }
 
 
@@ -279,6 +296,25 @@ def test_mapping_import_rejects_non_utf8_csv_with_a_useful_error(tmp_path: Path)
 
     assert response.status_code == 400
     assert response.json() == {"detail": "CSV must be UTF-8 text"}
+
+
+def test_mapping_import_accepts_utf8_csv_with_a_leading_bom(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(create_app(resolve_project(project_root)))
+
+    response = client.post(
+        "/import/mappings?source_column=raw&target_column=approved",
+        files={
+            "file": (
+                "mappings.csv",
+                b"\xef\xbb\xbfraw,approved\no2 sensor,Oxygen Sensor\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"imported": 1, "skipped": 0}
 
 
 def test_mapping_import_reports_malformed_csv_with_available_headers(tmp_path: Path):

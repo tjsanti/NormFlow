@@ -357,6 +357,7 @@ function setupMappingImport(root: HTMLElement, importState: ImportState): void {
   const source = root.querySelector<HTMLSelectElement>("#mapping-source-column")!;
   const target = root.querySelector<HTMLSelectElement>("#mapping-target-column")!;
   const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+  let selectionVersion = 0;
 
   function populate(select: HTMLSelectElement, headers: string[], preferred: string): void {
     select.replaceChildren(new Option("Choose a header", ""));
@@ -374,14 +375,17 @@ function setupMappingImport(root: HTMLElement, importState: ImportState): void {
   }
 
   fileInput.addEventListener("change", async () => {
+    const currentSelectionVersion = ++selectionVersion;
     resetHeaderSelections();
     const file = fileInput.files?.[0];
     if (!file) return;
     try {
       const headers = await readCsvHeaders(file);
+      if (currentSelectionVersion !== selectionVersion) return;
       populate(source, headers, "raw_text");
       populate(target, headers, "normalized_text");
     } catch (error) {
+      if (currentSelectionVersion !== selectionVersion) return;
       showNotice(
         root,
         error instanceof Error ? error.message : "Could not read the selected CSV.",
