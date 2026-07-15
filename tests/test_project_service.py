@@ -1,5 +1,7 @@
 """Unit tests for MappingService."""
 
+import os
+import resource
 import tempfile
 from pathlib import Path
 
@@ -8,6 +10,26 @@ import pytest
 import normflow.mapping_service as mapping_module
 from normflow.mapping_service import MappingService
 from normflow.project_service import init_project
+
+
+def test_many_projects_do_not_retain_database_descriptors(tmp_path: Path):
+    """Independent Projects remain usable under a bounded file-descriptor budget."""
+    baseline = len(os.listdir("/dev/fd"))
+    original_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    constrained_limit = min(original_limit[0], baseline + 12)
+    if constrained_limit <= baseline + 4:
+        pytest.skip("The process has no safe descriptor headroom to constrain")
+
+    resource.setrlimit(
+        resource.RLIMIT_NOFILE,
+        (constrained_limit, original_limit[1]),
+    )
+    try:
+        for index in range(20):
+            project = init_project(tmp_path / f"project-{index}")
+            assert MappingService(project).project_info()["mappings"] == 0
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, original_limit)
 
 
 def test_raises_on_missing_database():

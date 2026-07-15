@@ -12,7 +12,6 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import cache
 from pathlib import Path
 from typing import TypedDict
 
@@ -25,6 +24,7 @@ from .batch_import import (
 
 from sqlalchemy import delete, inspect, text, update
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import NullPool
 from sqlmodel import (
     Field as SField,
     Session as _Session,
@@ -134,9 +134,8 @@ class _MappingRevision(_SQLModel, table=True):
     revision: int = 0
 
 
-@cache
 def _make_engine(db_url: str):
-    return create_engine(f"sqlite:///{db_url}")
+    return create_engine(f"sqlite:///{db_url}", poolclass=NullPool)
 
 
 # ---------------------------------------------------------------------------
