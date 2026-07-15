@@ -34,14 +34,18 @@ header h1 { margin: 0; font-size: 2rem; }
 .review-heading h2 { margin: 4px 0 0; font-family: Georgia, serif; font-size: 2rem; }
 #notices { margin-bottom: 18px; }
 #notices:empty { display: none; }
+#import-panel:not([hidden]) { display: grid; gap: 24px; }
 .import-workflow { max-width: 760px; padding: 28px; background: #fffdf7; border: 1px solid #d4cdbc; border-radius: 12px; box-shadow: 0 8px 24px rgb(24 48 40 / 8%); }
 .import-workflow > p { margin: 12px 0 24px; color: #536158; }
-#mapping-import-form { display: grid; gap: 10px; }
-#mapping-import-form label { font-weight: 700; }
-#mapping-import-form input, #mapping-import-form select { width: 100%; padding: 12px; border: 1px solid #80796b; background: white; }
-#mapping-import-form select:disabled { cursor: not-allowed; opacity: .55; }
-#mapping-import-form button { justify-self: start; margin-top: 8px; }
-#mapping-import-form button:disabled { cursor: wait; opacity: .6; }
+.import-workflow form { display: grid; gap: 10px; }
+.import-workflow form label { font-weight: 700; }
+.import-workflow form input, .import-workflow form select { width: 100%; padding: 12px; border: 1px solid #80796b; background: white; }
+.import-workflow form select:disabled { cursor: not-allowed; opacity: .55; }
+.import-workflow form button { justify-self: start; margin-top: 8px; }
+.import-workflow form button:disabled { cursor: wait; opacity: .6; }
+.import-note, .import-warning { margin: 0 0 10px; padding: 12px 14px; }
+.import-note { color: #44544b; background: #edf3ef; border-left: 4px solid #638976; }
+.import-warning { color: #684f0f; background: #fff2bf; border-left: 4px solid #d09d35; }
 .header-selectors { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 8px; }
 .header-selectors > div { display: grid; gap: 10px; }
 #review-queue { margin-top: 18px; }

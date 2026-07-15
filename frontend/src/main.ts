@@ -16,6 +16,14 @@ interface ReviewItem {
   suggested_text: string;
 }
 
+interface ImportRecordsResult {
+  auto_committed: number;
+  review_items: number;
+  skipped: number;
+  semantic_index_status: ProjectInfo["semantic_index_status"];
+  semantic_index_warning: string | null;
+}
+
 let focusRefresh: (() => void) | undefined;
 
 function setFocusRefresh(refresh?: () => void): void {
@@ -318,6 +326,10 @@ async function refreshProject(root: HTMLElement): Promise<void> {
 
 type ProjectTab = "import" | "review";
 
+interface ImportState {
+  active: boolean;
+}
+
 function selectProjectTab(root: HTMLElement, selected: ProjectTab): void {
   root.querySelectorAll<HTMLButtonElement>('[role="tab"]')
     .forEach((tab) => {
@@ -329,13 +341,22 @@ function selectProjectTab(root: HTMLElement, selected: ProjectTab): void {
   root.querySelector<HTMLElement>("#review-panel")!.hidden = selected !== "review";
 }
 
-function setupMappingImport(root: HTMLElement): void {
+function setImportFormsDisabled(root: HTMLElement, disabled: boolean): void {
+  root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(
+    "#mapping-import-form input, #mapping-import-form select, #mapping-import-form button, "
+    + "#batch-import-form input, #batch-import-form select, #batch-import-form button",
+  ).forEach((control) => {
+    control.disabled = disabled
+      || (control instanceof HTMLSelectElement && control.options.length === 1);
+  });
+}
+
+function setupMappingImport(root: HTMLElement, importState: ImportState): void {
   const form = root.querySelector<HTMLFormElement>("#mapping-import-form")!;
   const fileInput = root.querySelector<HTMLInputElement>("#mapping-file")!;
   const source = root.querySelector<HTMLSelectElement>("#mapping-source-column")!;
   const target = root.querySelector<HTMLSelectElement>("#mapping-target-column")!;
   const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
-  let submitting = false;
 
   function populate(select: HTMLSelectElement, headers: string[], preferred: string): void {
     select.replaceChildren(new Option("Choose a header", ""));
@@ -371,7 +392,7 @@ function setupMappingImport(root: HTMLElement): void {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (submitting) return;
+    if (importState.active) return;
     if (!fileInput.files?.[0] || !source.value || !target.value) {
       showNotice(root, "Choose a CSV file and both source and target headers.", true);
       return;
@@ -384,9 +405,9 @@ function setupMappingImport(root: HTMLElement): void {
     }
     target.setCustomValidity("");
 
-    submitting = true;
-    submit.disabled = true;
-    submit.textContent = "Importing…";
+    importState.active = true;
+    setImportFormsDisabled(root, true);
+    submit.textContent = `Processing ${fileInput.files[0].name}…`;
     try {
       const body = new FormData();
       body.append("file", fileInput.files[0]);
@@ -411,8 +432,8 @@ function setupMappingImport(root: HTMLElement): void {
         true,
       );
     } finally {
-      submitting = false;
-      submit.disabled = false;
+      importState.active = false;
+      setImportFormsDisabled(root, false);
       submit.textContent = "Import Mappings";
     }
   });
@@ -420,6 +441,83 @@ function setupMappingImport(root: HTMLElement): void {
   [source, target].forEach((select) => select.addEventListener("change", () => {
     if (source.value !== target.value) target.setCustomValidity("");
   }));
+}
+
+function setupBatchImport(root: HTMLElement, importState: ImportState): void {
+  const form = root.querySelector<HTMLFormElement>("#batch-import-form")!;
+  const fileInput = root.querySelector<HTMLInputElement>("#batch-file")!;
+  const source = root.querySelector<HTMLSelectElement>("#batch-source-column")!;
+  const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+
+  function resetHeaderSelection(): void {
+    source.replaceChildren(new Option("Choose a header", ""));
+    source.disabled = true;
+  }
+
+  fileInput.addEventListener("change", async () => {
+    resetHeaderSelection();
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    try {
+      const headers = await readCsvHeaders(file);
+      headers.forEach((header) => source.add(new Option(header, header)));
+      source.value = headers.includes("raw_text") ? "raw_text" : "";
+      source.disabled = false;
+    } catch (error) {
+      showNotice(
+        root,
+        error instanceof Error ? error.message : "Could not read the selected CSV.",
+        true,
+      );
+    }
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (importState.active) return;
+    const file = fileInput.files?.[0];
+    if (!file || !source.value) {
+      showNotice(root, "Choose a CSV file and raw text header.", true);
+      return;
+    }
+
+    importState.active = true;
+    setImportFormsDisabled(root, true);
+    submit.textContent = `Processing ${file.name}…`;
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const response = await fetch(
+        `/import/records?column=${encodeURIComponent(source.value)}`,
+        { method: "POST", body },
+      );
+      if (!response.ok) {
+        const error = await response.json() as { detail?: string };
+        throw new Error(error.detail ?? `Could not import Batch (${response.status}).`);
+      }
+      const result = await response.json() as ImportRecordsResult;
+      form.reset();
+      resetHeaderSelection();
+      const reviewLabel = result.review_items === 1 ? "Review Item" : "Review Items";
+      showNotice(
+        root,
+        `Batch Import complete: ${result.auto_committed} auto-committed, `
+          + `${result.review_items} ${reviewLabel}, ${result.skipped} skipped.`,
+      );
+      await refreshProject(root);
+      if (result.review_items > 0) selectProjectTab(root, "review");
+    } catch (error) {
+      showNotice(
+        root,
+        error instanceof Error ? error.message : "Could not import Batch.",
+        true,
+      );
+    } finally {
+      importState.active = false;
+      setImportFormsDisabled(root, false);
+      submit.textContent = "Import Batch";
+    }
+  });
 }
 
 function showProject(root: HTMLElement, project: ProjectInfo): void {
@@ -474,6 +572,30 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
             <button type="submit">Import Mappings</button>
           </form>
         </section>
+        <section class="import-workflow" aria-labelledby="batch-import-heading">
+          <div class="review-heading">
+            <div>
+              <span class="eyebrow">Primary workflow</span>
+              <h2 id="batch-import-heading">Batch Import</h2>
+            </div>
+          </div>
+          <p>Upload raw records for exact, semantic, and LLM matching.</p>
+          <form id="batch-import-form">
+            ${project.mappings === 0 ? `
+              <p class="import-note">This Project has no Mappings, so matching has fewer
+                examples, but you can still import records for review.</p>
+            ` : ""}
+            <label for="batch-file">CSV file</label>
+            <input id="batch-file" name="file" type="file" accept=".csv,text/csv" required>
+            <label for="batch-source-column">Raw text header</label>
+            <select id="batch-source-column" required disabled>
+              <option value="">Choose a header</option>
+            </select>
+            <p class="import-warning">A successful Batch Import replaces the one Batch CSV
+              retained for export.</p>
+            <button type="submit">Import Batch</button>
+          </form>
+        </section>
       </section>
       <section id="review-panel" role="tabpanel" aria-labelledby="review-tab">
         <div class="review-heading">
@@ -506,7 +628,9 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
       next.focus();
     });
   });
-  setupMappingImport(root);
+  const importState: ImportState = { active: false };
+  setupMappingImport(root, importState);
+  setupBatchImport(root, importState);
   root.querySelector("#refresh-review-items")!.addEventListener(
     "click",
     () => void refreshProject(root),
