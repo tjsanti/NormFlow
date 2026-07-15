@@ -17,10 +17,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Literal, TypedDict
 
 if TYPE_CHECKING:
-    from .mapping_service import ImportRecordsResult, MappingService
+    from .mapping_service import MappingService
+
+from .semantic_index import SemanticIndexStatus
 
 
 RunStatus = Literal["active", "succeeded", "failed", "interrupted"]
+
+
+class BatchImportResult(TypedDict):
+    auto_committed: int
+    review_items: int
+    skipped: int
+    semantic_index_status: SemanticIndexStatus
+    semantic_index_warning: str | None
 
 
 class BatchImportRun(TypedDict):
@@ -32,9 +42,20 @@ class BatchImportRun(TypedDict):
     started_at: str
     updated_at: str
     terminal_at: str | None
-    result: dict | None
+    result: BatchImportResult | None
     error: str | None
     replacement_run_id: str | None
+
+
+class BatchImportRoutingOptions(TypedDict, total=False):
+    semantic: bool
+    llm: bool
+    threshold: float
+
+
+class BatchImportOptions(BatchImportRoutingOptions, total=False):
+    on_started: Callable[[BatchImportRun], None]
+    on_committed: Callable[[BatchImportRun], None]
 
 
 class ProjectBusyError(RuntimeError):
@@ -127,26 +148,37 @@ class BatchImportRuns:
         self.database = service._db_path
         self.runs_dir = self.project / ".batches" / "runs"
         with closing(sqlite3.connect(self.database)) as connection:
-            connection.execute("""
-                CREATE TABLE IF NOT EXISTS batchimportrun (
-                    id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL,
-                    input_name TEXT NOT NULL,
-                    input_fingerprint TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    started_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    terminal_at TEXT,
-                    result_json TEXT,
-                    error TEXT,
-                    replacement_run_id TEXT
+            schema = {
+                row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name IN "
+                    "('batchimportrun', 'one_active_batch_import')"
                 )
-            """)
-            connection.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS one_active_batch_import "
-                "ON batchimportrun(status) WHERE status = 'active'"
-            )
-            connection.commit()
+            }
+        if schema == {"batchimportrun", "one_active_batch_import"}:
+            return
+
+        with project_writer(self.project):
+            with closing(sqlite3.connect(self.database)) as connection:
+                connection.execute("""
+                    CREATE TABLE IF NOT EXISTS batchimportrun (
+                        id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL,
+                        input_name TEXT NOT NULL,
+                        input_fingerprint TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        terminal_at TEXT,
+                        result_json TEXT,
+                        error TEXT,
+                        replacement_run_id TEXT
+                    )
+                """)
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS one_active_batch_import "
+                    "ON batchimportrun(status) WHERE status = 'active'"
+                )
+                connection.commit()
 
     @contextmanager
     def _connection(self):
@@ -345,9 +377,10 @@ class BatchImportRuns:
         status, allowing recovery of that otherwise impractical process-exit window.
         """
         source = Path(csv_path).expanduser().resolve()
-        # Validate before creating an attempt that can never execute.
-        self.service._read_csv(str(source), column)
         with project_writer(self.project):
+            # Competing callers observe the writer conflict before input work.
+            # Once owned, validate before creating an attempt that cannot execute.
+            self.service._read_csv(str(source), column)
             self._reconcile()
             run_id = str(uuid.uuid4())
             self.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -413,22 +446,26 @@ class BatchImportRuns:
                 self._cleanup_recovery(run_id)
                 if status == "failed":
                     staged.unlink(missing_ok=True)
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise BatchImportExecutionError(terminal) from error
                 if isinstance(error, Exception):
                     raise BatchImportExecutionError(terminal) from error
                 raise
 
-    def retry(self, run_id: str, csv_path: str | Path, column: str, **kwargs):
+    def _retryable(self, run_id: str) -> BatchImportRun:
         previous = self.status(run_id)
         if previous["status"] not in ("failed", "interrupted"):
             raise ValueError("Only failed or interrupted Batch Import Runs can be retried")
+        return previous
+
+    def retry(self, run_id: str, csv_path: str | Path, column: str, **kwargs):
+        self._retryable(run_id)
         return self.run(csv_path, column, replaces=run_id, **kwargs)
 
     def retry_background(
         self, run_id: str, csv_path: str | Path, column: str, **kwargs,
     ) -> BatchImportRun:
-        previous = self.status(run_id)
-        if previous["status"] not in ("failed", "interrupted"):
-            raise ValueError("Only failed or interrupted Batch Import Runs can be retried")
+        self._retryable(run_id)
         return self.start_background(csv_path, column, replaces=run_id, **kwargs)
 
     def start_background(self, csv_path: str | Path, column: str, **kwargs):

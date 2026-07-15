@@ -903,6 +903,50 @@ def test_export_batch_without_retained_batch_fails_with_next_step():
         assert not output_csv.exists()
 
 
+def test_export_batch_rejects_missing_source_column():
+    """Batch export fails instead of silently producing an all-blank output."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_path = Path(tmpdir) / "proj"
+        batch_csv = project_path / "batch.csv"
+        output_csv = project_path / "normalized.csv"
+        init_project(str(project_path))
+        _write_csv(batch_csv, "name", "Canada")
+        MappingService(project_path).import_records_for_review(
+            batch_csv, "name", semantic=False, llm=False,
+        )
+
+        result = runner.invoke(
+            app,
+            ["export-batch", str(output_csv), "--source-column", "missing"],
+        )
+
+        assert result.exit_code == 1
+        assert "does not contain a column named 'missing'" in result.stdout
+        assert not output_csv.exists()
+
+
+def test_export_batch_rejects_an_existing_output_column():
+    """Batch export preserves every retained column instead of overwriting one."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_path = Path(tmpdir) / "proj"
+        batch_csv = project_path / "batch.csv"
+        output_csv = project_path / "normalized.csv"
+        init_project(str(project_path))
+        _write_csv(batch_csv, "name,clean", "Canada,original")
+        MappingService(project_path).import_records_for_review(
+            batch_csv, "name", semantic=False, llm=False,
+        )
+
+        result = runner.invoke(
+            app,
+            ["export-batch", str(output_csv), "--source-column", "name", "--output-column", "clean"],
+        )
+
+        assert result.exit_code == 1
+        assert "already contains a column named 'clean'" in result.stdout
+        assert not output_csv.exists()
+
+
 # ---- suggest tests ----
 
 

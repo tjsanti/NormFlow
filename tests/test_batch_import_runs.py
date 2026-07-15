@@ -75,6 +75,33 @@ def test_independent_service_writer_fails_fast_while_batch_run_owns_project(tmp_
         assert future.result(timeout=5)["status"] == "succeeded"
 
 
+def test_competing_batch_fails_before_validating_its_input(tmp_path: Path):
+    """A competing start reports the active Project writer immediately."""
+    project = init_project(tmp_path / "project")
+    held_batch = _csv(tmp_path / "held.csv", "held")
+    malformed_competitor = tmp_path / "competitor.csv"
+    malformed_competitor.write_text("other\nvalue\n", encoding="utf-8")
+    run_started, release_run = Event(), Event()
+
+    def hold(_run):
+        run_started.set()
+        assert release_run.wait(5)
+
+    with ThreadPoolExecutor() as executor:
+        running = executor.submit(
+            lambda: MappingService(project).run_batch_import(
+                held_batch, "name", semantic=False, llm=False, on_started=hold,
+            )
+        )
+        assert run_started.wait(5)
+        with pytest.raises(ProjectBusyError):
+            MappingService(project).run_batch_import(
+                malformed_competitor, "name", semantic=False, llm=False,
+            )
+        release_run.set()
+        running.result(timeout=5)
+
+
 def test_cli_prints_run_id_immediately_and_terminal_run_json(tmp_path: Path, monkeypatch):
     project = init_project(tmp_path / "project")
     batch = _csv(tmp_path / "records.csv", "o2 sensor")
@@ -119,6 +146,32 @@ def test_http_start_returns_durable_location_and_status(tmp_path: Path):
     assert observed.status_code == 200
     assert observed.json()["id"] == accepted.json()["id"]
     assert observed.json()["status"] in {"active", "succeeded"}
+
+
+def test_http_publishes_only_canonical_batch_run_inputs(tmp_path: Path):
+    project = init_project(tmp_path / "project")
+    client = TestClient(create_app(resolve_project(project)))
+
+    schema = client.get("/openapi.json").json()
+    start_parameters = {
+        parameter["name"]
+        for parameter in schema["paths"]["/batch-import-runs"]["post"]["parameters"]
+    }
+    retry_parameters = {
+        parameter["name"]
+        for parameter in schema["paths"]["/batch-import-runs/{run_id}/retry"]["post"]["parameters"]
+    }
+    legacy = client.post(
+        "/import/records?column=name&semantic=false&llm=false",
+        files={"file": ("records.csv", b"name\nvalue\n", "text/csv")},
+        follow_redirects=False,
+    )
+
+    assert "/import/records" not in schema["paths"]
+    assert start_parameters == {"column"}
+    assert retry_parameters == {"run_id", "column"}
+    assert legacy.status_code == 307
+    assert legacy.headers["location"] == "/batch-import-runs?column=name"
 
 
 def test_http_competing_start_returns_active_run_location(tmp_path: Path):
@@ -415,6 +468,39 @@ def test_provider_failure_is_durable_and_preserves_project_and_retained_batch(
     ]
     assert (project / ".batches" / "current.csv").read_bytes() == previous.read_bytes()
     assert not (project / ".batches" / "runs" / f"{terminal['id']}.csv").exists()
+
+
+def test_cli_interruption_emits_terminal_run_json_and_exit_one(
+    tmp_path: Path, monkeypatch,
+):
+    project = init_project(tmp_path / "project")
+    mappings = tmp_path / "mappings.csv"
+    mappings.write_text("raw,clean\noxygen,Oxygen\n", encoding="utf-8")
+    MappingService(project).import_mappings(mappings, "raw", "clean")
+    batch = _csv(tmp_path / "records.csv", "interrupted")
+    (project / ".env").write_text("OPENAI_API_KEY=test-key\n", encoding="utf-8")
+    monkeypatch.chdir(project)
+    encoder = MagicMock()
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        [1.0, 0.0] if text == "oxygen" else [0.0, 1.0] for text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 2
+    provider = MagicMock()
+    provider.chat.completions.create.side_effect = KeyboardInterrupt()
+
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        patch("normflow.llm_matcher.build_client", return_value=provider),
+    ):
+        result = CliRunner().invoke(
+            app, ["batch-import", str(batch), "--column", "name"],
+        )
+
+    terminal = __import__("json").loads(result.stdout)
+    assert result.exit_code == 1
+    assert result.stderr.strip() == terminal["id"]
+    assert terminal["status"] == "interrupted"
+    assert MappingService(project).batch_import_status(terminal["id"]) == terminal
 
 
 def test_http_conflict_does_not_claim_historical_run_for_non_batch_writer(

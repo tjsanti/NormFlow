@@ -3,20 +3,16 @@
 from contextlib import asynccontextmanager
 import tempfile
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictInt
 
-from .batch_import import (
-    BatchImportExecutionError,
-    BatchImportRunNotFoundError,
-    ProjectBusyError,
-)
+from .batch_import import BatchImportRunNotFoundError, ProjectBusyError, RunStatus
 
 from .mapping_service import (
-    BatchImportError,
     BulkAcceptError,
     BulkAcceptPersistenceError,
     BulkAcceptStaleItemsError,
@@ -55,14 +51,6 @@ class ImportMappingsResponse(BaseModel):
     skipped: int
 
 
-class ImportRecordsResponse(BaseModel):
-    auto_committed: int
-    review_items: int
-    skipped: int
-    semantic_index_status: SemanticIndexStatus
-    semantic_index_warning: str | None
-
-
 class ReviewItemResponse(BaseModel):
     id: int
     raw_text: str
@@ -77,16 +65,24 @@ class IndexBuildResponse(BaseModel):
     entries: int
 
 
+class BatchImportResultResponse(BaseModel):
+    auto_committed: int
+    review_items: int
+    skipped: int
+    semantic_index_status: SemanticIndexStatus
+    semantic_index_warning: str | None
+
+
 class BatchImportRunResponse(BaseModel):
     id: str
-    status: str
+    status: RunStatus
     input_name: str
     input_fingerprint: str
     created_at: str
     started_at: str
     updated_at: str
     terminal_at: str | None
-    result: dict | None
+    result: BatchImportResultResponse | None
     error: str | None
     replacement_run_id: str | None
 
@@ -148,27 +144,12 @@ async def import_mappings(
             raise HTTPException(status_code=400, detail=str(error)) from error
 
 
-@router.post("/import/records", response_model=ImportRecordsResponse)
-async def import_records(
-    column: str = Query(...),
-    semantic: bool = Query(True),
-    llm: bool = Query(True),
-    threshold: float = Query(0.85),
-    file: UploadFile | None = None,
-    service: MappingService = Depends(get_project_service),
-) -> ImportRecordsResponse:
-    async with _temporary_upload_csv(file) as csv_path:
-        try:
-            run = service.run_batch_import(
-                str(csv_path), column, semantic=semantic, llm=llm, threshold=threshold
-            )
-            return ImportRecordsResponse(**run["result"])
-        except BatchImportExecutionError as error:
-            raise HTTPException(status_code=502, detail=error.run["error"]) from error
-        except BatchImportError as error:
-            raise HTTPException(status_code=502, detail=str(error))
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
+@router.post("/import/records", include_in_schema=False)
+def legacy_import_records(request: Request) -> RedirectResponse:
+    """Redirect the former Batch endpoint to the durable canonical resource."""
+    column = request.query_params.get("column", "")
+    target = f"/batch-import-runs?{urlencode({'column': column})}"
+    return RedirectResponse(target, status_code=307)
 
 
 @router.post(
@@ -179,17 +160,12 @@ async def import_records(
 async def start_batch_import_run(
     response: Response,
     column: str = Query(...),
-    semantic: bool = Query(True),
-    llm: bool = Query(True),
-    threshold: float = Query(0.85),
     file: UploadFile | None = None,
     service: MappingService = Depends(get_project_service),
 ) -> BatchImportRunResponse:
     async with _temporary_upload_csv(file) as csv_path:
         try:
-            run = service.start_batch_import(
-                csv_path, column, semantic=semantic, llm=llm, threshold=threshold,
-            )
+            run = service.start_batch_import(csv_path, column)
         except (ValueError, FileNotFoundError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
     response.headers["Location"] = f"/batch-import-runs/{run['id']}"
@@ -215,18 +191,12 @@ async def retry_batch_import_run(
     run_id: str,
     response: Response,
     column: str = Query(...),
-    semantic: bool = Query(True),
-    llm: bool = Query(True),
-    threshold: float = Query(0.85),
     file: UploadFile | None = None,
     service: MappingService = Depends(get_project_service),
 ) -> BatchImportRunResponse:
     async with _temporary_upload_csv(file) as csv_path:
         try:
-            run = service.start_batch_import_retry(
-                run_id, csv_path, column,
-                semantic=semantic, llm=llm, threshold=threshold,
-            )
+            run = service.start_batch_import_retry(run_id, csv_path, column)
         except BatchImportRunNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except (ValueError, FileNotFoundError) as error:

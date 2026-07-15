@@ -1,6 +1,7 @@
 """Tests for FastAPI endpoints."""
 
 import tempfile
+import time
 from pathlib import Path
 import re
 from unittest.mock import MagicMock, call, patch
@@ -17,7 +18,6 @@ from normflow.mapping_service import (
     MappingService,
     ReviewItemNotFoundError,
 )
-from normflow.batch_import import BatchImportExecutionError
 from normflow.project import resolve_project
 from normflow.project_service import init_project
 
@@ -28,6 +28,17 @@ def _client_with_fake_service(project_root: str) -> tuple[TestClient, MagicMock]
     service = MagicMock(spec=MappingService)
     app.dependency_overrides[get_project_service] = lambda: service
     return TestClient(app), service
+
+
+def _await_batch_import(client: TestClient, response) -> dict:
+    assert response.status_code == 202
+    run = response.json()
+    deadline = time.monotonic() + 5
+    while run["status"] == "active" and time.monotonic() < deadline:
+        run = client.get(response.headers["location"]).json()
+        time.sleep(0.01)
+    assert run["status"] == "succeeded", run
+    return run
 
 
 def test_application_is_bound_to_one_canonical_project():
@@ -54,20 +65,13 @@ def test_bound_application_imports_and_lists_review_items_without_a_project_sele
         project_root = init_project(str(Path(tmpdir) / "project"))
         client = TestClient(create_app(resolve_project(project_root)))
 
-        imported = client.post(
-            "/import/records?column=name&semantic=false&llm=false",
-            files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
+        csv_path = Path(tmpdir) / "records.csv"
+        csv_path.write_text("name\no2 sensor\n", encoding="utf-8")
+        MappingService(project_root).import_records_for_review(
+            str(csv_path), "name", semantic=False, llm=False
         )
         review_items = client.get("/review-items")
 
-        assert imported.status_code == 200
-        assert imported.json() == {
-            "auto_committed": 0,
-            "review_items": 1,
-            "skipped": 0,
-            "semantic_index_status": "missing",
-            "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
-        }
         assert review_items.json() == [
             {"id": 1, "raw_text": "o2 sensor", "suggested_text": ""}
         ]
@@ -86,51 +90,25 @@ def test_import_reports_failed_automatic_index_refresh():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = init_project(str(Path(tmpdir) / "project"))
         client = TestClient(create_app(resolve_project(project_root)))
+        mappings = Path(tmpdir) / "mappings.csv"
+        mappings.write_text(
+            "raw,clean\no2 sensor,Oxygen Sensor\n", encoding="utf-8"
+        )
+        MappingService(project_root).import_mappings(str(mappings), "raw", "clean")
 
         with patch(
             "normflow.semantic_index._ensure_model",
             side_effect=RuntimeError("model unavailable"),
         ):
-            imported = client.post(
-                "/import/records?column=name&llm=false",
+            response = client.post(
+                "/batch-import-runs?column=name",
                 files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
             )
+            run = _await_batch_import(client, response)
 
-        assert imported.status_code == 200
-        assert imported.json()["semantic_index_status"] == "missing"
-        assert "semantic and LLM Suggestions are unavailable" in imported.json()["semantic_index_warning"]
-        assert "normflow index build" in imported.json()["semantic_index_warning"]
-
-
-def test_import_records_reports_actionable_provider_failure():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_root = init_project(str(Path(tmpdir) / "project"))
-        client, service = _client_with_fake_service(str(project_root))
-        detail = (
-            "Batch Import failed because the LLM provider could not generate a "
-            "Suggestion: connection refused. Check the configured LLM credentials, "
-            "endpoint, model, and network connection; no changes were made."
-        )
-        service.run_batch_import.side_effect = BatchImportExecutionError({
-            "id": "run-1", "status": "failed", "input_name": "records.csv",
-            "input_fingerprint": "fingerprint", "created_at": "now",
-            "started_at": "now", "updated_at": "now", "terminal_at": "now",
-            "result": None, "error": detail, "replacement_run_id": None,
-        })
-
-        response = client.post(
-            "/import/records?column=name",
-            files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
-        )
-
-        assert response.status_code == 502
-        assert response.json() == {
-            "detail": (
-                "Batch Import failed because the LLM provider could not generate a "
-                "Suggestion: connection refused. Check the configured LLM credentials, "
-                "endpoint, model, and network connection; no changes were made."
-            )
-        }
+        assert run["result"]["semantic_index_status"] == "missing"
+        assert "semantic and LLM Suggestions are unavailable" in run["result"]["semantic_index_warning"]
+        assert "normflow index build" in run["result"]["semantic_index_warning"]
 
 
 @pytest.mark.parametrize(
@@ -161,7 +139,7 @@ def test_import_records_reports_actionable_csv_validation_errors(
     )
 
     response = client.post(
-        "/import/records?column=name",
+        "/batch-import-runs?column=name",
         files={"file": ("records.csv", contents, "text/csv")},
     )
 
@@ -184,20 +162,28 @@ def test_bound_application_retains_mapping_import_export_and_index_http_contract
                 )
             },
         )
-        records = client.post(
-            "/import/records?column=name&semantic=false&llm=false",
-            files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
-        )
-        exported = client.post("/export?source_column=name")
-
         assert mappings.json() == {"imported": 1, "skipped": 0}
-        assert records.json() == {
+        with patch(
+            "normflow.semantic_index._ensure_model",
+            side_effect=RuntimeError("model unavailable"),
+        ):
+            records = client.post(
+                "/batch-import-runs?column=name",
+                files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
+            )
+            run = _await_batch_import(client, records)
+        assert run["result"] == {
             "auto_committed": 1,
             "review_items": 0,
             "skipped": 0,
             "semantic_index_status": "missing",
-            "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
+            "semantic_index_warning": (
+                "Automatic semantic index refresh failed; semantic and LLM "
+                "Suggestions are unavailable. Exact matching remains available. "
+                "Run `normflow index build` to retry."
+            ),
         }
+        exported = client.post("/export?source_column=name")
         assert exported.status_code == 200
         assert exported.text == "name,normalized_text\no2 sensor,Oxygen Sensor\n"
         assert "/index/build" in client.get("/openapi.json").json()["paths"]
@@ -278,7 +264,7 @@ def test_batch_import_reports_the_row_and_selected_column_for_a_short_row(
     )
 
     response = client.post(
-        "/import/records?column=name&semantic=false&llm=false",
+        "/batch-import-runs?column=name",
         files={"file": ("records.csv", b"id,name\n1\n", "text/csv")},
     )
 
@@ -371,9 +357,10 @@ def test_independent_applications_do_not_cross_pollinate(tmp_path: Path):
     first = TestClient(create_app(resolve_project(first_root)))
     second = TestClient(create_app(resolve_project(second_root)))
 
-    first.post(
-        "/import/records?column=name&semantic=false&llm=false",
-        files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
+    csv_path = tmp_path / "records.csv"
+    csv_path.write_text("name\no2 sensor\n", encoding="utf-8")
+    MappingService(first_root).import_records_for_review(
+        str(csv_path), "name", semantic=False, llm=False
     )
 
     assert len(first.get("/review-items").json()) == 1
@@ -408,7 +395,6 @@ def test_json_endpoints_publish_explicit_response_schemas(tmp_path: Path):
 
     expected_models = {
         ("post", "/import/mappings"): "ImportMappingsResponse",
-        ("post", "/import/records"): "ImportRecordsResponse",
         ("post", "/review-items/{review_item_id}/accept"): "StatusResponse",
         ("post", "/index/build"): "IndexBuildResponse",
     }
@@ -417,6 +403,16 @@ def test_json_endpoints_publish_explicit_response_schemas(tmp_path: Path):
             "content"
         ]["application/json"]["schema"]
         assert response_schema["$ref"].endswith(f"/{model}")
+
+    assert "/import/records" not in schema["paths"]
+    for method, path in (
+        ("post", "/batch-import-runs"),
+        ("post", "/batch-import-runs/{run_id}/retry"),
+    ):
+        response_schema = schema["paths"][path][method]["responses"]["202"][
+            "content"
+        ]["application/json"]["schema"]
+        assert response_schema["$ref"].endswith("/BatchImportRunResponse")
 
     review_schema = schema["paths"]["/review-items"]["get"]["responses"]["200"][
         "content"
@@ -467,18 +463,11 @@ def test_review_items_route_lists_pending_work():
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
         client = TestClient(create_app(resolve_project(project_root)))
-        imported = client.post(
-            "/import/records?column=name&semantic=false&llm=false",
-            files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
+        csv_path = Path(tmpdir) / "records.csv"
+        csv_path.write_text("name\no2 sensor\n", encoding="utf-8")
+        MappingService(project_root).import_records_for_review(
+            str(csv_path), "name", semantic=False, llm=False
         )
-        assert imported.status_code == 200
-        assert imported.json() == {
-            "auto_committed": 0,
-            "review_items": 1,
-            "skipped": 0,
-            "semantic_index_status": "missing",
-            "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
-        }
 
         response = client.get("/review-items")
 
