@@ -10,6 +10,7 @@ import pytest
 
 from normflow.api import create_app, get_project_service
 from normflow.mapping_service import (
+    BatchImportError,
     BulkAcceptError,
     BulkAcceptPersistenceError,
     BulkAcceptResult,
@@ -99,6 +100,31 @@ def test_import_reports_failed_automatic_index_refresh():
         assert imported.json()["semantic_index_status"] == "missing"
         assert "semantic and LLM Suggestions are unavailable" in imported.json()["semantic_index_warning"]
         assert "normflow index build" in imported.json()["semantic_index_warning"]
+
+
+def test_import_records_reports_actionable_provider_failure():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = init_project(str(Path(tmpdir) / "project"))
+        client, service = _client_with_fake_service(str(project_root))
+        service.import_records_for_review.side_effect = BatchImportError(
+            "Batch Import failed because the LLM provider could not generate a "
+            "Suggestion: connection refused. Check the configured LLM credentials, "
+            "endpoint, model, and network connection; no changes were made."
+        )
+
+        response = client.post(
+            "/import/records?column=name",
+            files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
+        )
+
+        assert response.status_code == 502
+        assert response.json() == {
+            "detail": (
+                "Batch Import failed because the LLM provider could not generate a "
+                "Suggestion: connection refused. Check the configured LLM credentials, "
+                "endpoint, model, and network connection; no changes were made."
+            )
+        }
 
 
 def test_bound_application_retains_mapping_import_export_and_index_http_contract():
