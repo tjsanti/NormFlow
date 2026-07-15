@@ -127,6 +127,42 @@ def test_import_records_reports_actionable_provider_failure():
         }
 
 
+@pytest.mark.parametrize(
+    ("contents", "detail"),
+    [
+        (
+            b"other\nvalue\n",
+            "CSV does not contain a column named 'name'. Available columns: other",
+        ),
+        (b"name\n\xff\n", "CSV must be UTF-8 text"),
+        (
+            b'name,notes\n"o2 sensor,urgent\n',
+            "CSV could not be parsed: unexpected end of data. "
+            "Available columns: name, notes",
+        ),
+    ],
+    ids=["missing-header", "non-utf8", "malformed"],
+)
+def test_import_records_reports_actionable_csv_validation_errors(
+    tmp_path: Path,
+    contents: bytes,
+    detail: str,
+):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(
+        create_app(resolve_project(project_root)),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/import/records?column=name",
+        files={"file": ("records.csv", contents, "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": detail}
+
+
 def test_bound_application_retains_mapping_import_export_and_index_http_contract():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = init_project(str(Path(tmpdir) / "project"))

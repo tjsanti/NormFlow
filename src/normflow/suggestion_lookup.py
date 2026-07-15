@@ -1,6 +1,7 @@
 """Suggestion lookup: exact, semantic, then LLM fallback."""
 
 from collections.abc import Callable
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -11,11 +12,14 @@ class SuggestionProviderError(RuntimeError):
     """The configured LLM provider could not generate a Suggestion."""
 
 
+SuggestionMethod = Literal["exact", "semantic", "llm"]
+
+
 class SuggestionItem(BaseModel):
     """A single suggestion returned by lookup."""
 
     suggested_text: str
-    method: str
+    method: SuggestionMethod
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 

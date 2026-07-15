@@ -132,6 +132,8 @@ async def import_records(
             return ImportRecordsResponse(**result)
         except BatchImportError as error:
             raise HTTPException(status_code=502, detail=str(error))
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.get("/review-items", response_model=list[ReviewItemResponse])

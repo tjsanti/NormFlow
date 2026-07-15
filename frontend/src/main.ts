@@ -507,6 +507,7 @@ function setupBatchImport(root: HTMLElement, importState: ImportState): void {
       await refreshProject(root);
       if (result.review_items > 0) selectProjectTab(root, "review");
     } catch (error) {
+      selectProjectTab(root, "import");
       showNotice(
         root,
         error instanceof Error ? error.message : "Could not import Batch.",

@@ -496,12 +496,12 @@ describe("Batch Import", () => {
   });
 
   test("keeps the failed Batch selections on Import and shows the actionable API detail", async () => {
+    let rejectImport!: (response: Response) => void;
+    const importResponse = new Promise<Response>((resolve) => { rejectImport = resolve; });
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([]))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        detail: "Check the configured LLM endpoint and network connection; no changes were made.",
-      }), { status: 502, headers: { "Content-Type": "application/json" } }));
+      .mockReturnValueOnce(importResponse);
     vi.stubGlobal("fetch", fetchMock);
     startApp();
 
@@ -513,6 +513,12 @@ describe("Batch Import", () => {
     source.value = "name";
     document.querySelector<HTMLFormElement>("#batch-import-form")!
       .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    document.querySelector<HTMLButtonElement>("#review-tab")!.click();
+    expect(document.querySelector("#review-tab")?.getAttribute("aria-selected")).toBe("true");
+
+    rejectImport(new Response(JSON.stringify({
+      detail: "Check the configured LLM endpoint and network connection; no changes were made.",
+    }), { status: 502, headers: { "Content-Type": "application/json" } }));
 
     await vi.waitFor(() => expect(document.querySelector("#notices [role=alert]")).not.toBeNull());
     expect(document.querySelector("#notices [role=alert]")?.textContent)
