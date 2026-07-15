@@ -155,6 +155,7 @@ class BatchImportRuns:
         execute: BatchImportExecutor,
         snapshot_state: Callable[[Path], None],
         restore_state: Callable[[Path], None],
+        cleanup_temporaries: Callable[[], None],
     ):
         self.project = project
         self.database = database
@@ -162,6 +163,7 @@ class BatchImportRuns:
         self._execute = execute
         self._snapshot_state = snapshot_state
         self._restore_state = restore_state
+        self._cleanup_temporaries = cleanup_temporaries
         self.runs_dir = self.project / ".batches" / "runs"
         with closing(sqlite3.connect(self.database)) as connection:
             schema = {
@@ -257,10 +259,7 @@ class BatchImportRuns:
             shutil.rmtree(snapshot)
 
     def _cleanup_batch_temporaries(self) -> None:
-        batch_dir = self.project / ".batches"
-        for pattern in (".current-*.tmp", ".previous-*.tmp"):
-            for temporary in batch_dir.glob(pattern):
-                temporary.unlink(missing_ok=True)
+        self._cleanup_temporaries()
 
     def _compensate(self, run_id: str) -> None:
         snapshot = self.runs_dir / f"{run_id}.snapshot"
@@ -317,6 +316,7 @@ class BatchImportRuns:
         column: str,
         *,
         on_started: Callable[[BatchImportRun], None] | None = None,
+        on_input_owned: Callable[[BatchImportRun], None] | None = None,
         on_committed: Callable[[BatchImportRun], None] | None = None,
         replaces: str | None = None,
     ) -> BatchImportRun:
@@ -352,8 +352,9 @@ class BatchImportRuns:
             for interrupted_id in interrupted_ids:
                 (self.runs_dir / f"{interrupted_id}.csv").unlink(missing_ok=True)
             active = self._get(run_id)
+            if on_started:
+                on_started(active)
             try:
-                self._validate_input(str(source), column)
                 shutil.copy2(source, staged)
                 fingerprint = hashlib.sha256(staged.read_bytes()).hexdigest()
                 with self._connection() as connection:
@@ -362,10 +363,11 @@ class BatchImportRuns:
                         "WHERE id=?",
                         (fingerprint, self._now(), run_id),
                     )
-                self._snapshot(run_id)
                 active = self._get(run_id)
-                if on_started:
-                    on_started(active)
+                if on_input_owned:
+                    on_input_owned(active)
+                self._validate_input(str(staged), column)
+                self._snapshot(run_id)
 
                 def record_commit(result: BatchImportResult) -> None:
                     temporary = marker.with_suffix(".tmp")
@@ -444,13 +446,25 @@ class BatchImportRuns:
 
         def started(run: BatchImportRun) -> None:
             runs.append(run)
+
+        def input_owned(run: BatchImportRun) -> None:
+            runs[0] = run
             ready.set()
 
         def worker() -> None:
             try:
-                self.run(csv_path, column, on_started=started, replaces=replaces)
+                self.run(
+                    csv_path,
+                    column,
+                    on_started=started,
+                    on_input_owned=input_owned,
+                    replaces=replaces,
+                )
             except BatchImportExecutionError as error:
-                runs.append(error.run)
+                if runs:
+                    runs[0] = error.run
+                else:
+                    runs.append(error.run)
                 ready.set()
             except Exception as error:
                 errors.append(error)

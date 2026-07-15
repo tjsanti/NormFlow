@@ -30,13 +30,18 @@ def _client_with_fake_service(project_root: str) -> tuple[TestClient, MagicMock]
     return TestClient(app), service
 
 
-def _await_batch_import(client: TestClient, response) -> dict:
+def _await_batch_import_terminal(client: TestClient, response) -> dict:
     assert response.status_code == 202
     run = response.json()
     deadline = time.monotonic() + 5
     while run["status"] == "active" and time.monotonic() < deadline:
         run = client.get(response.headers["location"]).json()
         time.sleep(0.01)
+    return run
+
+
+def _await_batch_import(client: TestClient, response) -> dict:
+    run = _await_batch_import_terminal(client, response)
     assert run["status"] == "succeeded", run
     return run
 
@@ -143,10 +148,11 @@ def test_import_records_reports_actionable_csv_validation_errors(
         files={"file": ("records.csv", contents, "text/csv")},
     )
 
-    assert response.status_code == 202
-    assert response.headers["location"].endswith(response.json()["id"])
-    assert response.json()["status"] == "failed"
-    assert response.json()["error"] == detail
+    run = _await_batch_import_terminal(client, response)
+    assert response.headers["location"].endswith(run["id"])
+    assert run["status"] == "failed"
+    assert run["error"] == detail
+    assert run["input_fingerprint"] != "pending"
 
 
 def test_bound_application_retains_mapping_import_export_and_index_http_contract():
@@ -270,9 +276,9 @@ def test_batch_import_reports_the_row_and_selected_column_for_a_short_row(
         files={"file": ("records.csv", b"id,name\n1\n", "text/csv")},
     )
 
-    assert response.status_code == 202
-    assert response.json()["status"] == "failed"
-    assert response.json()["error"] == (
+    run = _await_batch_import_terminal(client, response)
+    assert run["status"] == "failed"
+    assert run["error"] == (
         "CSV row 2 does not contain a value for selected column 'name'"
     )
 

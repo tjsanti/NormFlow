@@ -611,6 +611,11 @@ class MappingService:
             retained.unlink(missing_ok=True)
         SemanticIndex(str(self._path)).restore(snapshot / "semantic")
 
+    def _cleanup_batch_import_temporaries(self) -> None:
+        for pattern in (".current-*.tmp", ".previous-*.tmp"):
+            for temporary in self._batch_csv_dir().glob(pattern):
+                temporary.unlink(missing_ok=True)
+
     def _batch_import_runs(self) -> BatchImportRuns:
         return BatchImportRuns(
             project=self._path,
@@ -619,6 +624,7 @@ class MappingService:
             execute=self.import_records_for_review,
             snapshot_state=self._snapshot_batch_import_state,
             restore_state=self._restore_batch_import_state,
+            cleanup_temporaries=self._cleanup_batch_import_temporaries,
         )
 
     @coordinated_writer

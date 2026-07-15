@@ -124,9 +124,11 @@ def test_competing_http_start_locates_run_during_owner_input_setup(tmp_path: Pat
     owner = MappingService(project)
     owner_csv = _csv(tmp_path / "owner.csv", "owner")
     validation_started, release_validation = Event(), Event()
+    lifecycle: list[str] = []
     validate = owner._validate_batch_import_input
 
     def hold_validation(csv_path: str, column: str) -> None:
+        lifecycle.append("validation")
         validation_started.set()
         assert release_validation.wait(5)
         validate(csv_path, column)
@@ -135,8 +137,14 @@ def test_competing_http_start_locates_run_during_owner_input_setup(tmp_path: Pat
         patch.object(owner, "_validate_batch_import_input", side_effect=hold_validation),
         ThreadPoolExecutor() as executor,
     ):
-        running = executor.submit(owner.run_batch_import, owner_csv, "name")
+        running = executor.submit(
+            owner.run_batch_import,
+            owner_csv,
+            "name",
+            on_started=lambda _run: lifecycle.append("notified"),
+        )
         assert validation_started.wait(5)
+        assert lifecycle == ["notified", "validation"]
         response = TestClient(create_app(resolve_project(project))).post(
             "/batch-import-runs?column=name",
             files={"file": ("competitor.csv", b"name\ncompetitor\n", "text/csv")},
