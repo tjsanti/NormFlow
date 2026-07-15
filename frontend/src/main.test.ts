@@ -467,7 +467,7 @@ describe("Batch Import", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     const [url, request] = fetchMock.mock.calls[2] as [string, RequestInit];
-    expect(url).toBe("/import/records?column=raw_text");
+    expect(url).toBe("/batch-import-runs?column=raw_text");
     expect(request.method).toBe("POST");
     expect((request.body as FormData).get("file")).toBe(file);
     expect(form.querySelector<HTMLButtonElement>('button[type="submit"]')?.textContent)
@@ -479,7 +479,10 @@ describe("Batch Import", () => {
     expect([...document.querySelectorAll("button")]
       .some((button) => button.textContent?.includes("Cancel"))).toBe(false);
 
-    resolveImport(okJson({ auto_committed: 0, review_items: 0, skipped: 0 }));
+    resolveImport(okJson({
+      id: "run-1", status: "succeeded", error: null,
+      result: { auto_committed: 0, review_items: 0, skipped: 0 },
+    }));
     await vi.waitFor(() => expect(
       form.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled,
     ).toBe(false));
@@ -492,11 +495,14 @@ describe("Batch Import", () => {
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([]))
       .mockResolvedValueOnce(okJson({
-        auto_committed: 2,
-        review_items: 1,
-        skipped: 3,
-        semantic_index_status: "refresh_required",
-        semantic_index_warning: warning,
+        id: "run-2", status: "succeeded", error: null,
+        result: {
+          auto_committed: 2,
+          review_items: 1,
+          skipped: 3,
+          semantic_index_status: "refresh_required",
+          semantic_index_warning: warning,
+        },
       }))
       .mockResolvedValueOnce(okJson({
         ...projectInfo,
@@ -539,11 +545,14 @@ describe("Batch Import", () => {
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([]))
       .mockResolvedValueOnce(okJson({
-        auto_committed: 2,
-        review_items: 0,
-        skipped: 1,
-        semantic_index_status: "refresh_required",
-        semantic_index_warning: null,
+        id: "run-3", status: "succeeded", error: null,
+        result: {
+          auto_committed: 2,
+          review_items: 0,
+          skipped: 1,
+          semantic_index_status: "refresh_required",
+          semantic_index_warning: null,
+        },
       }))
       .mockResolvedValueOnce(okJson({
         ...projectInfo,
