@@ -26,11 +26,19 @@ from sqlmodel import (
 )
 
 from .semantic_index import SemanticIndex, SemanticIndexStatus
-from .suggestion_lookup import SuggestionItem, SuggestionLookup
+from .suggestion_lookup import (
+    SuggestionItem,
+    SuggestionLookup,
+    SuggestionProviderError,
+)
 
 
 class ReviewItemNotFoundError(ValueError):
     """The requested Review Item is no longer pending."""
+
+
+class BatchImportError(RuntimeError):
+    """A Batch Import could not complete without partial Project changes."""
 
 
 class BulkAcceptError(ValueError):
@@ -344,12 +352,20 @@ class MappingService:
         llm: bool,
         threshold: float,
         limit: int,
+        raise_provider_errors: bool = False,
     ) -> list[SuggestionItem]:
         """Look up a Suggestion after this operation's one refresh attempt."""
         return SuggestionLookup(
             exact_lookup=self._find_exact_mapping,
             index=SemanticIndex(str(self._path)),
-        ).lookup(raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=limit)
+        ).lookup(
+            raw_text,
+            semantic=semantic,
+            llm=llm,
+            threshold=threshold,
+            limit=limit,
+            raise_provider_errors=raise_provider_errors,
+        )
 
     def _refresh_semantic_index_if_needed(self) -> None:
         if SemanticIndex(str(self._path)).status(self._current_mapping_revision()) == "fresh":
@@ -432,8 +448,6 @@ class MappingService:
             self._refresh_semantic_index_if_needed()
         _, rows = self._read_csv(csv_path, column)
 
-        self._store_batch_csv(csv_path)
-
         values = [row.get(column, "").strip() for row in rows]
         unique_values = list(dict.fromkeys(raw_text for raw_text in values if raw_text))
         skipped = len(values) - len(unique_values)
@@ -452,9 +466,22 @@ class MappingService:
                     skipped += 1
                     continue
 
-                results = self._lookup_with_current_index(
-                    raw_text, semantic=semantic, llm=llm, threshold=threshold, limit=1,
-                )
+                try:
+                    results = self._lookup_with_current_index(
+                        raw_text,
+                        semantic=semantic,
+                        llm=llm,
+                        threshold=threshold,
+                        limit=1,
+                        raise_provider_errors=True,
+                    )
+                except SuggestionProviderError as error:
+                    raise BatchImportError(
+                        "Batch Import failed because the LLM provider could not "
+                        f"generate a Suggestion: {error}. Check the configured LLM "
+                        "credentials, endpoint, model, and network connection; no "
+                        "changes were made."
+                    ) from error
 
                 if results:
                     result = results[0]
@@ -478,6 +505,8 @@ class MappingService:
                 self._commit_mapping_changes(session)
             else:
                 session.commit()
+
+        self._store_batch_csv(csv_path)
 
         info = self.project_info()
         return {

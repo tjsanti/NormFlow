@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictInt
 
 from .mapping_service import (
+    BatchImportError,
     BulkAcceptError,
     BulkAcceptPersistenceError,
     BulkAcceptStaleItemsError,
@@ -119,10 +120,13 @@ async def import_records(
     service: MappingService = Depends(get_project_service),
 ) -> ImportRecordsResponse:
     async with _temporary_upload_csv(file) as csv_path:
-        result = service.import_records_for_review(
-            str(csv_path), column, semantic=semantic, llm=llm, threshold=threshold
-        )
-        return ImportRecordsResponse(**result)
+        try:
+            result = service.import_records_for_review(
+                str(csv_path), column, semantic=semantic, llm=llm, threshold=threshold
+            )
+            return ImportRecordsResponse(**result)
+        except BatchImportError as error:
+            raise HTTPException(status_code=502, detail=str(error))
 
 
 @router.get("/review-items", response_model=list[ReviewItemResponse])

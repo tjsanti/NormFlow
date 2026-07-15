@@ -5,6 +5,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from normflow.mapping_service import MappingService
 from normflow.project_service import init_project
 from tests.helpers import seed_mappings
@@ -74,6 +76,90 @@ def test_import_deduplicates_identical_raw_text():
         assert len(ms.list_review_items()) == 1
         assert result["skipped"] == 4
         assert result["review_items"] == 1
+
+
+@pytest.mark.parametrize(
+    ("provider_response", "failure_detail"),
+    [
+        (RuntimeError("missing API credential"), "missing API credential"),
+        (RuntimeError("invalid provider endpoint"), "invalid provider endpoint"),
+        (RuntimeError("configured model was not found"), "configured model was not found"),
+        (RuntimeError("network connection timed out"), "network connection timed out"),
+        (RuntimeError("provider unavailable"), "provider unavailable"),
+        (
+            MagicMock(choices=[MagicMock(message=MagicMock(content="   "))]),
+            "blank Suggestion",
+        ),
+    ],
+    ids=[
+        "credential",
+        "endpoint",
+        "model",
+        "network",
+        "provider",
+        "blank-response",
+    ],
+)
+def test_provider_failure_aborts_batch_without_replacing_retained_batch(
+    provider_response,
+    failure_detail,
+):
+    """A failed Batch Import leaves all Project state at its prior snapshot."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project = Path(tmpdir)
+        init_project(str(project))
+        service = MappingService(project)
+        seed_mappings(project, [("colour", "color")])
+
+        previous_batch = project / "previous.csv"
+        _write_csv(previous_batch, [{"name": "preserved"}], ["name"])
+        service.import_records_for_review(
+            str(previous_batch), "name", semantic=False, llm=False,
+        )
+
+        encoder = MagicMock()
+        vectors = {
+            "colour": [1.0, 0.0, 0.0],
+            "colr": [1.0, 0.0, 0.0],
+            "provider fail": [0.0, 1.0, 0.0],
+        }
+        encoder.encode.side_effect = lambda texts, **_kwargs: [
+            vectors[text] for text in texts
+        ]
+        encoder.get_sentence_embedding_dimension.return_value = 2
+        client = MagicMock()
+        if isinstance(provider_response, Exception):
+            client.chat.completions.create.side_effect = provider_response
+        else:
+            client.chat.completions.create.return_value = provider_response
+
+        failed_batch = project / "failed.csv"
+        _write_csv(
+            failed_batch,
+            [{"name": "colr"}, {"name": "provider fail"}],
+            ["name"],
+        )
+
+        with (
+            patch("normflow.semantic_index._ensure_model", return_value=encoder),
+            patch("normflow.llm_matcher.build_client", return_value=client),
+        ):
+            service.build_index()
+            with pytest.raises(
+                RuntimeError,
+                match=(
+                    f"Batch Import failed.*{failure_detail}.*no changes were made"
+                ),
+            ):
+                service.import_records_for_review(str(failed_batch), "name")
+
+        assert service.project_info()["mappings"] == 1
+        assert service.list_review_items() == [
+            {"id": 1, "raw_text": "preserved", "suggested_text": ""}
+        ]
+        assert (project / ".batches" / "current.csv").read_bytes() == (
+            previous_batch.read_bytes()
+        )
 
 
 @patch("normflow.semantic_index._ensure_model")
