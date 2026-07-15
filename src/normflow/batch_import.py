@@ -323,6 +323,10 @@ class BatchImportRuns:
             raise BatchImportRunNotFoundError("No Batch Import Runs exist for this Project")
         return self._dict(row)
 
+    def active(self) -> BatchImportRun | None:
+        """Return only the currently active durable run, never historical state."""
+        return self._active()
+
     def run(
         self,
         csv_path: str | Path,

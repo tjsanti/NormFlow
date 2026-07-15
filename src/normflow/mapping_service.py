@@ -840,6 +840,10 @@ class MappingService:
         """Observe an identified run, or the active/most recent run."""
         return BatchImportRuns(self).status(run_id)
 
+    def active_batch_import_run(self) -> BatchImportRun | None:
+        """Return the active run only, without falling back to the latest run."""
+        return BatchImportRuns(self).active()
+
     def retry_batch_import(self, run_id, csv_path, column, **kwargs) -> BatchImportRun:
         """Explicitly retry a failed/interrupted run with resubmitted input."""
         return BatchImportRuns(self).retry(run_id, csv_path, column, **kwargs)

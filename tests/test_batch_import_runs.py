@@ -415,3 +415,45 @@ def test_provider_failure_is_durable_and_preserves_project_and_retained_batch(
     ]
     assert (project / ".batches" / "current.csv").read_bytes() == previous.read_bytes()
     assert not (project / ".batches" / "runs" / f"{terminal['id']}.csv").exists()
+
+
+def test_http_conflict_does_not_claim_historical_run_for_non_batch_writer(
+    tmp_path: Path,
+):
+    project = init_project(tmp_path / "project")
+    batch = _csv(tmp_path / "records.csv", "historical")
+    historical = MappingService(project).run_batch_import(
+        batch, "name", semantic=False, llm=False,
+    )
+    mappings = tmp_path / "mappings.csv"
+    mappings.write_text("raw,clean\noxygen,Oxygen\n", encoding="utf-8")
+    MappingService(project).import_mappings(mappings, "raw", "clean")
+    build_started, release_build = Event(), Event()
+    encoder = MagicMock()
+
+    def blocked_encode(texts, **_kwargs):
+        build_started.set()
+        assert release_build.wait(5)
+        return [[1.0, 0.0] for _ in texts]
+
+    encoder.encode.side_effect = blocked_encode
+    encoder.get_sentence_embedding_dimension.return_value = 2
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        ThreadPoolExecutor() as executor,
+    ):
+        building = executor.submit(MappingService(project).build_index)
+        assert build_started.wait(5)
+        response = TestClient(create_app(resolve_project(project))).post(
+            "/import/mappings?source_column=raw&target_column=clean",
+            files={"file": ("m.csv", b"raw,clean\nx,X\n", "text/csv")},
+        )
+        assert response.status_code == 409
+        assert "location" not in response.headers
+        assert response.json()["detail"] == (
+            "The Project is currently being changed; try again later."
+        )
+        assert response.json().get("active_run") is None
+        assert MappingService(project).batch_import_status()["id"] == historical["id"]
+        release_build.set()
+        building.result(timeout=5)

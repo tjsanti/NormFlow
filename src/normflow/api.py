@@ -115,10 +115,7 @@ def _project_busy_response(request: Request, error: ProjectBusyError) -> JSONRes
     """Translate the shared Project writer conflict for every HTTP adapter."""
     active = error.active_run
     if active is None:
-        try:
-            active = get_project_service(request).batch_import_status()
-        except BatchImportRunNotFoundError:
-            active = None
+        active = get_project_service(request).active_batch_import_run()
     detail: str | dict = str(error)
     headers = None
     if active:
