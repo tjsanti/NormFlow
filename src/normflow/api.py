@@ -4,10 +4,15 @@ from contextlib import asynccontextmanager
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictInt
+
+from .batch_import import (
+    BatchImportRunNotFoundError,
+    ProjectBusyError,
+)
 
 from .mapping_service import (
     BatchImportError,
@@ -69,6 +74,20 @@ class StatusResponse(BaseModel):
 
 class IndexBuildResponse(BaseModel):
     entries: int
+
+
+class BatchImportRunResponse(BaseModel):
+    id: str
+    status: str
+    input_name: str
+    input_fingerprint: str
+    created_at: str
+    started_at: str
+    updated_at: str
+    terminal_at: str | None
+    result: dict | None
+    error: str | None
+    replacement_run_id: str | None
 
 
 @asynccontextmanager
@@ -134,6 +153,60 @@ async def import_records(
             raise HTTPException(status_code=502, detail=str(error))
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post(
+    "/batch-import-runs",
+    status_code=202,
+    response_model=BatchImportRunResponse,
+)
+async def start_batch_import_run(
+    response: Response,
+    column: str = Query(...),
+    semantic: bool = Query(True),
+    llm: bool = Query(True),
+    threshold: float = Query(0.85),
+    file: UploadFile | None = None,
+    service: MappingService = Depends(get_project_service),
+) -> BatchImportRunResponse:
+    async with _temporary_upload_csv(file) as csv_path:
+        try:
+            run = service.start_batch_import(
+                csv_path, column, semantic=semantic, llm=llm, threshold=threshold,
+            )
+        except ProjectBusyError as error:
+            active = error.active_run
+            if active is None:
+                try:
+                    active = service.batch_import_status()
+                except BatchImportRunNotFoundError:
+                    active = None
+            if active:
+                location = f"/batch-import-runs/{active['id']}"
+                raise HTTPException(
+                    status_code=409,
+                    detail={"message": str(error), "active_run": active},
+                    headers={"Location": location},
+                ) from error
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except (ValueError, FileNotFoundError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+    response.headers["Location"] = f"/batch-import-runs/{run['id']}"
+    return BatchImportRunResponse(**run)
+
+
+@router.get(
+    "/batch-import-runs/{run_id}",
+    response_model=BatchImportRunResponse,
+)
+def batch_import_run_status(
+    run_id: str,
+    service: MappingService = Depends(get_project_service),
+) -> BatchImportRunResponse:
+    try:
+        return BatchImportRunResponse(**service.batch_import_status(run_id))
+    except BatchImportRunNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @router.get("/review-items", response_model=list[ReviewItemResponse])

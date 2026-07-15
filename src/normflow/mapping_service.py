@@ -16,6 +16,13 @@ from functools import cache
 from pathlib import Path
 from typing import TypedDict
 
+from .batch_import import (
+    BatchImportRun,
+    BatchImportRuns,
+    ProjectBusyError,
+    coordinated_writer,
+)
+
 from sqlalchemy import delete, inspect, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import (
@@ -181,6 +188,14 @@ class MappingService:
             connection.execute(text(
                 "INSERT OR IGNORE INTO mappingrevision (id, revision) VALUES (1, 0)"
             ))
+            connection.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS unique_mapping_raw_text "
+                "ON examplemapping(raw_text)"
+            ))
+            connection.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS unique_review_item_raw_text "
+                "ON reviewitem(raw_text)"
+            ))
 
     def validate(self) -> None:
         if not self._db_path.exists():
@@ -293,6 +308,7 @@ class MappingService:
                 f"CSV could not be parsed: {error}.{available_detail}"
             ) from error
 
+    @coordinated_writer
     def import_mappings(
         self,
         csv_path: str,
@@ -398,6 +414,8 @@ class MappingService:
             return
         try:
             self.build_index()
+        except ProjectBusyError:
+            raise
         except Exception:
             # Preserve the previous index as a visible stale fallback. Adapters
             # report the still-non-fresh Project status to the user.
@@ -521,6 +539,7 @@ class MappingService:
                 )
             session.commit()
 
+    @coordinated_writer
     def import_records_for_review(
         self,
         csv_path: str,
@@ -529,6 +548,7 @@ class MappingService:
         semantic: bool = True,
         llm: bool = True,
         threshold: float = 0.85,
+        _on_published=None,
     ) -> ImportRecordsResult:
         if semantic or llm:
             self._refresh_semantic_index_if_needed()
@@ -625,6 +645,16 @@ class MappingService:
                     raise
                 try:
                     os.replace(staged_batch, self._batch_csv_dir() / "current.csv")
+                    info = self.project_info()
+                    result: ImportRecordsResult = {
+                        "auto_committed": auto_committed,
+                        "review_items": review_items,
+                        "skipped": skipped,
+                        "semantic_index_status": info["semantic_index_status"],
+                        "semantic_index_warning": info["semantic_index_warning"],
+                    }
+                    if _on_published:
+                        _on_published(result)
                 except Exception:
                     try:
                         self._compensate_batch_changes(
@@ -642,15 +672,7 @@ class MappingService:
                     backup.unlink(missing_ok=True)
         finally:
             staged_batch.unlink(missing_ok=True)
-
-        info = self.project_info()
-        return {
-            "auto_committed": auto_committed,
-            "review_items": review_items,
-            "skipped": skipped,
-            "semantic_index_status": info["semantic_index_status"],
-            "semantic_index_warning": info["semantic_index_warning"],
-        }
+        return result
 
     def export_normalized_csv(
         self,
@@ -701,6 +723,7 @@ class MappingService:
             for item in items
         ]
 
+    @coordinated_writer
     def accept_review_item(
         self,
         review_item_id: int,
@@ -730,6 +753,7 @@ class MappingService:
             session.delete(item)
             self._commit_mapping_changes(session)
 
+    @coordinated_writer
     def accept_review_items(self, record_ids: list[int]) -> BulkAcceptResult:
         if not record_ids:
             raise BulkAcceptError("Select at least one Review Item")
@@ -774,6 +798,7 @@ class MappingService:
     # Index
     # ------------------------------------------------------------------
 
+    @coordinated_writer
     def build_index(self) -> int:
         with self._session() as session:
             revision = session.get(_MappingRevision, 1)
@@ -794,6 +819,27 @@ class MappingService:
                 idx.mark_refresh_failed()
             raise
 
+    @coordinated_writer
     def clear_index(self) -> None:
         idx = SemanticIndex(str(self._path))
         idx.clear()
+
+    # ------------------------------------------------------------------
+    # Durable Batch Import Runs
+    # ------------------------------------------------------------------
+
+    def run_batch_import(self, csv_path, column, **kwargs) -> BatchImportRun:
+        """Run a Batch Import in the foreground and return its durable terminal state."""
+        return BatchImportRuns(self).run(csv_path, column, **kwargs)
+
+    def start_batch_import(self, csv_path, column, **kwargs) -> BatchImportRun:
+        """Start a server-owned Batch Import and return its durable active state."""
+        return BatchImportRuns(self).start_background(csv_path, column, **kwargs)
+
+    def batch_import_status(self, run_id: str | None = None) -> BatchImportRun:
+        """Observe an identified run, or the active/most recent run."""
+        return BatchImportRuns(self).status(run_id)
+
+    def retry_batch_import(self, run_id, csv_path, column, **kwargs) -> BatchImportRun:
+        """Explicitly retry a failed/interrupted run with resubmitted input."""
+        return BatchImportRuns(self).retry(run_id, csv_path, column, **kwargs)
