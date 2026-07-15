@@ -105,8 +105,13 @@ async def import_mappings(
     service: MappingService = Depends(get_project_service),
 ) -> ImportMappingsResponse:
     async with _temporary_upload_csv(file) as csv_path:
-        imported, skipped = service.import_mappings(str(csv_path), source_column, target_column)
-        return ImportMappingsResponse(imported=imported, skipped=skipped)
+        try:
+            imported, skipped = service.import_mappings(
+                str(csv_path), source_column, target_column
+            )
+            return ImportMappingsResponse(imported=imported, skipped=skipped)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.post("/import/records", response_model=ImportRecordsResponse)
