@@ -97,7 +97,7 @@ Writes all current mappings to a CSV file. Column names default to `raw_text` an
 normflow index build
 ```
 
-Builds a FAISS semantic index from the current mappings. Required before semantic search will return results. Rebuild after importing new mappings.
+Builds a FAISS semantic index from the current Mappings. NormFlow normally builds or refreshes it automatically before the next semantic or LLM Suggestion after Mappings change. Use this command to prewarm the index or retry after an automatic refresh warning.
 
 ```bash
 normflow index clear
@@ -111,7 +111,7 @@ Removes the persisted FAISS index.
 normflow suggest "raw text value"
 ```
 
-Queries the mapping library for an exact match on the raw text. If no exact match is found and the semantic index is built, falls back to semantic search. Returns JSON with suggestions, method used, and confidence score.
+Queries the Mapping library for an exact match on the raw text, then falls back to semantic search and LLM matching when enabled. If the semantic index needs refreshing, the CLI reports that progress on stderr before rebuilding; JSON remains on stdout. If refresh fails, NormFlow preserves the previous index, warns that Suggestions may use earlier Mappings, and recommends `normflow index build`.
 
 ```bash
 normflow suggest "colour" --limit 10

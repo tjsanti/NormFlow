@@ -11,7 +11,6 @@ from typer.testing import CliRunner
 from tests.helpers import seed_mappings
 from normflow.cli import app
 from normflow.mapping_service import MappingService
-from normflow.semantic_index import SemanticIndex
 from normflow.project_service import init_project as _init_project
 
 _active_project: Path | None = None
@@ -92,12 +91,7 @@ class TestSuggestLLMFallback:
                     ("organised", "organized"),
                 ])
 
-                idx = SemanticIndex(str(project_path))
-                idx.build([
-                    ("colour", "color"),
-                    ("centre", "center"),
-                    ("organised", "organized"),
-                ])
+                MappingService(str(project_path)).build_index()
 
                 suggestions = MappingService(str(project_path)).lookup(
                     "orgnisd",
@@ -120,8 +114,7 @@ class TestSuggestLLMFallback:
                 init_project(str(project_path))
                 seed_mappings(project_path, [("colour", "color")])
 
-                idx = SemanticIndex(str(project_path))
-                idx.build([("colour", "color")])
+                MappingService(str(project_path)).build_index()
 
                 suggestions = MappingService(str(project_path)).lookup(
                     "colr", semantic=True, threshold=0.85, llm=False,
@@ -143,8 +136,7 @@ class TestSuggestLLMFallback:
                 init_project(str(project_path))
                 seed_mappings(project_path, [("colour", "color")])
 
-                idx = SemanticIndex(str(project_path))
-                idx.build([("colour", "color")])
+                MappingService(str(project_path)).build_index()
 
                 suggestions = MappingService(str(project_path)).lookup(
                     "colur", semantic=True, threshold=0.5, llm=True,
@@ -169,8 +161,7 @@ class TestSuggestLLMFallback:
                 init_project(str(project_path))
                 seed_mappings(project_path, [("colour", "color")])
 
-                idx = SemanticIndex(str(project_path))
-                idx.build([("colour", "color")])
+                MappingService(str(project_path)).build_index()
 
                 suggestions = MappingService(str(project_path)).lookup(
                     "colr", semantic=True, threshold=0.85, llm=True,

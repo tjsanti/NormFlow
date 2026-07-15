@@ -5,6 +5,8 @@ interface ProjectInfo {
   database: string;
   mappings: number;
   review_items: number;
+  semantic_index_status: "fresh" | "refresh_required" | "unverified" | "missing";
+  semantic_index_warning: string | null;
 }
 
 interface ReviewItem {
@@ -52,9 +54,13 @@ function showNotice(root: HTMLElement, message: string, error = false): void {
   notices.append(notice);
 }
 
-function updateProjectCounts(root: HTMLElement, project: ProjectInfo): void {
+function updateProjectSummary(root: HTMLElement, project: ProjectInfo): void {
   root.querySelector<HTMLElement>("#mapping-count")!.textContent = String(project.mappings);
   root.querySelector<HTMLElement>("#review-item-count")!.textContent = String(project.review_items);
+  const indexStatus = root.querySelector<HTMLElement>("#semantic-index-status")!;
+  indexStatus.textContent = project.semantic_index_warning ?? "";
+  if (project.semantic_index_warning) indexStatus.role = "status";
+  else indexStatus.removeAttribute("role");
 }
 
 async function acceptReviewItem(
@@ -211,18 +217,26 @@ function renderReviewItems(root: HTMLElement, items: ReviewItem[]): void {
         });
         if (!response.ok) {
           const error = await response.json() as { detail?: string };
-          throw new Error(error.detail ?? `Could not accept Review Item (${response.status}).`);
+          throw Object.assign(
+            new Error(error.detail ?? `Could not accept Review Item (${response.status}).`),
+            { stale: response.status === 409 },
+          );
         }
         showNotice(root, `Review Item ${item.id} accepted.`);
         await refreshProject(root);
       } catch (error) {
+        const stale = error instanceof Error && "stale" in error && error.stale === true;
         showNotice(
           root,
           error instanceof Error ? error.message : "Could not accept Review Item.",
           true,
         );
-        save.disabled = false;
-        cancel.disabled = false;
+        if (stale) {
+          await refreshProject(root);
+        } else {
+          save.disabled = false;
+          cancel.disabled = false;
+        }
       }
     };
     save.addEventListener("click", () => void submitEdit());
@@ -294,7 +308,7 @@ async function refreshReviewItems(root: HTMLElement): Promise<void> {
 async function refreshProject(root: HTMLElement): Promise<void> {
   try {
     const project = await fetchProject();
-    updateProjectCounts(root, project);
+    updateProjectSummary(root, project);
   } catch (error) {
     showNotice(root, error instanceof Error ? error.message : "Could not refresh Project.", true);
   }
@@ -314,6 +328,7 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
         <div><strong id="review-item-count">${project.review_items}</strong> pending Review Items</div>
       </div>
     </header>
+    <div id="semantic-index-status" aria-live="polite"></div>
     <main class="review-project">
       <div class="review-heading">
         <div><span class="eyebrow">Pending work</span><h2>Review Items</h2></div>
@@ -325,6 +340,7 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
   `;
   root.querySelector("h1")!.textContent = projectName(project.project);
   root.querySelector<HTMLElement>(".project-path")!.textContent = project.project;
+  updateProjectSummary(root, project);
   root.querySelector("#refresh-review-items")!.addEventListener(
     "click",
     () => void refreshProject(root),

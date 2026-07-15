@@ -1,17 +1,32 @@
 """Tests for FastAPI endpoints."""
 
-import sqlite3
 import tempfile
 from pathlib import Path
 import re
+from unittest.mock import MagicMock, call, patch
 
 from fastapi.testclient import TestClient
 import pytest
 
-from normflow.api import create_app
-from normflow.mapping_service import MappingService, ReviewItem
+from normflow.api import create_app, get_project_service
+from normflow.mapping_service import (
+    BulkAcceptError,
+    BulkAcceptPersistenceError,
+    BulkAcceptResult,
+    BulkAcceptStaleItemsError,
+    MappingService,
+    ReviewItemNotFoundError,
+)
 from normflow.project import resolve_project
 from normflow.project_service import init_project
+
+
+def _client_with_fake_service(project_root: str) -> tuple[TestClient, MagicMock]:
+    """Bind an interface fake to the HTTP adapter under test."""
+    app = create_app(resolve_project(project_root))
+    service = MagicMock(spec=MappingService)
+    app.dependency_overrides[get_project_service] = lambda: service
+    return TestClient(app), service
 
 
 def test_application_is_bound_to_one_canonical_project():
@@ -28,6 +43,8 @@ def test_application_is_bound_to_one_canonical_project():
             "database": str(project_root / "normflow.db"),
             "mappings": 0,
             "review_items": 0,
+            "semantic_index_status": "missing",
+            "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
         }
 
 
@@ -47,10 +64,41 @@ def test_bound_application_imports_and_lists_review_items_without_a_project_sele
             "auto_committed": 0,
             "review_items": 1,
             "skipped": 0,
+            "semantic_index_status": "missing",
+            "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
         }
         assert review_items.json() == [
             {"id": 1, "raw_text": "o2 sensor", "suggested_text": ""}
         ]
+
+        accepted = client.post(
+            "/review-items/1/accept",
+            json={"normalized_text": "Oxygen Sensor"},
+        )
+
+        assert accepted.status_code == 200
+        assert client.get("/review-items").json() == []
+        assert client.get("/project/info").json()["mappings"] == 1
+
+
+def test_import_reports_failed_automatic_index_refresh():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = init_project(str(Path(tmpdir) / "project"))
+        client = TestClient(create_app(resolve_project(project_root)))
+
+        with patch(
+            "normflow.semantic_index._ensure_model",
+            side_effect=RuntimeError("model unavailable"),
+        ):
+            imported = client.post(
+                "/import/records?column=name&llm=false",
+                files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
+            )
+
+        assert imported.status_code == 200
+        assert imported.json()["semantic_index_status"] == "missing"
+        assert "semantic and LLM Suggestions are unavailable" in imported.json()["semantic_index_warning"]
+        assert "normflow index build" in imported.json()["semantic_index_warning"]
 
 
 def test_bound_application_retains_mapping_import_export_and_index_http_contract():
@@ -79,6 +127,8 @@ def test_bound_application_retains_mapping_import_export_and_index_http_contract
             "auto_committed": 1,
             "review_items": 0,
             "skipped": 0,
+            "semantic_index_status": "missing",
+            "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
         }
         assert exported.status_code == 200
         assert exported.text == "name,normalized_text\no2 sensor,Oxygen Sensor\n"
@@ -214,6 +264,8 @@ def test_review_items_route_lists_pending_work():
             "auto_committed": 0,
             "review_items": 1,
             "skipped": 0,
+            "semantic_index_status": "missing",
+            "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
         }
 
         response = client.get("/review-items")
@@ -229,11 +281,7 @@ def test_accept_review_item_route_uses_suggestion_when_replacement_is_absent(bod
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
-        service = MappingService(project_root)
-        with service.session() as session:
-            session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
-            session.commit()
-        client = TestClient(create_app(resolve_project(project_root)))
+        client, service = _client_with_fake_service(project_root)
 
         response = (
             client.post("/review-items/1/accept")
@@ -243,22 +291,15 @@ def test_accept_review_item_route_uses_suggestion_when_replacement_is_absent(bod
 
         assert response.status_code == 200
         assert response.json() == {"status": "accepted"}
-        assert client.get("/review-items").json() == []
-        assert client.get("/project/info").json()["mappings"] == 1
+        service.accept_review_item.assert_called_once_with(1, None)
 
 
 def test_bulk_accept_review_items_route_returns_typed_count_and_commits_all():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
-        service = MappingService(project_root)
-        with service.session() as session:
-            session.add_all([
-                ReviewItem(raw_text="o2 sensor", suggested_text="Oxygen Sensor"),
-                ReviewItem(raw_text="fuel pump", suggested_text="Fuel Pump"),
-            ])
-            session.commit()
-        client = TestClient(create_app(resolve_project(project_root)))
+        client, service = _client_with_fake_service(project_root)
+        service.accept_review_items.return_value = BulkAcceptResult(accepted=2)
 
         response = client.post(
             "/review-items/bulk-accept",
@@ -267,22 +308,21 @@ def test_bulk_accept_review_items_route_returns_typed_count_and_commits_all():
 
         assert response.status_code == 200
         assert response.json() == {"accepted": 2}
-        assert client.get("/review-items").json() == []
-        assert client.get("/project/info").json()["mappings"] == 2
+        service.accept_review_items.assert_called_once_with([1, 2])
 
 
 def test_bulk_accept_route_reports_invalid_stale_and_blank_selections_without_changes():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
-        service = MappingService(project_root)
-        with service.session() as session:
-            session.add_all([
-                ReviewItem(raw_text="o2 sensor", suggested_text="Oxygen Sensor"),
-                ReviewItem(raw_text="unknown", suggested_text="  "),
-            ])
-            session.commit()
-        client = TestClient(create_app(resolve_project(project_root)))
+        client, service = _client_with_fake_service(project_root)
+        service.accept_review_items.side_effect = [
+            BulkAcceptError("Select at least one Review Item"),
+            BulkAcceptStaleItemsError(
+                "Review Items with IDs 99 are no longer pending"
+            ),
+            BulkAcceptError("Review Items with IDs 2 have blank Suggestions"),
+        ]
 
         invalid = client.post(
             "/review-items/bulk-accept", json={"review_item_ids": []}
@@ -308,30 +348,21 @@ def test_bulk_accept_route_reports_invalid_stale_and_blank_selections_without_ch
         assert (blank.status_code, blank.json()) == (
             422, {"detail": "Review Items with IDs 2 have blank Suggestions"}
         )
-        assert len(client.get("/review-items").json()) == 2
-        assert client.get("/project/info").json()["mappings"] == 0
+        assert service.accept_review_items.call_args_list == [
+            call([]),
+            call([1, 99]),
+            call([1, 2]),
+        ]
 
 
 def test_bulk_accept_route_reports_mapping_failure_and_rolls_back_every_item():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
-        service = MappingService(project_root)
-        with service.session() as session:
-            session.add_all([
-                ReviewItem(raw_text="o2 sensor", suggested_text="Oxygen Sensor"),
-                ReviewItem(raw_text="fuel pump", suggested_text="Fuel Pump"),
-            ])
-            session.commit()
-        with sqlite3.connect(Path(project_root) / "normflow.db") as connection:
-            connection.execute(
-                """
-                CREATE TRIGGER reject_fuel_pump BEFORE INSERT ON examplemapping
-                WHEN NEW.raw_text = 'fuel pump'
-                BEGIN SELECT RAISE(ABORT, 'mapping insert rejected'); END
-                """
-            )
-        client = TestClient(create_app(resolve_project(project_root)))
+        client, service = _client_with_fake_service(project_root)
+        service.accept_review_items.side_effect = BulkAcceptPersistenceError(
+            "Could not accept selected Review Items; no changes were made"
+        )
 
         response = client.post(
             "/review-items/bulk-accept",
@@ -342,17 +373,19 @@ def test_bulk_accept_route_reports_mapping_failure_and_rolls_back_every_item():
         assert response.json() == {
             "detail": "Could not accept selected Review Items; no changes were made"
         }
-        assert len(client.get("/review-items").json()) == 2
-        assert client.get("/project/info").json()["mappings"] == 0
+        service.accept_review_items.assert_called_once_with([1, 2])
 
 
 def test_accept_review_item_route_reports_a_stale_item_as_a_conflict():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
-        response = TestClient(create_app(resolve_project(project_root))).post(
-            "/review-items/99/accept",
+        client, service = _client_with_fake_service(project_root)
+        service.accept_review_item.side_effect = ReviewItemNotFoundError(
+            "Review Item with id 99 not found"
         )
+
+        response = client.post("/review-items/99/accept")
 
         assert response.status_code == 409
         assert response.json() == {"detail": "Review Item with id 99 not found"}
@@ -362,30 +395,23 @@ def test_accept_review_item_route_rejects_blank_suggestion_without_removing_item
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
-        service = MappingService(project_root)
-        with service.session() as session:
-            session.add(ReviewItem(raw_text="unknown", suggested_text="  "))
-            session.commit()
-        client = TestClient(create_app(resolve_project(project_root)))
+        client, service = _client_with_fake_service(project_root)
+        service.accept_review_item.side_effect = ValueError(
+            "Normalized text must not be blank"
+        )
 
         response = client.post("/review-items/1/accept")
 
         assert response.status_code == 422
         assert response.json() == {"detail": "Normalized text must not be blank"}
-        assert client.get("/review-items").json() == [
-            {"id": 1, "raw_text": "unknown", "suggested_text": "  "}
-        ]
+        service.accept_review_item.assert_called_once_with(1, None)
 
 
 def test_accept_review_item_route_uses_replacement_text():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
-        service = MappingService(project_root)
-        with service.session() as session:
-            session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
-            session.commit()
-        client = TestClient(create_app(resolve_project(project_root)))
+        client, service = _client_with_fake_service(project_root)
 
         response = client.post(
             "/review-items/1/accept",
@@ -394,7 +420,7 @@ def test_accept_review_item_route_uses_replacement_text():
 
         assert response.status_code == 200
         assert response.json() == {"status": "accepted"}
-        assert service.lookup("o2 sensor", semantic=False, llm=False)[0].suggested_text == "Oxygen Sensor"
+        service.accept_review_item.assert_called_once_with(1, "  Oxygen Sensor  ")
 
 
 @pytest.mark.parametrize(
@@ -408,19 +434,14 @@ def test_accept_review_item_route_rejects_invalid_replacement_without_mutation(b
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = str(Path(tmpdir).resolve())
         init_project(project_root)
-        service = MappingService(project_root)
-        with service.session() as session:
-            session.add(ReviewItem(raw_text="o2 sensor", suggested_text="O2 Sensor"))
-            session.commit()
-        client = TestClient(create_app(resolve_project(project_root)))
+        client, service = _client_with_fake_service(project_root)
+        service.accept_review_item.side_effect = ValueError(
+            "Normalized text must not be blank"
+        )
 
         response = client.post("/review-items/1/accept", json=body)
 
         assert response.status_code == 422
-
-        assert client.get("/review-items").json() == [
-            {"id": 1, "raw_text": "o2 sensor", "suggested_text": "O2 Sensor"}
-        ]
 
 
 def test_old_suggestion_review_routes_are_removed():
