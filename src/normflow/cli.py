@@ -181,6 +181,25 @@ def export_cmd(
         raise typer.Exit(1) from None
 
 
+@app.command(name="export-batch")
+def export_batch_cmd(
+    csv_path: str = typer.Argument(..., help="Path to export the normalized Batch CSV to."),
+    source_column: str = typer.Option("raw_text", "--source-column", help="Retained Batch column containing raw text."),
+    output_column: str = typer.Option("normalized_text", "--output-column", help="CSV header name for normalized text."),
+) -> None:
+    """Export the retained Batch CSV with normalized text from approved Mappings."""
+    try:
+        result_csv = _project_service().export_normalized_csv(
+            source_column, output_column,
+        )
+        output_path = Path(csv_path).expanduser().resolve()
+        output_path.write_text(result_csv, encoding="utf-8")
+        print(f"Exported normalized Batch CSV to {csv_path}")
+    except (ValueError, FileNotFoundError) as e:
+        print(f"Error: {e}")
+        raise typer.Exit(1) from None
+
+
 @app.command(name="suggest")
 def suggest_cmd(
     raw_text: str = typer.Argument(..., help="The raw text value to find suggestions for."),
