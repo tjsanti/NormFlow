@@ -234,6 +234,12 @@ class BatchImportRuns:
         (self.runs_dir / f"{run_id}.previous.csv").unlink(missing_ok=True)
         shutil.rmtree(self.runs_dir / f"{run_id}.semantic", ignore_errors=True)
 
+    def _cleanup_batch_temporaries(self) -> None:
+        batch_dir = self.project / ".batches"
+        for pattern in (".current-*.tmp", ".previous-*.tmp"):
+            for temporary in batch_dir.glob(pattern):
+                temporary.unlink(missing_ok=True)
+
     def _compensate(self, run_id: str) -> None:
         snapshot_path = self.runs_dir / f"{run_id}.snapshot.json"
         if not snapshot_path.exists():
@@ -295,6 +301,7 @@ class BatchImportRuns:
                 error="The owning process stopped before the Batch Import committed.",
             )
         self._cleanup_recovery(active["id"])
+        self._cleanup_batch_temporaries()
         marker.unlink(missing_ok=True)
 
     def status(self, run_id: str | None = None) -> BatchImportRun:
@@ -325,8 +332,14 @@ class BatchImportRuns:
         llm: bool = True,
         threshold: float = 0.85,
         on_started: Callable[[BatchImportRun], None] | None = None,
+        on_committed: Callable[[BatchImportRun], None] | None = None,
         replaces: str | None = None,
     ) -> BatchImportRun:
+        """Execute one run; ``on_committed`` is the narrow crash-test seam.
+
+        That callback runs after commit evidence is durable but before terminal
+        status, allowing recovery of that otherwise impractical process-exit window.
+        """
         source = Path(csv_path).expanduser().resolve()
         # Validate before creating an attempt that can never execute.
         self.service._read_csv(str(source), column)
@@ -367,6 +380,8 @@ class BatchImportRuns:
                     temporary = marker.with_suffix(".tmp")
                     temporary.write_text(json.dumps(result), encoding="utf-8")
                     os.replace(temporary, marker)
+                    if on_committed:
+                        on_committed(active)
 
                 owned = getattr(_run_ownership, "ids", set())
                 _run_ownership.ids = {*owned, run_id}
@@ -389,6 +404,7 @@ class BatchImportRuns:
                 else:
                     status = "failed"
                 self._compensate(run_id)
+                marker.unlink(missing_ok=True)
                 terminal = self._terminal(run_id, status, error=str(error))
                 self._cleanup_recovery(run_id)
                 if status == "failed":
@@ -402,6 +418,14 @@ class BatchImportRuns:
         if previous["status"] not in ("failed", "interrupted"):
             raise ValueError("Only failed or interrupted Batch Import Runs can be retried")
         return self.run(csv_path, column, replaces=run_id, **kwargs)
+
+    def retry_background(
+        self, run_id: str, csv_path: str | Path, column: str, **kwargs,
+    ) -> BatchImportRun:
+        previous = self.status(run_id)
+        if previous["status"] not in ("failed", "interrupted"):
+            raise ValueError("Only failed or interrupted Batch Import Runs can be retried")
+        return self.start_background(csv_path, column, replaces=run_id, **kwargs)
 
     def start_background(self, csv_path: str | Path, column: str, **kwargs):
         ready = threading.Event()

@@ -5,6 +5,7 @@ from threading import Event
 from unittest.mock import MagicMock, patch
 import subprocess
 import sys
+import time
 import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
@@ -174,3 +175,243 @@ def test_status_recovers_run_after_owning_process_crashes(tmp_path: Path):
     assert MappingService(project).batch_import_status(recovered["id"])[
         "replacement_run_id"
     ] == retry["id"]
+
+
+def test_http_collection_status_and_explicit_retry(tmp_path: Path):
+    project = init_project(tmp_path / "project")
+    client = TestClient(create_app(resolve_project(project)))
+    assert client.get("/batch-import-runs").status_code == 404
+    batch = _csv(tmp_path / "records.csv", "o2 sensor")
+    failed = MappingService(project).run_batch_import(
+        batch, "name", semantic=False, llm=False,
+    )
+    # Make a retryable terminal attempt without reaching into persistence.
+    interrupted_program = (
+        "import os; from normflow.mapping_service import MappingService; "
+        f"MappingService({str(project)!r}).run_batch_import("
+        f"{str(batch)!r}, 'name', semantic=False, llm=False, "
+        "on_started=lambda run: os._exit(9))"
+    )
+    subprocess.run([sys.executable, "-c", interrupted_program], check=False)
+    interrupted = MappingService(project).batch_import_status()
+
+    latest = client.get("/batch-import-runs")
+    retried = client.post(
+        f"/batch-import-runs/{interrupted['id']}/retry?column=name&semantic=false&llm=false",
+        files={"file": ("retry.csv", batch.read_bytes(), "text/csv")},
+    )
+
+    assert failed["status"] == "succeeded"
+    assert latest.status_code == 200
+    assert latest.json()["id"] == interrupted["id"]
+    assert retried.status_code == 202
+    assert retried.json()["id"] != interrupted["id"]
+    assert retried.headers["location"] == f"/batch-import-runs/{retried.json()['id']}"
+    assert MappingService(project).batch_import_status(interrupted["id"])[
+        "replacement_run_id"
+    ] == retried.json()["id"]
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        retry_status = client.get(retried.headers["location"])
+        if retry_status.json()["status"] != "active":
+            break
+        time.sleep(0.01)
+    assert retry_status.json()["status"] == "succeeded"
+
+
+def test_all_http_project_writers_report_shared_active_run_conflict(tmp_path: Path):
+    project = init_project(tmp_path / "project")
+    seed = _csv(tmp_path / "seed.csv", "pending")
+    MappingService(project).run_batch_import(seed, "name", semantic=False, llm=False)
+    item_id = MappingService(project).list_review_items()[0]["id"]
+    retry_csv = _csv(tmp_path / "retry.csv", "retry")
+    crash = (
+        "import os; from normflow.mapping_service import MappingService; "
+        f"MappingService({str(project)!r}).run_batch_import("
+        f"{str(retry_csv)!r}, 'name', semantic=False, llm=False, "
+        "on_started=lambda run: os._exit(9))"
+    )
+    subprocess.run([sys.executable, "-c", crash], check=False)
+    retryable_id = MappingService(project).batch_import_status()["id"]
+    held = _csv(tmp_path / "held.csv", "held")
+    started, release = Event(), Event()
+
+    def hold(_run):
+        started.set()
+        assert release.wait(5)
+
+    with ThreadPoolExecutor() as executor:
+        running = executor.submit(
+            lambda: MappingService(project).run_batch_import(
+                held, "name", semantic=False, llm=False, on_started=hold,
+            )
+        )
+        assert started.wait(5)
+        client = TestClient(create_app(resolve_project(project)))
+        responses = [
+            client.post(
+                "/import/mappings?source_column=raw&target_column=clean",
+                files={"file": ("m.csv", b"raw,clean\nx,X\n", "text/csv")},
+            ),
+            client.post(f"/review-items/{item_id}/accept", json={"normalized_text": "P"}),
+            client.post("/review-items/bulk-accept", json={"review_item_ids": [item_id]}),
+            client.post("/index/build"),
+            client.post("/index/clear"),
+            client.post(
+                "/import/records?column=name&semantic=false&llm=false",
+                files={"file": ("b.csv", b"name\nx\n", "text/csv")},
+            ),
+            client.post(
+                f"/batch-import-runs/{retryable_id}/retry?column=name&semantic=false&llm=false",
+                files={"file": ("retry.csv", retry_csv.read_bytes(), "text/csv")},
+            ),
+        ]
+        active_id = MappingService(project).batch_import_status()["id"]
+        for response in responses:
+            assert response.status_code == 409
+            assert response.headers["location"] == f"/batch-import-runs/{active_id}"
+            assert response.json()["detail"]["active_run"]["id"] == active_id
+        release.set()
+        running.result(timeout=5)
+
+
+def test_separate_process_owns_lock_and_competing_writer_fails_fast(tmp_path: Path):
+    project = init_project(tmp_path / "project")
+    batch = _csv(tmp_path / "records.csv", "held")
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    program = f"""
+import time
+from pathlib import Path
+from normflow.mapping_service import MappingService
+ready, release = Path({str(ready)!r}), Path({str(release)!r})
+def hold(run):
+    ready.write_text(run['id'])
+    while not release.exists():
+        time.sleep(0.01)
+MappingService({str(project)!r}).run_batch_import(
+    {str(batch)!r}, 'name', semantic=False, llm=False, on_started=hold)
+"""
+    owner = subprocess.Popen([sys.executable, "-c", program])
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        mappings = tmp_path / "mappings.csv"
+        mappings.write_text("raw,clean\nx,X\n", encoding="utf-8")
+        started = time.monotonic()
+        with pytest.raises(ProjectBusyError):
+            MappingService(project).import_mappings(mappings, "raw", "clean")
+        assert time.monotonic() - started < 1
+    finally:
+        release.touch()
+        owner.wait(timeout=10)
+
+
+def test_http_observer_disconnect_does_not_stop_provider_backed_run(tmp_path: Path):
+    project = init_project(tmp_path / "project")
+    mappings = tmp_path / "mappings.csv"
+    mappings.write_text("raw,clean\noxygen,Oxygen\n", encoding="utf-8")
+    MappingService(project).import_mappings(mappings, "raw", "clean")
+    app_instance = create_app(resolve_project(project))
+    provider_started, release_provider = Event(), Event()
+    encoder = MagicMock()
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        [1.0, 0.0] if text == "oxygen" else [0.0, 1.0] for text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 2
+    provider = MagicMock()
+
+    def delayed(**_kwargs):
+        provider_started.set()
+        assert release_provider.wait(5)
+        return MagicMock(choices=[MagicMock(message=MagicMock(content="Oxygen"))])
+
+    provider.chat.completions.create.side_effect = delayed
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        patch("normflow.llm_matcher.build_client", return_value=provider),
+    ):
+        initiating = TestClient(app_instance)
+        accepted = initiating.post(
+            "/batch-import-runs?column=name&semantic=false",
+            files={"file": ("records.csv", b"name\no2\n", "text/csv")},
+        )
+        assert accepted.status_code == 202
+        assert provider_started.wait(5)
+        initiating.close()
+        release_provider.set()
+        observer = TestClient(app_instance)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = observer.get(accepted.headers["location"])
+            if status.json()["status"] != "active":
+                break
+            time.sleep(0.01)
+        assert status.json()["status"] == "succeeded"
+
+
+def test_committed_process_crash_is_reconciled_as_succeeded(tmp_path: Path):
+    project = init_project(tmp_path / "project")
+    batch = _csv(tmp_path / "records.csv", "committed")
+    program = (
+        "import os; from normflow.mapping_service import MappingService; "
+        f"MappingService({str(project)!r}).run_batch_import("
+        f"{str(batch)!r}, 'name', semantic=False, llm=False, "
+        "on_committed=lambda run: os._exit(9))"
+    )
+
+    crashed = subprocess.run([sys.executable, "-c", program,], check=False)
+    recovered = MappingService(project).batch_import_status()
+
+    assert crashed.returncode == 9
+    assert recovered["status"] == "succeeded"
+    assert recovered["result"]["review_items"] == 1
+    assert MappingService(project).list_review_items()[0]["raw_text"] == "committed"
+    assert (project / ".batches" / "current.csv").read_bytes() == batch.read_bytes()
+    assert not list((project / ".batches").glob(".previous-*.tmp"))
+
+
+def test_provider_failure_is_durable_and_preserves_project_and_retained_batch(
+    tmp_path: Path, monkeypatch,
+):
+    project = init_project(tmp_path / "project")
+    service = MappingService(project)
+    previous = _csv(tmp_path / "previous.csv", "preserved")
+    service.run_batch_import(previous, "name", semantic=False, llm=False)
+    mappings = tmp_path / "mappings.csv"
+    mappings.write_text("raw,clean\noxygen,Oxygen\n", encoding="utf-8")
+    service.import_mappings(mappings, "raw", "clean")
+    failed_csv = _csv(tmp_path / "failed.csv", "provider failure")
+    (project / ".env").write_text("OPENAI_API_KEY=test-key\n", encoding="utf-8")
+    monkeypatch.chdir(project)
+    encoder = MagicMock()
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        [1.0, 0.0] if text == "oxygen" else [0.0, 1.0] for text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 2
+    provider = MagicMock()
+    provider.chat.completions.create.side_effect = RuntimeError("provider unavailable")
+
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        patch("normflow.llm_matcher.build_client", return_value=provider),
+    ):
+        failed = CliRunner().invoke(
+            app, ["batch-import", str(failed_csv), "--column", "name"]
+        )
+
+    terminal = __import__("json").loads(failed.stdout)
+    observed = CliRunner().invoke(app, ["batch-import-status", terminal["id"]])
+    assert failed.exit_code == 1
+    assert failed.stderr.strip() == terminal["id"]
+    assert terminal["status"] == "failed"
+    assert "provider unavailable" in terminal["error"]
+    assert observed.exit_code == 0
+    assert __import__("json").loads(observed.stdout) == terminal
+    assert service.project_info()["mappings"] == 1
+    assert service.list_review_items() == [
+        {"id": 1, "raw_text": "preserved", "suggested_text": ""}
+    ]
+    assert (project / ".batches" / "current.csv").read_bytes() == previous.read_bytes()
+    assert not (project / ".batches" / "runs" / f"{terminal['id']}.csv").exists()

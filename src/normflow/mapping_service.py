@@ -843,3 +843,7 @@ class MappingService:
     def retry_batch_import(self, run_id, csv_path, column, **kwargs) -> BatchImportRun:
         """Explicitly retry a failed/interrupted run with resubmitted input."""
         return BatchImportRuns(self).retry(run_id, csv_path, column, **kwargs)
+
+    def start_batch_import_retry(self, run_id, csv_path, column, **kwargs) -> BatchImportRun:
+        """Start a server-owned explicit retry and return its active state."""
+        return BatchImportRuns(self).retry_background(run_id, csv_path, column, **kwargs)
