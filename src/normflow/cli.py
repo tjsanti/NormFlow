@@ -1,12 +1,10 @@
 """NormFlow CLI — Typer application."""
-from dotenv import load_dotenv
 from pathlib import Path
-
-load_dotenv()
 
 import typer
 
 from . import __version__
+from .llm_config import load_llm_config
 from .mapping_service import MappingService
 from .project import resolve_project
 from .project_service import init_project
@@ -64,6 +62,7 @@ def ui(
     ),
 ) -> None:
     """Launch the browser UI for the active Project."""
+    import os
     import socket
     import uvicorn
     import webbrowser
@@ -72,6 +71,7 @@ def ui(
 
     try:
         project = resolve_project(Path.cwd())
+        load_llm_config(project, os.environ)
     except ValueError as exc:
         print(f"Error: {exc}")
         raise typer.Exit(1) from None
