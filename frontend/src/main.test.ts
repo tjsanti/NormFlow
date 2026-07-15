@@ -235,7 +235,10 @@ describe("Mapping Import", () => {
 
     const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
     expect(submit.disabled).toBe(true);
-    expect(submit.textContent).toBe("Importing…");
+    expect(submit.textContent).toBe("Processing mappings.csv…");
+    expect([...document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(
+      "#batch-import-form input, #batch-import-form select, #batch-import-form button",
+    )].every((control) => control.disabled)).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(3);
     const [url, request] = fetchMock.mock.calls[2] as [string, RequestInit];
     expect(url).toBe("/import/mappings?source_column=raw_text&target_column=normalized_text");
@@ -244,7 +247,7 @@ describe("Mapping Import", () => {
 
     resolveImport(okJson({ imported: 2, skipped: 1 }));
     await vi.waitFor(() => expect(submit.disabled).toBe(false));
-    expect(document.querySelector("[role=status]")?.textContent)
+    expect(document.querySelector("#notices [role=status]")?.textContent)
       .toContain("Imported 2 Mappings; skipped 1");
     expect(document.querySelector("header")?.textContent).toContain("14 Mappings");
     expect(source.disabled).toBe(true);
@@ -306,6 +309,219 @@ describe("Mapping Import", () => {
     await vi.waitFor(() => expect(document.querySelector("[role=alert]")?.textContent)
       .toContain("empty"));
     expect(source.disabled).toBe(true);
+  });
+});
+
+describe("Batch Import", () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="app"></div>';
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("is the second Import workflow and stays available without Mappings", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(okJson({
+        ...projectInfo,
+        mappings: 0,
+        review_items: 0,
+      }))
+      .mockResolvedValueOnce(okJson([])));
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#batch-import-form")).not.toBeNull());
+
+    expect([...document.querySelectorAll("#import-panel h2")]
+      .map((heading) => heading.textContent)).toEqual(["Mapping Import", "Batch Import"]);
+    expect(document.querySelector<HTMLInputElement>("#batch-file")?.disabled).toBe(false);
+    expect(document.querySelector("#batch-import-form")?.textContent).toContain("no Mappings");
+    expect(document.querySelector("#batch-import-form")?.textContent).toContain("still import");
+    expect(document.querySelector("#batch-import-form")?.textContent).toContain("replaces");
+    expect(document.querySelector('#batch-import-form input[name="threshold"]')).toBeNull();
+    expect(document.querySelector('#batch-import-form input[name="semantic"]')).toBeNull();
+  });
+
+  test("loads source headers and auto-selects only an exact raw_text header", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([])));
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#batch-file")).not.toBeNull());
+    const fileInput = document.querySelector<HTMLInputElement>("#batch-file")!;
+    const source = document.querySelector<HTMLSelectElement>("#batch-source-column")!;
+    chooseFile(fileInput, "id,raw_text,notes\n1,O2 sensor,urgent\n", "records.csv");
+
+    await vi.waitFor(() => expect(source.options).toHaveLength(4));
+    expect([...source.options].map((option) => option.textContent)).toEqual([
+      "Choose a header", "id", "raw_text", "notes",
+    ]);
+    expect(source.value).toBe("raw_text");
+
+    chooseFile(fileInput, "id,Raw Text,description\n1,O2 sensor,urgent\n", "other.csv");
+    await vi.waitFor(() => expect(source.options[2]?.textContent).toBe("Raw Text"));
+    expect(source.value).toBe("");
+    expect(source.disabled).toBe(false);
+  });
+
+  test("processes one Batch filename with the full fallback API while both forms are locked", async () => {
+    let resolveImport!: (response: Response) => void;
+    const importResponse = new Promise<Response>((resolve) => { resolveImport = resolve; });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([]))
+      .mockReturnValueOnce(importResponse);
+    vi.stubGlobal("fetch", fetchMock);
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#batch-file")).not.toBeNull());
+    const file = chooseFile(
+      document.querySelector<HTMLInputElement>("#batch-file")!,
+      "raw_text\nO2 sensor\n",
+      "healthcare.csv",
+    );
+    const source = document.querySelector<HTMLSelectElement>("#batch-source-column")!;
+    await vi.waitFor(() => expect(source.value).toBe("raw_text"));
+    const form = document.querySelector<HTMLFormElement>("#batch-import-form")!;
+    form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [url, request] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(url).toBe("/import/records?column=raw_text");
+    expect(request.method).toBe("POST");
+    expect((request.body as FormData).get("file")).toBe(file);
+    expect(form.querySelector<HTMLButtonElement>('button[type="submit"]')?.textContent)
+      .toBe("Processing healthcare.csv…");
+    expect([...document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(
+      "#mapping-import-form input, #mapping-import-form select, #mapping-import-form button, "
+      + "#batch-import-form input, #batch-import-form select, #batch-import-form button",
+    )].every((control) => control.disabled)).toBe(true);
+    expect([...document.querySelectorAll("button")]
+      .some((button) => button.textContent?.includes("Cancel"))).toBe(false);
+
+    resolveImport(okJson({ auto_committed: 0, review_items: 0, skipped: 0 }));
+    await vi.waitFor(() => expect(
+      form.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled,
+    ).toBe(false));
+  });
+
+  test("reports Batch counts, resets, refreshes, and opens newly pending Review Items", async () => {
+    const warning = "The semantic index will refresh before the next semantic Suggestion.";
+    const pending = [{ id: 7, raw_text: "O2 sensr", suggested_text: "Oxygen Sensor" }];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([]))
+      .mockResolvedValueOnce(okJson({
+        auto_committed: 2,
+        review_items: 1,
+        skipped: 3,
+        semantic_index_status: "refresh_required",
+        semantic_index_warning: warning,
+      }))
+      .mockResolvedValueOnce(okJson({
+        ...projectInfo,
+        mappings: 14,
+        review_items: 1,
+        semantic_index_status: "refresh_required",
+        semantic_index_warning: warning,
+      }))
+      .mockResolvedValueOnce(okJson(pending));
+    vi.stubGlobal("fetch", fetchMock);
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#batch-file")).not.toBeNull());
+    chooseFile(
+      document.querySelector<HTMLInputElement>("#batch-file")!,
+      "raw_text\nO2 sensor\nO2 sensr\n",
+      "healthcare.csv",
+    );
+    const source = document.querySelector<HTMLSelectElement>("#batch-source-column")!;
+    await vi.waitFor(() => expect(source.value).toBe("raw_text"));
+    document.querySelector<HTMLFormElement>("#batch-import-form")!
+      .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(
+      document.querySelector("#review-tab")?.getAttribute("aria-selected"),
+    ).toBe("true"));
+    expect(document.querySelector("#notices [role=status]")?.textContent)
+      .toContain("2 auto-committed, 1 Review Item, 3 skipped");
+    expect(document.querySelector("header")?.textContent).toContain("14 Mappings");
+    expect(document.querySelector("#review-queue")?.textContent).toContain("O2 sensr");
+    expect(source.disabled).toBe(true);
+    expect(source.value).toBe("");
+    expect(document.querySelector("#semantic-index-status")?.textContent).toContain(warning);
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/project/info");
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/review-items");
+  });
+
+  test("stays on Import after a successful Batch creates no pending Review Items", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([]))
+      .mockResolvedValueOnce(okJson({
+        auto_committed: 2,
+        review_items: 0,
+        skipped: 1,
+        semantic_index_status: "refresh_required",
+        semantic_index_warning: null,
+      }))
+      .mockResolvedValueOnce(okJson({
+        ...projectInfo,
+        mappings: 14,
+        review_items: 0,
+      }))
+      .mockResolvedValueOnce(okJson([]));
+    vi.stubGlobal("fetch", fetchMock);
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#batch-file")).not.toBeNull());
+    chooseFile(
+      document.querySelector<HTMLInputElement>("#batch-file")!,
+      "raw_text\nO2 sensor\n",
+      "exact-records.csv",
+    );
+    const source = document.querySelector<HTMLSelectElement>("#batch-source-column")!;
+    await vi.waitFor(() => expect(source.value).toBe("raw_text"));
+    document.querySelector<HTMLFormElement>("#batch-import-form")!
+      .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    expect(document.querySelector("#import-tab")?.getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector("#notices [role=status]")?.textContent)
+      .toContain("2 auto-committed, 0 Review Items, 1 skipped");
+  });
+
+  test("keeps the failed Batch selections on Import and shows the actionable API detail", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
+      .mockResolvedValueOnce(okJson([]))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        detail: "Check the configured LLM endpoint and network connection; no changes were made.",
+      }), { status: 502, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#batch-file")).not.toBeNull());
+    const fileInput = document.querySelector<HTMLInputElement>("#batch-file")!;
+    const file = chooseFile(fileInput, "name\nO2 sensor\n", "retry.csv");
+    const source = document.querySelector<HTMLSelectElement>("#batch-source-column")!;
+    await vi.waitFor(() => expect(source.disabled).toBe(false));
+    source.value = "name";
+    document.querySelector<HTMLFormElement>("#batch-import-form")!
+      .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(document.querySelector("#notices [role=alert]")).not.toBeNull());
+    expect(document.querySelector("#notices [role=alert]")?.textContent)
+      .toContain("LLM endpoint and network connection");
+    expect(fileInput.files?.[0]).toBe(file);
+    expect(source.value).toBe("name");
+    expect(source.disabled).toBe(false);
+    expect(document.querySelector("#import-tab")?.getAttribute("aria-selected")).toBe("true");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
 
