@@ -32,3 +32,6 @@ _Avoid_: Seed Import
 **Batch Import**:
 The CSV workflow that processes each unique raw text through the complete fallback chain—exact match, semantic match, then an LLM-generated Suggestion—and is valid even with an empty Mapping library; exact or semantic matches auto-commit as Mappings, while LLM Suggestions and no-matches become pending Review Items. A failed Batch Import commits nothing, while a successful one becomes the Project's sole retained Batch CSV for export with a normalized text column.
 _Avoid_: Ingestion, Pipeline, ETL
+
+**Batch Import Run**: One identified attempt to perform a Batch Import for a Project, tracked from creation through its terminal result.
+_Avoid_: Job, Task
