@@ -7,19 +7,19 @@ model imports are internal.
 
 import csv
 import io
+import json
 import os
 import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict, Unpack
+from typing import Callable, TypedDict, Unpack
 
 from .batch_import import (
     BatchImportRun,
     BatchImportOptions,
     BatchImportResult,
-    BatchImportRoutingOptions,
     BatchImportRuns,
     ProjectBusyError,
     coordinated_writer,
@@ -95,6 +95,13 @@ class ReviewItemInfo(TypedDict):
     suggested_text: str
 
 
+class _BatchImportRecoveryState(TypedDict):
+    mapping_ids: list[int]
+    review_item_ids: list[int]
+    revision: int
+    retained: bool
+
+
 # ---------------------------------------------------------------------------
 # Internal models
 # ---------------------------------------------------------------------------
@@ -166,6 +173,8 @@ class MappingService:
             return
 
         with project_writer(self._path):
+            if "suggestion" not in inspect(self._engine).get_table_names():
+                return
             with self._engine.begin() as connection:
                 _ReviewItem.__table__.create(connection, checkfirst=True)
                 connection.execute(text(
@@ -555,6 +564,63 @@ class MappingService:
                 )
             session.commit()
 
+    def _validate_batch_import_input(self, csv_path: str, column: str) -> None:
+        self._read_csv(csv_path, column)
+
+    def _snapshot_batch_import_state(self, destination: Path) -> None:
+        """Persist an opaque snapshot owned by the Mapping and index modules."""
+        destination.mkdir(parents=True, exist_ok=False)
+        with self._session() as session:
+            revision = session.get(_MappingRevision, 1)
+            state: _BatchImportRecoveryState = {
+                "mapping_ids": list(session.exec(select(_ExampleMapping.id)).all()),
+                "review_item_ids": list(session.exec(select(_ReviewItem.id)).all()),
+                "revision": revision.revision if revision else 0,
+                "retained": (self._batch_csv_dir() / "current.csv").exists(),
+            }
+        (destination / "mapping.json").write_text(
+            json.dumps(state), encoding="utf-8"
+        )
+        retained = self._batch_csv_dir() / "current.csv"
+        if retained.exists():
+            shutil.copy2(retained, destination / "retained.csv")
+        SemanticIndex(str(self._path)).snapshot(destination / "semantic")
+
+    def _restore_batch_import_state(self, snapshot: Path) -> None:
+        """Restore a snapshot without exposing Mapping or index persistence."""
+        state: _BatchImportRecoveryState = json.loads(
+            (snapshot / "mapping.json").read_text(encoding="utf-8")
+        )
+        with self._session() as session:
+            current_mapping_ids = set(
+                session.exec(select(_ExampleMapping.id)).all()
+            )
+            current_review_item_ids = set(
+                session.exec(select(_ReviewItem.id)).all()
+            )
+        self._compensate_batch_changes(
+            sorted(current_mapping_ids - set(state["mapping_ids"])),
+            sorted(current_review_item_ids - set(state["review_item_ids"])),
+            state["revision"],
+        )
+        retained = self._batch_csv_dir() / "current.csv"
+        saved_retained = snapshot / "retained.csv"
+        if state["retained"] and saved_retained.exists():
+            shutil.copy2(saved_retained, retained)
+        else:
+            retained.unlink(missing_ok=True)
+        SemanticIndex(str(self._path)).restore(snapshot / "semantic")
+
+    def _batch_import_runs(self) -> BatchImportRuns:
+        return BatchImportRuns(
+            project=self._path,
+            database=self._db_path,
+            validate_input=self._validate_batch_import_input,
+            execute=self.import_records_for_review,
+            snapshot_state=self._snapshot_batch_import_state,
+            restore_state=self._restore_batch_import_state,
+        )
+
     @coordinated_writer
     def import_records_for_review(
         self,
@@ -564,7 +630,7 @@ class MappingService:
         semantic: bool = True,
         llm: bool = True,
         threshold: float = 0.85,
-        _on_published=None,
+        _on_published: Callable[[BatchImportResult], None] | None = None,
     ) -> ImportRecordsResult:
         if semantic or llm:
             self._refresh_semantic_index_if_needed()
@@ -863,24 +929,23 @@ class MappingService:
         **kwargs: Unpack[BatchImportOptions],
     ) -> BatchImportRun:
         """Run a Batch Import in the foreground and return its durable terminal state."""
-        return BatchImportRuns(self).run(csv_path, column, **kwargs)
+        return self._batch_import_runs().run(csv_path, column, **kwargs)
 
     def start_batch_import(
         self,
         csv_path: str | Path,
         column: str,
-        **kwargs: Unpack[BatchImportRoutingOptions],
     ) -> BatchImportRun:
         """Start a server-owned Batch Import and return its durable active state."""
-        return BatchImportRuns(self).start_background(csv_path, column, **kwargs)
+        return self._batch_import_runs().start_background(csv_path, column)
 
     def batch_import_status(self, run_id: str | None = None) -> BatchImportRun:
         """Observe an identified run, or the active/most recent run."""
-        return BatchImportRuns(self).status(run_id)
+        return self._batch_import_runs().status(run_id)
 
     def active_batch_import_run(self) -> BatchImportRun | None:
         """Return the active run only, without falling back to the latest run."""
-        return BatchImportRuns(self).active()
+        return self._batch_import_runs().active()
 
     def retry_batch_import(
         self,
@@ -890,14 +955,13 @@ class MappingService:
         **kwargs: Unpack[BatchImportOptions],
     ) -> BatchImportRun:
         """Explicitly retry a failed/interrupted run with resubmitted input."""
-        return BatchImportRuns(self).retry(run_id, csv_path, column, **kwargs)
+        return self._batch_import_runs().retry(run_id, csv_path, column, **kwargs)
 
     def start_batch_import_retry(
         self,
         run_id: str,
         csv_path: str | Path,
         column: str,
-        **kwargs: Unpack[BatchImportRoutingOptions],
     ) -> BatchImportRun:
         """Start a server-owned explicit retry and return its active state."""
-        return BatchImportRuns(self).retry_background(run_id, csv_path, column, **kwargs)
+        return self._batch_import_runs().retry_background(run_id, csv_path, column)

@@ -143,8 +143,10 @@ def test_import_records_reports_actionable_csv_validation_errors(
         files={"file": ("records.csv", contents, "text/csv")},
     )
 
-    assert response.status_code == 400
-    assert response.json() == {"detail": detail}
+    assert response.status_code == 202
+    assert response.headers["location"].endswith(response.json()["id"])
+    assert response.json()["status"] == "failed"
+    assert response.json()["error"] == detail
 
 
 def test_bound_application_retains_mapping_import_export_and_index_http_contract():
@@ -268,10 +270,11 @@ def test_batch_import_reports_the_row_and_selected_column_for_a_short_row(
         files={"file": ("records.csv", b"id,name\n1\n", "text/csv")},
     )
 
-    assert response.status_code == 400
-    assert response.json() == {
-        "detail": "CSV row 2 does not contain a value for selected column 'name'"
-    }
+    assert response.status_code == 202
+    assert response.json()["status"] == "failed"
+    assert response.json()["error"] == (
+        "CSV row 2 does not contain a value for selected column 'name'"
+    )
 
 
 def test_mapping_import_rejects_non_utf8_csv_with_a_useful_error(tmp_path: Path):

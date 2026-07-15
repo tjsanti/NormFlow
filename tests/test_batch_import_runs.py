@@ -18,6 +18,25 @@ from normflow.project import resolve_project
 from normflow.project_service import init_project
 
 
+@pytest.fixture(autouse=True)
+def _canonical_batch_providers():
+    """Keep canonical routing deterministic for coordination-focused tests."""
+    encoder = MagicMock()
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        [1.0, 0.0] for _text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 2
+    provider = MagicMock()
+    provider.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="Normalized"))]
+    )
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        patch("normflow.llm_matcher.build_client", return_value=provider),
+    ):
+        yield
+
+
 def _csv(path: Path, value: str) -> Path:
     with path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=["name"])
@@ -34,8 +53,6 @@ def test_batch_import_run_is_durable_from_start_through_terminal_status(tmp_path
     terminal = service.run_batch_import(
         _csv(tmp_path / "records.csv", "o2 sensor"),
         "name",
-        semantic=False,
-        llm=False,
         on_started=observed.append,
     )
 
@@ -61,8 +78,7 @@ def test_independent_service_writer_fails_fast_while_batch_run_owns_project(tmp_
     with ThreadPoolExecutor() as executor:
         future = executor.submit(
             lambda: MappingService(project).run_batch_import(
-                batch, "name", semantic=False, llm=False,
-                on_started=hold_after_durable_start,
+                batch, "name", on_started=hold_after_durable_start,
             )
         )
         assert run_started.wait(5)
@@ -90,16 +106,58 @@ def test_competing_batch_fails_before_validating_its_input(tmp_path: Path):
     with ThreadPoolExecutor() as executor:
         running = executor.submit(
             lambda: MappingService(project).run_batch_import(
-                held_batch, "name", semantic=False, llm=False, on_started=hold,
+                held_batch, "name", on_started=hold,
             )
         )
         assert run_started.wait(5)
         with pytest.raises(ProjectBusyError):
             MappingService(project).run_batch_import(
-                malformed_competitor, "name", semantic=False, llm=False,
+                malformed_competitor, "name",
             )
         release_run.set()
         running.result(timeout=5)
+
+
+def test_competing_http_start_locates_run_during_owner_input_setup(tmp_path: Path):
+    """The durable active row precedes validation, staging, and snapshots."""
+    project = init_project(tmp_path / "project")
+    owner = MappingService(project)
+    owner_csv = _csv(tmp_path / "owner.csv", "owner")
+    validation_started, release_validation = Event(), Event()
+    validate = owner._validate_batch_import_input
+
+    def hold_validation(csv_path: str, column: str) -> None:
+        validation_started.set()
+        assert release_validation.wait(5)
+        validate(csv_path, column)
+
+    with (
+        patch.object(owner, "_validate_batch_import_input", side_effect=hold_validation),
+        ThreadPoolExecutor() as executor,
+    ):
+        running = executor.submit(owner.run_batch_import, owner_csv, "name")
+        assert validation_started.wait(5)
+        response = TestClient(create_app(resolve_project(project))).post(
+            "/batch-import-runs?column=name",
+            files={"file": ("competitor.csv", b"name\ncompetitor\n", "text/csv")},
+        )
+        active = MappingService(project).active_batch_import_run()
+        assert response.status_code == 409
+        assert active is not None
+        assert response.headers["location"] == f"/batch-import-runs/{active['id']}"
+        release_validation.set()
+        running.result(timeout=5)
+
+
+def test_shared_run_service_does_not_expose_noncanonical_routing(tmp_path: Path):
+    project = init_project(tmp_path / "project")
+    batch = _csv(tmp_path / "records.csv", "value")
+
+    with pytest.raises(TypeError, match="semantic"):
+        MappingService(project).run_batch_import(
+            batch, "name", semantic=False,  # type: ignore[call-arg]
+        )
+    assert MappingService(project).active_batch_import_run() is None
 
 
 def test_cli_prints_run_id_immediately_and_terminal_run_json(tmp_path: Path, monkeypatch):
@@ -136,7 +194,7 @@ def test_http_start_returns_durable_location_and_status(tmp_path: Path):
     client = TestClient(create_app(resolve_project(project)))
 
     accepted = client.post(
-        "/batch-import-runs?column=name&semantic=false&llm=false",
+        "/batch-import-runs?column=name",
         files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
     )
 
@@ -187,12 +245,12 @@ def test_http_competing_start_returns_active_run_location(tmp_path: Path):
     with ThreadPoolExecutor() as executor:
         running = executor.submit(
             lambda: MappingService(project).run_batch_import(
-                batch, "name", semantic=False, llm=False, on_started=hold,
+                batch, "name", on_started=hold,
             )
         )
         assert started.wait(5)
         response = TestClient(create_app(resolve_project(project))).post(
-            "/batch-import-runs?column=name&semantic=false&llm=false",
+            "/batch-import-runs?column=name",
             files={"file": ("second.csv", b"name\nsecond\n", "text/csv")},
         )
         assert response.status_code == 409
@@ -207,7 +265,7 @@ def test_status_recovers_run_after_owning_process_crashes(tmp_path: Path):
     program = (
         "import os; from normflow.mapping_service import MappingService; "
         f"MappingService({str(project)!r}).run_batch_import("
-        f"{str(batch)!r}, 'name', semantic=False, llm=False, "
+        f"{str(batch)!r}, 'name', "
         "on_started=lambda run: os._exit(9))"
     )
 
@@ -221,7 +279,7 @@ def test_status_recovers_run_after_owning_process_crashes(tmp_path: Path):
     assert recovered["status"] == "interrupted"
     assert MappingService(project).list_review_items() == []
     retry = MappingService(project).retry_batch_import(
-        recovered["id"], batch, "name", semantic=False, llm=False,
+        recovered["id"], batch, "name",
     )
     assert retry["id"] != recovered["id"]
     assert retry["status"] == "succeeded"
@@ -236,13 +294,13 @@ def test_http_collection_status_and_explicit_retry(tmp_path: Path):
     assert client.get("/batch-import-runs").status_code == 404
     batch = _csv(tmp_path / "records.csv", "o2 sensor")
     failed = MappingService(project).run_batch_import(
-        batch, "name", semantic=False, llm=False,
+        batch, "name",
     )
     # Make a retryable terminal attempt without reaching into persistence.
     interrupted_program = (
         "import os; from normflow.mapping_service import MappingService; "
         f"MappingService({str(project)!r}).run_batch_import("
-        f"{str(batch)!r}, 'name', semantic=False, llm=False, "
+        f"{str(batch)!r}, 'name', "
         "on_started=lambda run: os._exit(9))"
     )
     subprocess.run([sys.executable, "-c", interrupted_program], check=False)
@@ -250,7 +308,7 @@ def test_http_collection_status_and_explicit_retry(tmp_path: Path):
 
     latest = client.get("/batch-import-runs")
     retried = client.post(
-        f"/batch-import-runs/{interrupted['id']}/retry?column=name&semantic=false&llm=false",
+        f"/batch-import-runs/{interrupted['id']}/retry?column=name",
         files={"file": ("retry.csv", batch.read_bytes(), "text/csv")},
     )
 
@@ -275,13 +333,13 @@ def test_http_collection_status_and_explicit_retry(tmp_path: Path):
 def test_all_http_project_writers_report_shared_active_run_conflict(tmp_path: Path):
     project = init_project(tmp_path / "project")
     seed = _csv(tmp_path / "seed.csv", "pending")
-    MappingService(project).run_batch_import(seed, "name", semantic=False, llm=False)
+    MappingService(project).run_batch_import(seed, "name")
     item_id = MappingService(project).list_review_items()[0]["id"]
     retry_csv = _csv(tmp_path / "retry.csv", "retry")
     crash = (
         "import os; from normflow.mapping_service import MappingService; "
         f"MappingService({str(project)!r}).run_batch_import("
-        f"{str(retry_csv)!r}, 'name', semantic=False, llm=False, "
+        f"{str(retry_csv)!r}, 'name', "
         "on_started=lambda run: os._exit(9))"
     )
     subprocess.run([sys.executable, "-c", crash], check=False)
@@ -296,7 +354,7 @@ def test_all_http_project_writers_report_shared_active_run_conflict(tmp_path: Pa
     with ThreadPoolExecutor() as executor:
         running = executor.submit(
             lambda: MappingService(project).run_batch_import(
-                held, "name", semantic=False, llm=False, on_started=hold,
+                held, "name", on_started=hold,
             )
         )
         assert started.wait(5)
@@ -315,7 +373,7 @@ def test_all_http_project_writers_report_shared_active_run_conflict(tmp_path: Pa
                 files={"file": ("b.csv", b"name\nx\n", "text/csv")},
             ),
             client.post(
-                f"/batch-import-runs/{retryable_id}/retry?column=name&semantic=false&llm=false",
+                f"/batch-import-runs/{retryable_id}/retry?column=name",
                 files={"file": ("retry.csv", retry_csv.read_bytes(), "text/csv")},
             ),
         ]
@@ -342,7 +400,7 @@ def hold(run):
     while not release.exists():
         time.sleep(0.01)
 MappingService({str(project)!r}).run_batch_import(
-    {str(batch)!r}, 'name', semantic=False, llm=False, on_started=hold)
+    {str(batch)!r}, 'name', on_started=hold)
 """
     owner = subprocess.Popen([sys.executable, "-c", program])
     try:
@@ -387,7 +445,7 @@ def test_http_observer_disconnect_does_not_stop_provider_backed_run(tmp_path: Pa
     ):
         initiating = TestClient(app_instance)
         accepted = initiating.post(
-            "/batch-import-runs?column=name&semantic=false",
+            "/batch-import-runs?column=name",
             files={"file": ("records.csv", b"name\no2\n", "text/csv")},
         )
         assert accepted.status_code == 202
@@ -410,7 +468,7 @@ def test_committed_process_crash_is_reconciled_as_succeeded(tmp_path: Path):
     program = (
         "import os; from normflow.mapping_service import MappingService; "
         f"MappingService({str(project)!r}).run_batch_import("
-        f"{str(batch)!r}, 'name', semantic=False, llm=False, "
+        f"{str(batch)!r}, 'name', "
         "on_committed=lambda run: os._exit(9))"
     )
 
@@ -431,7 +489,7 @@ def test_provider_failure_is_durable_and_preserves_project_and_retained_batch(
     project = init_project(tmp_path / "project")
     service = MappingService(project)
     previous = _csv(tmp_path / "previous.csv", "preserved")
-    service.run_batch_import(previous, "name", semantic=False, llm=False)
+    service.run_batch_import(previous, "name")
     mappings = tmp_path / "mappings.csv"
     mappings.write_text("raw,clean\noxygen,Oxygen\n", encoding="utf-8")
     service.import_mappings(mappings, "raw", "clean")
@@ -509,7 +567,7 @@ def test_http_conflict_does_not_claim_historical_run_for_non_batch_writer(
     project = init_project(tmp_path / "project")
     batch = _csv(tmp_path / "records.csv", "historical")
     historical = MappingService(project).run_batch_import(
-        batch, "name", semantic=False, llm=False,
+        batch, "name",
     )
     mappings = tmp_path / "mappings.csv"
     mappings.write_text("raw,clean\noxygen,Oxygen\n", encoding="utf-8")

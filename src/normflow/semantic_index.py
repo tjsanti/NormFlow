@@ -203,6 +203,35 @@ class SemanticIndex:
         self._refresh_required_path.unlink(missing_ok=True)
         self._refresh_failed_path.unlink(missing_ok=True)
 
+    def snapshot(self, destination: Path) -> None:
+        """Copy the complete persisted index state into an opaque snapshot."""
+        destination.mkdir(parents=True, exist_ok=False)
+        for name, source in (
+            ("index", self._index_dir),
+            ("refresh_required", self._refresh_required_path),
+            ("refresh_failed", self._refresh_failed_path),
+        ):
+            target = destination / name
+            if source.is_dir():
+                shutil.copytree(source, target)
+            elif source.exists():
+                shutil.copy2(source, target)
+
+    def restore(self, snapshot: Path) -> None:
+        """Replace the persisted index state from an opaque snapshot."""
+        self.clear()
+        for name, destination in (
+            ("index", self._index_dir),
+            ("refresh_required", self._refresh_required_path),
+            ("refresh_failed", self._refresh_failed_path),
+        ):
+            source = snapshot / name
+            if source.is_dir():
+                shutil.copytree(source, destination)
+            elif source.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+
     # ------------------------------------------------------------------
     # Internal: persistence
     # ------------------------------------------------------------------
