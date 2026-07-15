@@ -29,7 +29,15 @@ class ProjectCliRunner(CliRunner):
     """Invoke Project-dependent commands from the initialized Project root."""
 
     def invoke(self, cli, args=None, **kwargs):
-        project_commands = {"import", "export", "suggest", "suggest-batch", "review", "index"}
+        project_commands = {
+            "import",
+            "export",
+            "export-batch",
+            "suggest",
+            "suggest-batch",
+            "review",
+            "index",
+        }
         if (
             args
             and args[0] in project_commands
@@ -615,6 +623,92 @@ def test_import_export_round_trip():
         )
         assert result2.exit_code == 0
         assert "0 new" in result2.stdout
+
+
+def test_export_batch_writes_retained_rows_with_normalized_values():
+    """`normflow export-batch` exports the retained Batch rather than Mappings."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_path = Path(tmpdir) / "proj"
+        batch_csv = project_path / "batch.csv"
+        output_csv = project_path / "normalized.csv"
+
+        init_project(str(project_path))
+        _write_csv(batch_csv, "id,name", "1,United States", "2,Canada")
+        service = MappingService(str(project_path))
+        service.import_records_for_review(
+            str(batch_csv), "name", semantic=False, llm=False,
+        )
+        united_states = next(
+            item for item in service.list_review_items()
+            if item["raw_text"] == "United States"
+        )
+        service.accept_review_item(united_states["id"], "US")
+
+        result = runner.invoke(
+            app,
+            ["export-batch", str(output_csv), "--source-column", "name"],
+        )
+
+        assert result.exit_code == 0
+        assert result.stdout == f"Exported normalized Batch CSV to {output_csv}\n"
+        assert output_csv.read_text(encoding="utf-8") == (
+            "id,name,normalized_text\n"
+            "1,United States,US\n"
+            "2,Canada,\n"
+        )
+
+
+def test_export_batch_uses_selected_source_and_output_columns():
+    """Batch export preserves retained columns and uses the selected output name."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_path = Path(tmpdir) / "proj"
+        batch_csv = project_path / "batch.csv"
+        output_csv = project_path / "normalized.csv"
+
+        init_project(str(project_path))
+        _write_csv(batch_csv, "id,label,note", "1,Canada,", "2,Mexico,south")
+        service = MappingService(str(project_path))
+        service.import_records_for_review(
+            str(batch_csv), "label", semantic=False, llm=False,
+        )
+        canada = next(
+            item for item in service.list_review_items()
+            if item["raw_text"] == "Canada"
+        )
+        service.accept_review_item(canada["id"], "CA")
+
+        result = runner.invoke(
+            app,
+            [
+                "export-batch",
+                str(output_csv),
+                "--source-column",
+                "label",
+                "--output-column",
+                "clean_label",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert output_csv.read_text(encoding="utf-8") == (
+            "id,label,note,clean_label\n"
+            "1,Canada,,CA\n"
+            "2,Mexico,south,\n"
+        )
+
+
+def test_export_batch_without_retained_batch_fails_with_next_step():
+    """Batch export reports how to create the missing retained Batch."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_path = Path(tmpdir) / "proj"
+        output_csv = project_path / "normalized.csv"
+        init_project(str(project_path))
+
+        result = runner.invoke(app, ["export-batch", str(output_csv)])
+
+        assert result.exit_code == 1
+        assert result.stdout == "Error: No batch CSV found. Import records first.\n"
+        assert not output_csv.exists()
 
 
 # ---- suggest tests ----
