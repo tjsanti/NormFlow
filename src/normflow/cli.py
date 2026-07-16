@@ -1,18 +1,15 @@
 """NormFlow CLI — Typer application."""
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
 from . import __version__
-from .batch_import import (
-    BatchImportExecutionError,
-    BatchImportRunNotFoundError,
-    ProjectBusyError,
-)
-from .llm_config import load_llm_config
-from .mapping_service import BatchImportError, MappingService
-from .project import resolve_project
-from .project_service import init_project
+
+if TYPE_CHECKING:
+    from .mapping_service import MappingService
 
 app = typer.Typer(
     name="normflow",
@@ -22,6 +19,9 @@ app = typer.Typer(
 
 def _project_service() -> MappingService:
     """Return the service for the Project selected by the process directory."""
+    from .mapping_service import MappingService
+    from .project import resolve_project
+
     project = resolve_project(Path.cwd())
     return MappingService(str(project.root))
 
@@ -73,6 +73,8 @@ def ui(
     import webbrowser
 
     from .api import create_app
+    from .llm_config import load_llm_config
+    from .project import resolve_project
 
     try:
         project = resolve_project(Path.cwd())
@@ -101,6 +103,8 @@ def ui(
 @app.command()
 def init() -> None:
     """Initialize the current directory as a NormFlow Project."""
+    from .project_service import init_project
+
     try:
         project_root = init_project(Path.cwd())
     except (ValueError, OSError) as exc:
@@ -112,6 +116,9 @@ def init() -> None:
 @app.command()
 def info() -> None:
     """Show information about the active NormFlow Project."""
+    from .mapping_service import MappingService
+    from .project import resolve_project
+
     try:
         project = resolve_project(Path.cwd())
         statistics = MappingService(str(project.root)).project_info()
@@ -156,6 +163,11 @@ def batch_import_cmd(
     import json
     import os
 
+    from .batch_import import BatchImportExecutionError, ProjectBusyError
+    from .llm_config import load_llm_config
+    from .mapping_service import BatchImportError, MappingService
+    from .project import resolve_project
+
     try:
         project = resolve_project(Path.cwd())
         load_llm_config(project, os.environ)
@@ -185,6 +197,8 @@ def batch_import_status_cmd(
 ) -> None:
     """Print durable Batch Import Run status as JSON."""
     import json
+    from .batch_import import BatchImportRunNotFoundError
+
     try:
         print(json.dumps(_project_service().batch_import_status(run_id), indent=2))
     except (BatchImportRunNotFoundError, ValueError) as error:
@@ -201,6 +215,16 @@ def batch_import_retry_cmd(
     """Explicitly retry a failed or interrupted Batch Import Run."""
     import json
     import os
+
+    from .batch_import import (
+        BatchImportExecutionError,
+        BatchImportRunNotFoundError,
+        ProjectBusyError,
+    )
+    from .llm_config import load_llm_config
+    from .mapping_service import MappingService
+    from .project import resolve_project
+
     try:
         project = resolve_project(Path.cwd())
         load_llm_config(project, os.environ)
