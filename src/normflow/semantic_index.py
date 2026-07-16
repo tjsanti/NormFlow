@@ -234,6 +234,12 @@ class SemanticIndex:
             saved_generation = saved_index
 
         self._generations_dir.mkdir(parents=True, exist_ok=True)
+        previous_generation = self._current_generation()
+        existing_generations = {
+            path.name
+            for path in self._generations_dir.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+        }
         generation = uuid4().hex
         temporary_dir = Path(tempfile.mkdtemp(
             prefix=".restoring-", dir=self._generations_dir,
@@ -262,14 +268,16 @@ class SemanticIndex:
                 else:
                     destination.unlink(missing_ok=True)
 
-            for path in self._generations_dir.iterdir():
-                if path.is_dir() and path != generation_dir:
-                    shutil.rmtree(path, ignore_errors=True)
-            for legacy_name in (
-                "index.faiss", "mapping_table.json", "mapping_table.pkl",
-                "mapping_revision", "freshness",
-            ):
-                (self._index_dir / legacy_name).unlink(missing_ok=True)
+            for old_generation in existing_generations - {previous_generation}:
+                shutil.rmtree(
+                    self._generations_dir / old_generation, ignore_errors=True
+                )
+            if previous_generation is not None:
+                for legacy_name in (
+                    "index.faiss", "mapping_table.json", "mapping_table.pkl",
+                    "mapping_revision", "freshness",
+                ):
+                    (self._index_dir / legacy_name).unlink(missing_ok=True)
         finally:
             if temporary_dir.exists():
                 shutil.rmtree(temporary_dir)
