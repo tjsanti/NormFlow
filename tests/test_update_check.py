@@ -1,10 +1,10 @@
 """Behavioral tests for the shared update-check service."""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
-from io import BytesIO
+from datetime import UTC, datetime, timedelta, timezone
 import json
 from pathlib import Path
+import subprocess
 from threading import Barrier
 
 import pytest
@@ -161,6 +161,28 @@ def test_dismissed_browser_notice_returns_on_the_next_day() -> None:
     )
 
 
+def test_browser_dismissal_uses_the_callers_local_calendar_day() -> None:
+    local_timezone = timezone(-timedelta(hours=7))
+    now = datetime(2026, 7, 16, 17, 31, tzinfo=local_timezone)
+    cache = MemoryCache(
+        UpdateCheckState(
+            last_attempt=now,
+            latest_version="0.2.0",
+            dismissed_version="0.2.0",
+            dismissed_at=datetime(2026, 7, 17, 0, 30, tzinfo=UTC),
+        )
+    )
+    service = UpdateCheckService(
+        installed_version="0.1.0",
+        transport=StaticReleaseTransport("0.2.0"),
+        cache=cache,
+        now=lambda: now,
+        environment={},
+    )
+
+    assert service.browser_status() is None
+
+
 def test_new_release_is_visible_despite_an_older_release_dismissal() -> None:
     now = datetime(2026, 7, 16, 12, tzinfo=UTC)
     cache = MemoryCache(
@@ -196,6 +218,32 @@ def test_browser_status_is_absent_when_installed_release_is_current() -> None:
     )
 
     assert service.browser_status() is None
+
+
+@pytest.mark.parametrize(
+    ("installed_version", "latest_version", "update_available"),
+    [
+        ("0.2", "0.2.0", False),
+        ("0.2.0.post1", "0.2.0", False),
+        ("0.2.0rc1", "0.2.0", True),
+    ],
+)
+def test_update_comparison_accepts_installed_package_metadata_versions(
+    installed_version: str,
+    latest_version: str,
+    update_available: bool,
+) -> None:
+    service = UpdateCheckService(
+        installed_version=installed_version,
+        transport=StaticReleaseTransport(latest_version),
+        cache=MemoryCache(),
+        now=lambda: datetime(2026, 7, 16, 12, tzinfo=UTC),
+        environment={},
+    )
+
+    notice = service.browser_status()
+
+    assert (notice is not None) is update_available
 
 
 def test_browser_status_opt_out_avoids_network_access() -> None:
@@ -320,6 +368,26 @@ def test_global_lock_prevents_simultaneous_processes_from_checking_twice(
     assert transport.timeouts == [1.0]
 
 
+def test_busy_global_lock_does_not_delay_normal_work(tmp_path: Path) -> None:
+    lock = FileUpdateLock(tmp_path / "update-check.lock")
+    service = UpdateCheckService(
+        installed_version="0.1.0",
+        transport=StaticReleaseTransport("0.2.0"),
+        cache=MemoryCache(),
+        lock=FileUpdateLock(tmp_path / "update-check.lock"),
+        now=lambda: datetime(2026, 7, 16, 12, tzinfo=UTC),
+        environment={},
+    )
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        with lock.hold():
+            result = executor.submit(service.check).result(timeout=0.2)
+    finally:
+        executor.shutdown(wait=True)
+
+    assert result is None
+
+
 def test_default_service_uses_global_xdg_cache_outside_a_project(
     tmp_path: Path,
 ) -> None:
@@ -344,52 +412,59 @@ def test_default_service_uses_global_xdg_cache_outside_a_project(
     [(True, False), (False, True)],
 )
 def test_github_transport_rejects_nonstable_releases(
-    monkeypatch: pytest.MonkeyPatch, draft: bool, prerelease: bool,
+    draft: bool, prerelease: bool,
 ) -> None:
-    payload = BytesIO(
-        json.dumps(
-            {
-                "tag_name": "v0.2.0",
-                "draft": draft,
-                "prerelease": prerelease,
-            }
-        ).encode()
-    )
-    monkeypatch.setattr(
-        "normflow.update_check.urlopen",
-        lambda request, timeout: payload,
-    )
+    def run_release(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "tag_name": "v0.2.0",
+                    "draft": draft,
+                    "prerelease": prerelease,
+                }
+            ),
+            stderr="",
+        )
 
     with pytest.raises(ValueError, match="stable Release"):
-        GitHubReleaseTransport().latest_stable_version(timeout_seconds=1.0)
+        GitHubReleaseTransport(run=run_release).latest_stable_version(
+            timeout_seconds=1.0
+        )
 
 
 def test_github_transport_reads_latest_stable_release(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = BytesIO(
-        json.dumps(
-            {
-                "tag_name": "v0.2.0",
-                "draft": False,
-                "prerelease": False,
-            }
-        ).encode()
-    )
     observed: dict[str, object] = {}
 
-    def open_release(request, timeout):
-        observed.update(url=request.full_url, timeout=timeout)
-        return payload
+    def run_release(command, **kwargs):
+        observed.update(command=command, **kwargs)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "tag_name": "v0.2.0",
+                    "draft": False,
+                    "prerelease": False,
+                }
+            ),
+            stderr="",
+        )
 
-    monkeypatch.setattr("normflow.update_check.urlopen", open_release)
-
-    latest = GitHubReleaseTransport().latest_stable_version(
+    latest = GitHubReleaseTransport(run=run_release).latest_stable_version(
         timeout_seconds=1.0
     )
 
     assert latest == "v0.2.0"
-    assert observed == {
-        "url": "https://api.github.com/repos/tjsanti/NormFlow/releases/latest",
-        "timeout": 1.0,
-    }
+    assert observed["timeout"] == 1.0
+    assert observed["capture_output"] is True
+    assert observed["text"] is True
+    assert observed["check"] is True
+    command = observed["command"]
+    assert command[:2] == ["curl", "--proto"]
+    assert command[command.index("--max-time") + 1] == "1.0"
+    assert command[-1] == (
+        "https://api.github.com/repos/tjsanti/NormFlow/releases/latest"
+    )

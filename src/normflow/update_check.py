@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 import fcntl
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 from typing import Protocol
-from urllib.request import Request, urlopen
+
+from packaging.version import Version
 
 
 INSTALL_COMMAND = (
@@ -80,7 +82,7 @@ class FileUpdateLock:
     def hold(self) -> Iterator[None]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
             try:
                 yield
             finally:
@@ -149,17 +151,41 @@ class JsonUpdateCache:
 class GitHubReleaseTransport:
     """Read the latest stable release identity from GitHub Releases."""
 
+    def __init__(
+        self,
+        *,
+        run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    ) -> None:
+        self._run = run
+
     def latest_stable_version(self, *, timeout_seconds: float) -> str:
-        request = Request(
+        command = [
+            "curl",
+            "--proto",
+            "=https",
+            "--tlsv1.2",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--max-time",
+            str(timeout_seconds),
+            "--header",
+            "Accept: application/vnd.github+json",
+            "--header",
+            "User-Agent: NormFlow update check",
+            "--header",
+            "X-GitHub-Api-Version: 2022-11-28",
             LATEST_RELEASE_URL,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "NormFlow update check",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
+        ]
+        completed = self._run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=True,
         )
-        with urlopen(request, timeout=timeout_seconds) as response:
-            payload = json.load(response)
+        payload = json.loads(completed.stdout)
         if (
             not isinstance(payload, dict)
             or payload.get("draft") is not False
@@ -217,10 +243,8 @@ class UpdateCheckService:
                 if state.latest_version != latest_version:
                     return
                 self._cache.save(
-                    UpdateCheckState(
-                        last_attempt=state.last_attempt,
-                        latest_version=state.latest_version,
-                        last_notified=state.last_notified,
+                    replace(
+                        state,
                         dismissed_version=latest_version,
                         dismissed_at=self._now(),
                     )
@@ -230,38 +254,10 @@ class UpdateCheckService:
 
     def _browser_status_locked(self) -> UpdateNotice | None:
         checked_at = self._now()
-        try:
-            state = self._cache.load()
-        except Exception:
-            state = UpdateCheckState()
-        if not _recent(state.last_attempt, checked_at):
-            self._cache.save(
-                UpdateCheckState(
-                    last_attempt=checked_at,
-                    last_notified=state.last_notified,
-                    dismissed_version=state.dismissed_version,
-                    dismissed_at=state.dismissed_at,
-                )
-            )
-            try:
-                latest_version = self._transport.latest_stable_version(
-                    timeout_seconds=1.0
-                ).removeprefix("v")
-                _version_key(latest_version)
-            except Exception:
-                return None
-            state = UpdateCheckState(
-                last_attempt=checked_at,
-                latest_version=latest_version,
-                last_notified=state.last_notified,
-                dismissed_version=state.dismissed_version,
-                dismissed_at=state.dismissed_at,
-            )
-            self._cache.save(state)
+        state = self._refresh_state_if_due(checked_at)
         if (
             state.latest_version is None
-            or _version_key(state.latest_version)
-            <= _version_key(self._installed_version)
+            or Version(state.latest_version) <= Version(self._installed_version)
         ):
             return None
         if (
@@ -269,95 +265,43 @@ class UpdateCheckService:
             and _same_day(state.dismissed_at, checked_at)
         ):
             return None
-        return UpdateNotice(
-            installed_version=self._installed_version,
-            latest_version=state.latest_version,
-            install_command=INSTALL_COMMAND,
-        )
+        return self._notice(state.latest_version)
 
     def _check_locked(self) -> UpdateNotice | None:
         checked_at = self._now()
+        state = self._refresh_state_if_due(checked_at)
+        if (
+            state.latest_version is None
+            or Version(state.latest_version) <= Version(self._installed_version)
+            or _recent(state.last_notified, checked_at)
+        ):
+            return None
+        self._cache.save(replace(state, last_notified=checked_at))
+        return self._notice(state.latest_version)
+
+    def _refresh_state_if_due(self, checked_at: datetime) -> UpdateCheckState:
         try:
             state = self._cache.load()
         except Exception:
             state = UpdateCheckState()
         if _recent(state.last_attempt, checked_at):
-            if (
-                state.latest_version is not None
-                and _version_key(state.latest_version)
-                > _version_key(self._installed_version)
-                and not _recent(state.last_notified, checked_at)
-            ):
-                try:
-                    self._cache.save(
-                        UpdateCheckState(
-                            last_attempt=state.last_attempt,
-                            latest_version=state.latest_version,
-                            last_notified=checked_at,
-                            dismissed_version=state.dismissed_version,
-                            dismissed_at=state.dismissed_at,
-                        )
-                    )
-                except Exception:
-                    return None
-                return UpdateNotice(
-                    installed_version=self._installed_version,
-                    latest_version=state.latest_version,
-                    install_command=INSTALL_COMMAND,
-                )
-            return None
-        attempted = UpdateCheckState(
-            last_attempt=checked_at,
-            last_notified=state.last_notified,
-            dismissed_version=state.dismissed_version,
-            dismissed_at=state.dismissed_at,
-        )
-        try:
-            self._cache.save(attempted)
-        except Exception:
-            return None
-        try:
-            latest_version = self._transport.latest_stable_version(
-                timeout_seconds=1.0
-            ).removeprefix("v")
-            latest_key = _version_key(latest_version)
-            installed_key = _version_key(self._installed_version)
-        except Exception:
-            return None
-        if latest_key <= installed_key:
-            try:
-                self._cache.save(
-                    UpdateCheckState(
-                        last_attempt=checked_at,
-                        latest_version=latest_version,
-                        dismissed_version=state.dismissed_version,
-                        dismissed_at=state.dismissed_at,
-                    )
-                )
-            except Exception:
-                pass
-            return None
-        try:
-            self._cache.save(
-                UpdateCheckState(
-                    last_attempt=checked_at,
-                    latest_version=latest_version,
-                    last_notified=checked_at,
-                    dismissed_version=state.dismissed_version,
-                    dismissed_at=state.dismissed_at,
-                )
-            )
-        except Exception:
-            return None
+            return state
+        attempted = replace(state, last_attempt=checked_at, latest_version=None)
+        self._cache.save(attempted)
+        latest_version = self._transport.latest_stable_version(
+            timeout_seconds=1.0
+        ).removeprefix("v")
+        Version(latest_version)
+        refreshed = replace(attempted, latest_version=latest_version)
+        self._cache.save(refreshed)
+        return refreshed
+
+    def _notice(self, latest_version: str) -> UpdateNotice:
         return UpdateNotice(
             installed_version=self._installed_version,
             latest_version=latest_version,
             install_command=INSTALL_COMMAND,
         )
-
-
-def _version_key(value: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in value.split("."))
 
 
 def _recent(earlier: datetime | None, now: datetime) -> bool:
@@ -368,7 +312,10 @@ def _recent(earlier: datetime | None, now: datetime) -> bool:
 
 
 def _same_day(earlier: datetime | None, now: datetime) -> bool:
-    return earlier is not None and earlier.date() == now.date()
+    return (
+        earlier is not None
+        and earlier.astimezone(now.tzinfo).date() == now.date()
+    )
 
 
 def _parse_datetime(value: object) -> datetime | None:
@@ -391,7 +338,7 @@ def default_update_check_service(
     *,
     environment: Mapping[str, str],
     transport: ReleaseTransport | None = None,
-    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
 ) -> UpdateCheckService:
     """Create the production service with XDG cache and GitHub boundaries."""
     xdg_cache = environment.get("XDG_CACHE_HOME")
