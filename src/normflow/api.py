@@ -1,9 +1,11 @@
 """FastAPI layer — thin adapter over MappingService."""
 
 from contextlib import asynccontextmanager
+from datetime import date
 import os
 import tempfile
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
@@ -73,6 +75,11 @@ class UpdateStatusResponse(BaseModel):
 
 class DismissUpdateRequest(BaseModel):
     latest_version: str
+    browser_date: date
+
+
+class DismissUpdateResponse(BaseModel):
+    status: Literal["dismissed"] = "dismissed"
 
 
 class IndexBuildResponse(BaseModel):
@@ -148,9 +155,10 @@ def project_info(
 
 @router.get("/update-status", response_model=UpdateStatusResponse | None)
 def update_status(
+    browser_date: date = Query(...),
     service: UpdateCheckService = Depends(get_update_check_service),
 ) -> UpdateStatusResponse | None:
-    notice = service.browser_status()
+    notice = service.browser_status(browser_date)
     if notice is None:
         return None
     return UpdateStatusResponse(
@@ -160,13 +168,16 @@ def update_status(
     )
 
 
-@router.post("/update-status/dismiss", response_model=StatusResponse)
+@router.post("/update-status/dismiss", response_model=DismissUpdateResponse)
 def dismiss_update_status(
     request: DismissUpdateRequest,
     service: UpdateCheckService = Depends(get_update_check_service),
-) -> StatusResponse:
-    service.dismiss_browser_notice(request.latest_version)
-    return StatusResponse(status="dismissed")
+) -> DismissUpdateResponse:
+    service.dismiss_browser_notice(
+        request.latest_version,
+        request.browser_date,
+    )
+    return DismissUpdateResponse()
 
 
 @router.post("/import/mappings", response_model=ImportMappingsResponse)

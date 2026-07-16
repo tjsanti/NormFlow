@@ -16,6 +16,14 @@ interface UpdateStatus {
   install_command: string;
 }
 
+interface UpdateStatusRequest {
+  browser_date: string;
+}
+
+interface DismissUpdateRequest extends UpdateStatusRequest {
+  latest_version: string;
+}
+
 interface ReviewItem {
   id: number;
   raw_text: string;
@@ -101,9 +109,21 @@ function isUpdateStatus(value: unknown): value is UpdateStatus {
     && typeof status.install_command === "string";
 }
 
+function browserLocalDate(now = new Date()): string {
+  const year = String(now.getFullYear()).padStart(4, "0");
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 async function loadUpdateBanner(root: HTMLElement): Promise<void> {
   try {
-    const response = await fetch("/update-status");
+    const statusRequest: UpdateStatusRequest = {
+      browser_date: browserLocalDate(),
+    };
+    const response = await fetch(
+      `/update-status?browser_date=${encodeURIComponent(statusRequest.browser_date)}`,
+    );
     if (!response.ok) return;
     const status: unknown = await response.json();
     if (!isUpdateStatus(status)) return;
@@ -126,10 +146,14 @@ async function loadUpdateBanner(root: HTMLElement): Promise<void> {
     dismiss.addEventListener("click", async () => {
       dismiss.disabled = true;
       try {
+        const dismissalRequest: DismissUpdateRequest = {
+          latest_version: status.latest_version,
+          browser_date: browserLocalDate(),
+        };
         const dismissed = await fetch("/update-status/dismiss", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ latest_version: status.latest_version }),
+          body: JSON.stringify(dismissalRequest),
         });
         if (dismissed.ok) banner.remove();
         else dismiss.disabled = false;

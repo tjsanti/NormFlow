@@ -110,8 +110,8 @@ def test_browser_status_keeps_newer_release_visible_without_duplicate_check() ->
         environment={},
     )
 
-    first = service.browser_status()
-    refreshed = service.browser_status()
+    first = service.browser_status(now.date())
+    refreshed = service.browser_status(now.date())
 
     expected = UpdateNotice(
         installed_version="0.1.0",
@@ -133,11 +133,11 @@ def test_dismissing_browser_notice_hides_that_release_for_the_day() -> None:
         environment={},
     )
 
-    notice = service.browser_status()
-    service.dismiss_browser_notice("0.2.0")
+    notice = service.browser_status(now.date())
+    service.dismiss_browser_notice("0.2.0", now.date())
 
     assert notice is not None
-    assert service.browser_status() is None
+    assert service.browser_status(now.date()) is None
 
 
 def test_dismissed_browser_notice_returns_on_the_next_day() -> None:
@@ -149,12 +149,12 @@ def test_dismissed_browser_notice_returns_on_the_next_day() -> None:
         now=lambda: current[0],
         environment={},
     )
-    service.browser_status()
-    service.dismiss_browser_notice("0.2.0")
+    service.browser_status(current[0].date())
+    service.dismiss_browser_notice("0.2.0", current[0].date())
 
     current[0] = datetime(2026, 7, 17, 0, 1, tzinfo=UTC)
 
-    assert service.browser_status() == UpdateNotice(
+    assert service.browser_status(current[0].date()) == UpdateNotice(
         installed_version="0.1.0",
         latest_version="0.2.0",
         install_command=INSTALL_COMMAND,
@@ -162,14 +162,12 @@ def test_dismissed_browser_notice_returns_on_the_next_day() -> None:
 
 
 def test_browser_dismissal_uses_the_callers_local_calendar_day() -> None:
-    local_timezone = timezone(-timedelta(hours=7))
-    now = datetime(2026, 7, 16, 17, 31, tzinfo=local_timezone)
+    now = datetime(2026, 7, 17, 0, 31, tzinfo=UTC)
+    browser_day = date(2026, 7, 16)
     cache = MemoryCache(
         UpdateCheckState(
             last_attempt=now,
             latest_version="0.2.0",
-            dismissed_version="0.2.0",
-            dismissed_on=date(2026, 7, 16),
         )
     )
     service = UpdateCheckService(
@@ -180,7 +178,14 @@ def test_browser_dismissal_uses_the_callers_local_calendar_day() -> None:
         environment={},
     )
 
-    assert service.browser_status() is None
+    service.dismiss_browser_notice("0.2.0", browser_day)
+
+    assert service.browser_status(browser_day) is None
+    assert service.browser_status(date(2026, 7, 17)) == UpdateNotice(
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+        install_command=INSTALL_COMMAND,
+    )
 
 
 def test_browser_dismissal_expires_on_the_next_local_day_across_dst() -> None:
@@ -202,7 +207,7 @@ def test_browser_dismissal_expires_on_the_next_local_day_across_dst() -> None:
         environment={},
     )
 
-    assert service.browser_status() == UpdateNotice(
+    assert service.browser_status(now.date()) == UpdateNotice(
         installed_version="0.1.0",
         latest_version="0.2.0",
         install_command=INSTALL_COMMAND,
@@ -227,7 +232,7 @@ def test_new_release_is_visible_despite_an_older_release_dismissal() -> None:
         environment={},
     )
 
-    assert service.browser_status() == UpdateNotice(
+    assert service.browser_status(now.date()) == UpdateNotice(
         installed_version="0.1.0",
         latest_version="0.3.0",
         install_command=INSTALL_COMMAND,
@@ -243,7 +248,7 @@ def test_browser_status_is_absent_when_installed_release_is_current() -> None:
         environment={},
     )
 
-    assert service.browser_status() is None
+    assert service.browser_status(date(2026, 7, 16)) is None
 
 
 @pytest.mark.parametrize(
@@ -267,7 +272,7 @@ def test_update_comparison_accepts_installed_package_metadata_versions(
         environment={},
     )
 
-    notice = service.browser_status()
+    notice = service.browser_status(date(2026, 7, 16))
 
     assert (notice is not None) is update_available
 
@@ -282,7 +287,7 @@ def test_browser_status_opt_out_avoids_network_access() -> None:
         environment={"NORMFLOW_NO_UPDATE_CHECK": "1"},
     )
 
-    assert service.browser_status() is None
+    assert service.browser_status(date(2026, 7, 16)) is None
     assert transport.timeouts == []
 
 
@@ -302,7 +307,41 @@ def test_browser_status_suppresses_unavailable_release_information(
         environment={},
     )
 
-    assert service.browser_status() is None
+    assert service.browser_status(date(2026, 7, 16)) is None
+
+
+@pytest.mark.parametrize(
+    "transport",
+    [OfflineTransport(), StaticReleaseTransport("malformed")],
+    ids=["offline", "invalid-version"],
+)
+def test_failed_refresh_keeps_the_last_known_release(
+    transport,
+) -> None:
+    now = datetime(2026, 7, 16, 12, tzinfo=UTC)
+    cache = MemoryCache(
+        UpdateCheckState(
+            last_attempt=now - timedelta(hours=25),
+            latest_version="0.2.0",
+        )
+    )
+    service = UpdateCheckService(
+        installed_version="0.1.0",
+        transport=transport,
+        cache=cache,
+        now=lambda: now,
+        environment={},
+    )
+
+    notice = service.browser_status(now.date())
+
+    assert notice == UpdateNotice(
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+        install_command=INSTALL_COMMAND,
+    )
+    assert cache.state.last_attempt == now
+    assert cache.state.latest_version == "0.2.0"
 
 
 def test_opt_out_avoids_network_access_entirely() -> None:
@@ -365,6 +404,17 @@ def test_json_cache_recovers_from_corrupt_data_with_atomic_replacement(
     assert sorted(path.name for path in cache_path.parent.iterdir()) == [
         "update-check.json"
     ]
+
+
+def test_json_cache_rejects_an_invalid_latest_version(tmp_path: Path) -> None:
+    cache_path = tmp_path / "normflow" / "update-check.json"
+    cache_path.parent.mkdir()
+    cache_path.write_text(
+        json.dumps({"latest_version": "not-a-package-version"}),
+        encoding="utf-8",
+    )
+
+    assert JsonUpdateCache(cache_path).load() == UpdateCheckState()
 
 
 def test_global_lock_prevents_simultaneous_processes_from_checking_twice(

@@ -21,14 +21,16 @@ function okJson(value: unknown): Response {
 function stubFetch(
   fetchMock: ReturnType<typeof vi.fn>,
   updateStatus: unknown = null,
-): void {
-  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-    if (input === "/update-status") {
+): ReturnType<typeof vi.fn> {
+  const request = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (typeof input === "string" && input.startsWith("/update-status?browser_date=")) {
       if (updateStatus instanceof Error) return Promise.reject(updateStatus);
       return Promise.resolve(okJson(updateStatus));
     }
     return init === undefined ? fetchMock(input) : fetchMock(input, init);
-  }));
+  });
+  vi.stubGlobal("fetch", request);
+  return request;
 }
 
 function chooseFile(input: HTMLInputElement, contents: string, name = "mappings.csv"): File {
@@ -76,6 +78,7 @@ describe("Bound Project launch", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -196,6 +199,8 @@ describe("Bound Project launch", () => {
   });
 
   test("shows and dismisses an accessible update banner with the exact installer command", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 6, 16, 12));
     const installCommand = "curl --proto '=https' --tlsv1.2 --fail --silent "
       + "--show-error --location https://github.com/tjsanti/NormFlow/releases/latest/"
       + "download/install.sh | sh";
@@ -203,7 +208,7 @@ describe("Bound Project launch", () => {
       .mockResolvedValueOnce(okJson(projectInfo))
       .mockResolvedValueOnce(okJson([]))
       .mockResolvedValueOnce(okJson({ status: "dismissed" }));
-    stubFetch(fetchMock, {
+    const requests = stubFetch(fetchMock, {
       installed_version: "0.1.0",
       latest_version: "0.2.0",
       install_command: installCommand,
@@ -212,6 +217,9 @@ describe("Bound Project launch", () => {
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("#update-banner")).not.toBeNull());
+    expect(requests).toHaveBeenCalledWith(
+      "/update-status?browser_date=2026-07-16",
+    );
     const banner = document.querySelector<HTMLElement>("#update-banner")!;
     const dismiss = banner.querySelector<HTMLButtonElement>("button")!;
     expect(banner.textContent).toContain("0.1.0");
@@ -227,7 +235,10 @@ describe("Bound Project launch", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/update-status/dismiss", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ latest_version: "0.2.0" }),
+      body: JSON.stringify({
+        latest_version: "0.2.0",
+        browser_date: "2026-07-16",
+      }),
     });
   });
 
@@ -251,8 +262,41 @@ describe("Bound Project launch", () => {
       .toBe(false);
   });
 
-  test("shows the release again when the server reports it on the next day", async () => {
-    stubFetch(
+  test("requests the update again on the next browser-local day", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 6, 16, 23, 59));
+    const firstFetch = vi.fn()
+      .mockResolvedValueOnce(okJson(projectInfo))
+      .mockResolvedValueOnce(okJson([]))
+      .mockResolvedValueOnce(okJson({ status: "dismissed" }));
+    const firstRequests = stubFetch(
+      firstFetch,
+      {
+        installed_version: "0.1.0",
+        latest_version: "0.2.0",
+        install_command: "install command",
+      },
+    );
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#update-banner")).not.toBeNull());
+    expect(firstRequests).toHaveBeenCalledWith(
+      "/update-status?browser_date=2026-07-16",
+    );
+    document.querySelector<HTMLButtonElement>("#update-banner button")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#update-banner")).toBeNull());
+    expect(firstFetch).toHaveBeenNthCalledWith(3, "/update-status/dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        latest_version: "0.2.0",
+        browser_date: "2026-07-16",
+      }),
+    });
+
+    vi.setSystemTime(new Date(2026, 6, 17, 0, 1));
+    document.body.innerHTML = '<div id="app"></div>';
+    const nextRequests = stubFetch(
       vi.fn()
         .mockResolvedValueOnce(okJson(projectInfo))
         .mockResolvedValueOnce(okJson([])),
@@ -262,10 +306,12 @@ describe("Bound Project launch", () => {
         install_command: "install command",
       },
     );
-
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("#update-banner")).not.toBeNull());
+    expect(nextRequests).toHaveBeenCalledWith(
+      "/update-status?browser_date=2026-07-17",
+    );
     expect(document.querySelector("#update-banner")?.textContent).toContain("0.2.0");
   });
 });

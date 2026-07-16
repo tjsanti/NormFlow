@@ -101,8 +101,10 @@ class JsonUpdateCache:
             if not isinstance(payload, dict):
                 return UpdateCheckState()
             latest_version = payload.get("latest_version")
-            if latest_version is not None and not isinstance(latest_version, str):
-                return UpdateCheckState()
+            if latest_version is not None:
+                if not isinstance(latest_version, str):
+                    return UpdateCheckState()
+                Version(latest_version)
             dismissed_version = payload.get("dismissed_version")
             if dismissed_version is not None and not isinstance(
                 dismissed_version, str
@@ -225,17 +227,21 @@ class UpdateCheckService:
         except Exception:
             return None
 
-    def browser_status(self) -> UpdateNotice | None:
+    def browser_status(self, browser_date: date) -> UpdateNotice | None:
         """Return a persistent browser notice using the shared daily check."""
         if self._environment.get("NORMFLOW_NO_UPDATE_CHECK") == "1":
             return None
         try:
             with self._lock.hold():
-                return self._browser_status_locked()
+                return self._browser_status_locked(browser_date)
         except Exception:
             return None
 
-    def dismiss_browser_notice(self, latest_version: str) -> None:
+    def dismiss_browser_notice(
+        self,
+        latest_version: str,
+        browser_date: date,
+    ) -> None:
         """Dismiss one known release without suppressing a newer release."""
         try:
             with self._lock.hold():
@@ -246,13 +252,13 @@ class UpdateCheckService:
                     replace(
                         state,
                         dismissed_version=latest_version,
-                        dismissed_on=self._now().date(),
+                        dismissed_on=browser_date,
                     )
                 )
         except Exception:
             return
 
-    def _browser_status_locked(self) -> UpdateNotice | None:
+    def _browser_status_locked(self, browser_date: date) -> UpdateNotice | None:
         checked_at = self._now()
         state = self._refresh_state_if_due(checked_at)
         if (
@@ -262,7 +268,7 @@ class UpdateCheckService:
             return None
         if (
             state.dismissed_version == state.latest_version
-            and _same_day(state.dismissed_on, checked_at)
+            and _same_day(state.dismissed_on, browser_date)
         ):
             return None
         return self._notice(state.latest_version)
@@ -286,12 +292,15 @@ class UpdateCheckService:
             state = UpdateCheckState()
         if _recent(state.last_attempt, checked_at):
             return state
-        attempted = replace(state, last_attempt=checked_at, latest_version=None)
+        attempted = replace(state, last_attempt=checked_at)
         self._cache.save(attempted)
-        latest_version = self._transport.latest_stable_version(
-            timeout_seconds=1.0
-        ).removeprefix("v")
-        Version(latest_version)
+        try:
+            latest_version = self._transport.latest_stable_version(
+                timeout_seconds=1.0
+            ).removeprefix("v")
+            Version(latest_version)
+        except Exception:
+            return attempted
         refreshed = replace(attempted, latest_version=latest_version)
         self._cache.save(refreshed)
         return refreshed
@@ -311,8 +320,8 @@ def _recent(earlier: datetime | None, now: datetime) -> bool:
     return timedelta(0) <= age < timedelta(hours=24)
 
 
-def _same_day(earlier: date | None, now: datetime) -> bool:
-    return earlier is not None and earlier == now.date()
+def _same_day(earlier: date | None, current: date) -> bool:
+    return earlier is not None and earlier == current
 
 
 def _parse_datetime(value: object) -> datetime | None:

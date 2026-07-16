@@ -2,6 +2,7 @@
 
 import tempfile
 import time
+from datetime import date
 from pathlib import Path
 import re
 from unittest.mock import MagicMock, call, patch
@@ -442,7 +443,9 @@ def test_update_status_exposes_the_shared_browser_notice(tmp_path: Path):
     )
     app.state.update_check_service = update_service
 
-    response = TestClient(app).get("/update-status")
+    response = TestClient(app).get(
+        "/update-status", params={"browser_date": "2026-07-16"}
+    )
 
     assert response.status_code == 200
     assert response.json() == {
@@ -450,6 +453,7 @@ def test_update_status_exposes_the_shared_browser_notice(tmp_path: Path):
         "latest_version": "0.2.0",
         "install_command": INSTALL_COMMAND,
     }
+    update_service.browser_status.assert_called_once_with(date(2026, 7, 16))
 
 
 def test_update_status_dismissal_delegates_the_release_to_shared_policy(
@@ -462,12 +466,36 @@ def test_update_status_dismissal_delegates_the_release_to_shared_policy(
 
     response = TestClient(app).post(
         "/update-status/dismiss",
-        json={"latest_version": "0.2.0"},
+        json={
+            "latest_version": "0.2.0",
+            "browser_date": "2026-07-16",
+        },
     )
 
     assert response.status_code == 200
     assert response.json() == {"status": "dismissed"}
-    update_service.dismiss_browser_notice.assert_called_once_with("0.2.0")
+    update_service.dismiss_browser_notice.assert_called_once_with(
+        "0.2.0", date(2026, 7, 16)
+    )
+
+
+def test_update_status_rejects_invalid_browser_dates(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client = TestClient(create_app(resolve_project(project_root)))
+
+    status = client.get(
+        "/update-status", params={"browser_date": "not-a-date"}
+    )
+    dismissal = client.post(
+        "/update-status/dismiss",
+        json={
+            "latest_version": "0.2.0",
+            "browser_date": "not-a-date",
+        },
+    )
+
+    assert status.status_code == 422
+    assert dismissal.status_code == 422
 
 
 def test_json_endpoints_publish_explicit_response_schemas(tmp_path: Path):
