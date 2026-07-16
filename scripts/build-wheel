@@ -14,9 +14,11 @@ out_dir=${1:-dist}
 npm ci
 npm test
 npm run typecheck
-npm run build
 
 static_dir=src/normflow/static
+rm -rf "$static_dir"
+npm run build
+
 if [ ! -f "$static_dir/index.html" ]; then
     echo "required browser asset is missing: $static_dir/index.html" >&2
     exit 1

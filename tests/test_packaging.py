@@ -137,6 +137,65 @@ def test_release_build_fails_when_frontend_build_produces_no_assets(tmp_path: Pa
     assert not (checkout / "uv-was-called").exists()
 
 
+def test_release_build_discards_ignored_stale_browser_assets(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    scripts = checkout / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "build-wheel", scripts / "build-wheel")
+    stale_asset = checkout / "src" / "normflow" / "static" / "assets" / "stale.js"
+    stale_asset.parent.mkdir(parents=True)
+    stale_asset.write_text("stale browser build")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "npm",
+        """#!/bin/sh
+if [ "$1" = "run" ] && [ "$2" = "build" ]; then
+    mkdir -p src/normflow/static/assets
+    printf 'current index' > src/normflow/static/index.html
+    printf 'current script' > src/normflow/static/assets/app.js
+    printf 'current style' > src/normflow/static/assets/app.css
+fi
+""",
+    )
+    _write_executable(
+        fake_bin / "uv",
+        f"""#!{sys.executable}
+from pathlib import Path
+import sys
+import zipfile
+
+arguments = sys.argv[1:]
+output = Path(arguments[arguments.index("--out-dir") + 1])
+wheel = output / "normflow-0.1.0-py3-none-any.whl"
+wheel.parent.mkdir(parents=True, exist_ok=True)
+static = Path("src/normflow/static")
+with zipfile.ZipFile(wheel, "w") as archive:
+    for path in static.rglob("*"):
+        if path.is_file():
+            archive.write(
+                path,
+                f"normflow/static/{{path.relative_to(static).as_posix()}}",
+            )
+""",
+    )
+    environment = os.environ.copy()
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+    output = tmp_path / "wheel"
+
+    subprocess.run(
+        ["sh", str(scripts / "build-wheel"), str(output)],
+        cwd=checkout,
+        env=environment,
+        check=True,
+    )
+
+    wheel = next(output.glob("normflow-*.whl"))
+    with zipfile.ZipFile(wheel) as archive:
+        assert "normflow/static/assets/stale.js" not in archive.namelist()
+
+
 def test_release_build_fails_when_wheel_omits_browser_assets(tmp_path: Path):
     checkout = tmp_path / "checkout"
     scripts = checkout / "scripts"
