@@ -1,0 +1,13 @@
+#!/bin/sh
+
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+
+if [ "$#" -gt 1 ]; then
+    echo "usage: scripts/build-release-payload [OUTPUT_DIRECTORY]" >&2
+    exit 2
+fi
+
+exec python3 tools/release_payload.py "${1:-release}"
