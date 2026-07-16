@@ -36,7 +36,7 @@ MODEL_INPUTS = (
     "tokenizer_config.json",
     "vocab.txt",
 )
-MODEL_SOURCE_PROVENANCE = "normflow-model-source.json"
+TRUSTED_MODEL_SOURCE = ROOT / "release/model/SOURCE.json"
 FORBIDDEN_GPU_TERMS = (
     "cuda",
     "cudnn",
@@ -323,10 +323,10 @@ def _verify_model_source(
 
 
 def _download_model(identity: ModelIdentity, destination: Path) -> Path:
+    provenance = ModelSourceProvenance.read(TRUSTED_MODEL_SOURCE)
     source_override = os.environ.get("NORMFLOW_MODEL_SOURCE")
     if source_override:
         source = Path(source_override).expanduser().resolve()
-        provenance = ModelSourceProvenance.read(source / MODEL_SOURCE_PROVENANCE)
         return _verify_model_source(source, provenance, identity)
     script = (
         "from huggingface_hub import snapshot_download; "
@@ -348,11 +348,6 @@ def _download_model(identity: ModelIdentity, destination: Path) -> Path:
         ],
         cwd=ROOT,
         check=True,
-    )
-    files = {name: _sha256(destination / name) for name in MODEL_INPUTS}
-    provenance = ModelSourceProvenance(
-        model=identity,
-        files=tuple(sorted(files.items())),
     )
     return _verify_model_source(destination, provenance, identity)
 

@@ -19,6 +19,7 @@ VERSION = "0.1.0"
 REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
 MODEL_BUNDLE = f"all-MiniLM-L6-v2-{REVISION}"
 MODEL_SOURCE_PROVENANCE = "normflow-model-source.json"
+TRUSTED_MODEL_SOURCE = Path("release/model/SOURCE.json")
 MODEL_FILES = {
     "1_Pooling/config.json": "{}",
     "config.json": "{}",
@@ -61,7 +62,7 @@ def _release_checkout(
         path = model_source / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents, encoding="utf-8")
-    (model_source / MODEL_SOURCE_PROVENANCE).write_text(
+    (checkout / TRUSTED_MODEL_SOURCE).write_text(
         json.dumps(
             {
                 "model": {
@@ -308,8 +309,8 @@ def test_release_payload_failure_leaves_no_partial_output(tmp_path: Path):
 
 
 def test_model_source_override_requires_verified_provenance(tmp_path: Path):
-    checkout, model_source, environment = _release_checkout(tmp_path)
-    (model_source / MODEL_SOURCE_PROVENANCE).unlink()
+    checkout, _model_source, environment = _release_checkout(tmp_path)
+    (checkout / TRUSTED_MODEL_SOURCE).unlink()
     output = tmp_path / "payload"
 
     result = subprocess.run(
@@ -325,11 +326,37 @@ def test_model_source_override_requires_verified_provenance(tmp_path: Path):
     assert not output.exists()
 
 
-def test_model_source_override_rejects_bytes_not_bound_by_provenance(
+def test_model_source_override_rejects_self_attested_alternate_bytes(
     tmp_path: Path,
 ):
     checkout, model_source, environment = _release_checkout(tmp_path)
-    (model_source / "model.safetensors").write_text("untrusted model weights")
+    alternate_weights = "untrusted model weights"
+    (model_source / "model.safetensors").write_text(alternate_weights)
+    provenance_path = model_source / MODEL_SOURCE_PROVENANCE
+    provenance_path.write_text(
+        json.dumps(
+            {
+                "model": {
+                    "repository": "sentence-transformers/all-MiniLM-L6-v2",
+                    "revision": REVISION,
+                    "identity": (
+                        f"sentence-transformers/all-MiniLM-L6-v2@{REVISION}"
+                    ),
+                    "bundle": MODEL_BUNDLE,
+                },
+                "files": {
+                    name: hashlib.sha256(
+                        (
+                            alternate_weights
+                            if name == "model.safetensors"
+                            else contents
+                        ).encode()
+                    ).hexdigest()
+                    for name, contents in MODEL_FILES.items()
+                },
+            }
+        )
+    )
     output = tmp_path / "payload"
 
     result = subprocess.run(
