@@ -10,4 +10,4 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-exec python3 tools/release_payload.py "${1:-release}"
+exec python3 tools/release_payload.py "${1:-dist/release-payload}"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import ast
+from dataclasses import dataclass
 from email.parser import BytesParser
 from email.policy import default
 import gzip
@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,7 @@ MODEL_INPUTS = (
     "tokenizer_config.json",
     "vocab.txt",
 )
+MODEL_SOURCE_PROVENANCE = "normflow-model-source.json"
 FORBIDDEN_GPU_TERMS = (
     "cuda",
     "cudnn",
@@ -50,6 +52,142 @@ class PayloadError(RuntimeError):
     """The release payload cannot be produced consistently."""
 
 
+@dataclass(frozen=True)
+class ModelIdentity:
+    """The complete declared identity of NormFlow's embedding model."""
+
+    repository: str
+    revision: str
+    identity: str
+    bundle: str
+
+    @classmethod
+    def from_mapping(cls, value: object) -> ModelIdentity:
+        if not isinstance(value, dict):
+            raise PayloadError("declared embedding-model identity is missing")
+        try:
+            model = cls(
+                repository=value["repository"],
+                revision=value["revision"],
+                identity=value["identity"],
+                bundle=value["bundle"],
+            )
+        except KeyError as error:
+            raise PayloadError("declared embedding-model identity is missing") from error
+        model.verify()
+        return model
+
+    def verify(self) -> None:
+        values = (self.repository, self.revision, self.identity, self.bundle)
+        if not all(isinstance(value, str) and value for value in values):
+            raise PayloadError("declared embedding-model identity is missing")
+        expected_identity = f"{self.repository}@{self.revision}"
+        expected_bundle = f"{self.repository.rsplit('/', 1)[-1]}-{self.revision}"
+        if self.identity != expected_identity or self.bundle != expected_bundle:
+            raise PayloadError("declared embedding-model identity is inconsistent")
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "repository": self.repository,
+            "revision": self.revision,
+            "identity": self.identity,
+            "bundle": self.bundle,
+        }
+
+
+@dataclass(frozen=True)
+class ReleaseIdentity:
+    """One versioned NormFlow payload and its model identity."""
+
+    version: str
+    model: ModelIdentity
+
+
+@dataclass(frozen=True)
+class ModelSourceProvenance:
+    """Verifiable identity and contents of an embedding-model source tree."""
+
+    model: ModelIdentity
+    files: tuple[tuple[str, str], ...]
+
+    @classmethod
+    def read(cls, path: Path) -> ModelSourceProvenance:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            files = value["files"]
+            if not isinstance(files, dict) or not all(
+                isinstance(name, str) and isinstance(digest, str)
+                for name, digest in files.items()
+            ):
+                raise TypeError
+            return cls(
+                model=ModelIdentity.from_mapping(value["model"]),
+                files=tuple(sorted(files.items())),
+            )
+        except (
+            KeyError,
+            OSError,
+            PayloadError,
+            TypeError,
+            json.JSONDecodeError,
+        ) as error:
+            raise PayloadError("model source provenance is missing or invalid") from error
+
+
+@dataclass(frozen=True)
+class PayloadAsset:
+    """One checksummed file in a release payload."""
+
+    kind: str
+    filename: str
+    sha256: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "kind": self.kind,
+            "filename": self.filename,
+            "sha256": self.sha256,
+        }
+
+
+@dataclass(frozen=True)
+class ModelBundleManifest:
+    """The identity and checksums embedded inside a model bundle."""
+
+    identity: ReleaseIdentity
+    files: tuple[tuple[str, str], ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "payload_version": self.identity.version,
+            **self.identity.model.as_dict(),
+            "license": "Apache-2.0",
+            "files": dict(self.files),
+        }
+
+
+@dataclass(frozen=True)
+class PayloadManifest:
+    """The machine-readable contract tying a release payload together."""
+
+    identity: ReleaseIdentity
+    platform: str
+    assets: tuple[PayloadAsset, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "version": self.identity.version,
+            "platform": self.platform,
+            "dependency_backend": "cpu",
+            "dependency_index_strategy": "unsafe-best-match",
+            "model": {
+                **self.identity.model.as_dict(),
+                "license": "Apache-2.0",
+            },
+            "assets": [asset.as_dict() for asset in self.assets],
+        }
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -58,32 +196,21 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _literal_assignments(path: Path) -> dict[str, object]:
-    assignments: dict[str, object] = {}
-    for node in ast.parse(path.read_text(encoding="utf-8")).body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = node.targets[0]
-            if isinstance(target, ast.Name):
-                try:
-                    assignments[target.id] = ast.literal_eval(node.value)
-                except ValueError:
-                    pass
-    return assignments
-
-
-def _release_identity() -> tuple[str, str, str, str]:
+def _release_identity() -> ReleaseIdentity:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = project["project"]["version"]
-    model = _literal_assignments(ROOT / "src/normflow/embedding_model.py")
-    repository = model.get("EMBEDDING_MODEL_REPOSITORY")
-    revision = model.get("EMBEDDING_MODEL_REVISION")
-    if not all(
-        isinstance(value, str) and value
-        for value in (version, repository, revision)
-    ):
-        raise PayloadError("release or embedding-model identity is missing")
-    bundle = f"all-MiniLM-L6-v2-{revision}"
-    return version, repository, revision, bundle
+    if not isinstance(version, str) or not version:
+        raise PayloadError("release identity is missing")
+    declared = runpy.run_path(str(ROOT / "src/normflow/embedding_model.py"))
+    model = ModelIdentity.from_mapping(
+        {
+            "repository": declared.get("EMBEDDING_MODEL_REPOSITORY"),
+            "revision": declared.get("EMBEDDING_MODEL_REVISION"),
+            "identity": declared.get("EMBEDDING_MODEL_IDENTITY"),
+            "bundle": declared.get("EMBEDDING_MODEL_BUNDLE"),
+        }
+    )
+    return ReleaseIdentity(version=version, model=model)
 
 
 def _platform_tag() -> str:
@@ -181,10 +308,26 @@ def _export_constraints(staging: Path, version: str, platform_tag: str) -> Path:
     return path
 
 
-def _download_model(repository: str, revision: str, destination: Path) -> Path:
+def _verify_model_source(
+    source: Path,
+    provenance: ModelSourceProvenance,
+    identity: ModelIdentity,
+) -> Path:
+    missing = [name for name in MODEL_INPUTS if not (source / name).is_file()]
+    if missing:
+        raise PayloadError(f"pinned model snapshot is incomplete: {', '.join(missing)}")
+    expected_files = {name: _sha256(source / name) for name in MODEL_INPUTS}
+    if provenance.model != identity or dict(provenance.files) != expected_files:
+        raise PayloadError("model source provenance does not match its contents")
+    return source
+
+
+def _download_model(identity: ModelIdentity, destination: Path) -> Path:
     source_override = os.environ.get("NORMFLOW_MODEL_SOURCE")
     if source_override:
-        return Path(source_override).expanduser().resolve()
+        source = Path(source_override).expanduser().resolve()
+        provenance = ModelSourceProvenance.read(source / MODEL_SOURCE_PROVENANCE)
+        return _verify_model_source(source, provenance, identity)
     script = (
         "from huggingface_hub import snapshot_download; "
         "snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], "
@@ -198,37 +341,39 @@ def _download_model(repository: str, revision: str, destination: Path) -> Path:
             "python",
             "-c",
             "import sys; " + script,
-            repository,
-            revision,
+            identity.repository,
+            identity.revision,
             str(destination),
             *MODEL_INPUTS,
         ],
         cwd=ROOT,
         check=True,
     )
-    return destination
+    files = {name: _sha256(destination / name) for name in MODEL_INPUTS}
+    provenance = ModelSourceProvenance(
+        model=identity,
+        files=tuple(sorted(files.items())),
+    )
+    return _verify_model_source(destination, provenance, identity)
 
 
 def _model_tree(
     staging: Path,
-    version: str,
-    repository: str,
-    revision: str,
-    bundle: str,
+    identity: ReleaseIdentity,
 ) -> Path:
-    source = _download_model(repository, revision, staging / "model-download")
-    missing = [name for name in MODEL_INPUTS if not (source / name).is_file()]
-    if missing:
-        raise PayloadError(f"pinned model snapshot is incomplete: {', '.join(missing)}")
+    source = _download_model(identity.model, staging / "model-download")
     license_path = ROOT / "release/model/LICENSE"
     attribution_path = ROOT / "release/model/ATTRIBUTION.md"
     if "Apache License" not in license_path.read_text(encoding="utf-8"):
         raise PayloadError("embedding-model Apache-2.0 license is missing")
     attribution = attribution_path.read_text(encoding="utf-8")
-    if repository not in attribution or revision not in attribution:
+    if (
+        identity.model.repository not in attribution
+        or identity.model.revision not in attribution
+    ):
         raise PayloadError("embedding-model attribution does not match the pinned identity")
 
-    root = staging / "model-tree" / bundle
+    root = staging / "model-tree" / identity.model.bundle
     for name in MODEL_INPUTS:
         target = root / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -240,17 +385,13 @@ def _model_tree(
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
-    manifest = {
-        "payload_version": version,
-        "repository": repository,
-        "revision": revision,
-        "identity": f"{repository}@{revision}",
-        "bundle": bundle,
-        "license": "Apache-2.0",
-        "files": files,
-    }
+    manifest = ModelBundleManifest(
+        identity=identity,
+        files=tuple(sorted(files.items())),
+    )
     (root / "normflow-model.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(manifest.as_dict(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
     return root
 
@@ -332,7 +473,7 @@ def build(output: Path) -> None:
     output = output.expanduser().resolve()
     if output.exists():
         raise PayloadError(f"output directory already exists: {output}")
-    version, repository, revision, bundle = _release_identity()
+    identity = _release_identity()
     platform_tag = _platform_tag()
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
@@ -340,13 +481,13 @@ def build(output: Path) -> None:
     ) as temp:
         staging = Path(temp) / "payload"
         staging.mkdir()
-        wheel = _build_wheel(staging, version)
-        constraints = _export_constraints(staging, version, platform_tag)
-        model_root = _model_tree(staging, version, repository, revision, bundle)
-        model = _bundle_model(staging, version, model_root)
-        _smoke(wheel, constraints, model, version)
+        wheel = _build_wheel(staging, identity.version)
+        constraints = _export_constraints(staging, identity.version, platform_tag)
+        model_root = _model_tree(staging, identity)
+        model = _bundle_model(staging, identity.version, model_root)
+        _smoke(wheel, constraints, model, identity.version)
 
-        assets = []
+        assets: list[PayloadAsset] = []
         for kind, source in (
             ("wheel", wheel),
             ("constraints", constraints),
@@ -356,29 +497,21 @@ def build(output: Path) -> None:
             if source != destination:
                 shutil.move(source, destination)
             assets.append(
-                {
-                    "kind": kind,
-                    "filename": destination.name,
-                    "sha256": _sha256(destination),
-                }
+                PayloadAsset(
+                    kind=kind,
+                    filename=destination.name,
+                    sha256=_sha256(destination),
+                )
             )
         shutil.rmtree(staging / "wheel")
-        manifest = {
-            "version": version,
-            "platform": platform_tag,
-            "dependency_backend": "cpu",
-            "dependency_index_strategy": "unsafe-best-match",
-            "model": {
-                "repository": repository,
-                "revision": revision,
-                "identity": f"{repository}@{revision}",
-                "bundle": bundle,
-                "license": "Apache-2.0",
-            },
-            "assets": assets,
-        }
-        (staging / f"normflow-{version}-payload.json").write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        manifest = PayloadManifest(
+            identity=identity,
+            platform=platform_tag,
+            assets=tuple(assets),
+        )
+        (staging / f"normflow-{identity.version}-payload.json").write_text(
+            json.dumps(manifest.as_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
         )
         shutil.rmtree(staging / "model-tree")
         download = staging / "model-download"

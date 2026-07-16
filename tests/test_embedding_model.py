@@ -49,7 +49,9 @@ def test_embedding_model_loads_only_the_valid_managed_local_bundle(tmp_path: Pat
     loaded = load_embedding_model(model_path, model_factory=factory)
 
     assert loaded is model
-    factory.assert_called_once_with(str(model_path), local_files_only=True)
+    factory.assert_called_once_with(
+        str(model_path), local_files_only=True, device="cpu"
+    )
     assert managed_embedding_model_path(tmp_path) == (
         tmp_path / "share" / "normflow" / "models" / EMBEDDING_MODEL_BUNDLE
     )

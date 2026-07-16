@@ -18,6 +18,7 @@ ROOT = Path(__file__).parents[1]
 VERSION = "0.1.0"
 REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
 MODEL_BUNDLE = f"all-MiniLM-L6-v2-{REVISION}"
+MODEL_SOURCE_PROVENANCE = "normflow-model-source.json"
 MODEL_FILES = {
     "1_Pooling/config.json": "{}",
     "config.json": "{}",
@@ -59,6 +60,25 @@ def _release_checkout(
         path = model_source / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents, encoding="utf-8")
+    (model_source / MODEL_SOURCE_PROVENANCE).write_text(
+        json.dumps(
+            {
+                "model": {
+                    "repository": "sentence-transformers/all-MiniLM-L6-v2",
+                    "revision": REVISION,
+                    "identity": (
+                        f"sentence-transformers/all-MiniLM-L6-v2@{REVISION}"
+                    ),
+                    "bundle": MODEL_BUNDLE,
+                },
+                "files": {
+                    name: hashlib.sha256(contents.encode()).hexdigest()
+                    for name, contents in MODEL_FILES.items()
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -177,6 +197,26 @@ def test_release_payload_command_emits_one_versioned_payload(tmp_path: Path):
     assert (tmp_path / "install-record").read_text() == "installed"
 
 
+def test_release_payload_command_has_a_nonconflicting_default_output(tmp_path: Path):
+    checkout, _model_source, environment = _release_checkout(tmp_path)
+
+    subprocess.run(
+        [str(checkout / "scripts" / "build-release-payload")],
+        cwd=checkout,
+        env=environment,
+        check=True,
+    )
+
+    output = checkout / "dist" / "release-payload"
+    manifest = json.loads((output / f"normflow-{VERSION}-payload.json").read_text())
+    assert {path.name for path in output.iterdir()} == {
+        f"normflow-{VERSION}-payload.json",
+        *(asset["filename"] for asset in manifest["assets"]),
+    }
+    assert not list(output.glob("*.tar"))
+    assert not list(output.glob("*.zip"))
+
+
 def test_release_payload_exports_the_maintained_cpu_only_lock(tmp_path: Path):
     checkout, _model_source, environment = _release_checkout(
         tmp_path, use_maintained_lock=True
@@ -264,3 +304,100 @@ def test_release_payload_failure_leaves_no_partial_output(tmp_path: Path):
     assert result.returncode == 1
     assert "pinned model snapshot is incomplete" in result.stderr
     assert not output.exists()
+
+
+def test_model_source_override_requires_verified_provenance(tmp_path: Path):
+    checkout, model_source, environment = _release_checkout(tmp_path)
+    (model_source / MODEL_SOURCE_PROVENANCE).unlink()
+    output = tmp_path / "payload"
+
+    result = subprocess.run(
+        [str(checkout / "scripts" / "build-release-payload"), str(output)],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "model source provenance" in result.stderr
+    assert not output.exists()
+
+
+def test_model_source_override_rejects_bytes_not_bound_by_provenance(
+    tmp_path: Path,
+):
+    checkout, model_source, environment = _release_checkout(tmp_path)
+    (model_source / "model.safetensors").write_text("untrusted model weights")
+    output = tmp_path / "payload"
+
+    result = subprocess.run(
+        [str(checkout / "scripts" / "build-release-payload"), str(output)],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "provenance does not match its contents" in result.stderr
+    assert not output.exists()
+
+
+def test_release_payload_rejects_drift_in_declared_model_identity(tmp_path: Path):
+    checkout, _model_source, environment = _release_checkout(tmp_path)
+    identity_source = checkout / "src" / "normflow" / "embedding_model.py"
+    identity_source.write_text(
+        identity_source.read_text().replace(
+            'EMBEDDING_MODEL_BUNDLE = f"all-MiniLM-L6-v2-{EMBEDDING_MODEL_REVISION}"',
+            'EMBEDDING_MODEL_BUNDLE = "drifted-model-bundle"',
+        )
+    )
+    output = tmp_path / "payload"
+
+    result = subprocess.run(
+        [str(checkout / "scripts" / "build-release-payload"), str(output)],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "declared embedding-model identity is inconsistent" in result.stderr
+    assert not output.exists()
+
+
+def test_release_smoke_command_reports_usage_without_a_traceback():
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "smoke_release_payload.py")],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert "usage: smoke_release_payload.py MODEL_ARCHIVE VERSION" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_release_smoke_command_normalizes_smoke_failures(tmp_path: Path):
+    environment = os.environ.copy()
+    environment.pop("NORMFLOW_DISABLE_NETWORK", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "smoke_release_payload.py"),
+            str(tmp_path / "missing-model.tar.gz"),
+            VERSION,
+        ],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "release smoke failed: release smoke tests require disabled network" in (
+        result.stderr
+    )
+    assert "Traceback" not in result.stderr

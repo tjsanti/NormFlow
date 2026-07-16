@@ -14,15 +14,12 @@ def _disabled(*_args: object, **_kwargs: object) -> None:
     raise RuntimeError("network access is disabled during release smoke tests")
 
 
-def main() -> None:
+def _smoke(model_archive: Path, version: str) -> None:
     if os.environ.get("NORMFLOW_DISABLE_NETWORK") != "1":
         raise RuntimeError("release smoke tests require disabled network access")
     socket.create_connection = _disabled  # type: ignore[assignment]
     socket.getaddrinfo = _disabled  # type: ignore[assignment]
     socket.socket.connect = _disabled  # type: ignore[method-assign]
-
-    model_archive = Path(sys.argv[1]).resolve()
-    version = sys.argv[2]
 
     import torch
     from fastapi.testclient import TestClient
@@ -51,9 +48,26 @@ def main() -> None:
         with tarfile.open(model_archive, "r:gz") as archive:
             archive.extractall(temporary / "model", filter="data")
         model = load_embedding_model(temporary / "model" / EMBEDDING_MODEL_BUNDLE)
+        assert str(model.device) == "cpu"
         encoded = model.encode(["NormFlow release smoke test"], normalize_embeddings=True)
         assert len(encoded) == 1
 
 
+def main() -> int:
+    if len(sys.argv) != 3:
+        print(
+            "usage: smoke_release_payload.py MODEL_ARCHIVE VERSION",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        _smoke(Path(sys.argv[1]).resolve(), sys.argv[2])
+    except Exception as error:
+        detail = str(error) or error.__class__.__name__
+        print(f"release smoke failed: {detail}", file=sys.stderr)
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

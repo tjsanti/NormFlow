@@ -22,6 +22,8 @@ class EmbeddingModelUnavailableError(RuntimeError):
 class EmbeddingModel(Protocol):
     """The model operations required by semantic indexing."""
 
+    device: object
+
     def encode(
         self,
         sentences: list[str],
@@ -40,6 +42,7 @@ class EmbeddingModelFactory(Protocol):
         model_path: str,
         *,
         local_files_only: bool,
+        device: str,
     ) -> EmbeddingModel: ...
 
 
@@ -91,6 +94,6 @@ def load_embedding_model(
             from sentence_transformers import SentenceTransformer
 
             model_factory = SentenceTransformer
-        return model_factory(str(path), local_files_only=True)
+        return model_factory(str(path), local_files_only=True, device="cpu")
     except Exception as error:
         raise EmbeddingModelUnavailableError(error_message) from error
