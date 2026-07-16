@@ -2,9 +2,9 @@
 
 CLI-first, human-in-the-loop text normalization workbench.
 
-Import approved `raw_text → normalized_text` mappings, get Suggestions for new records, and resolve pending Review Items into Mappings.
+Import approved `raw_text → normalized_text` Mappings, process new records through an exact → semantic → LLM fallback chain, review uncertain Suggestions, and export normalized results.
 
-**Current state:** Project init, a local browser UI, CSV import/export, exact-match Suggestions, semantic search (FAISS), batch CSV Suggestions, and unified Review Item acceptance.
+**Current state:** Project init, a local browser UI, Mapping and Batch CSV imports, exact/semantic/LLM Suggestions, durable Batch Import Runs, Review Item acceptance, and CSV export.
 
 ## Prerequisites
 
@@ -52,8 +52,7 @@ The port must be available on localhost. Without `--port`, NormFlow chooses a fr
 
 ### Configure the LLM
 
-`normflow ui` requires server-side LLM configuration before it starts the local
-server or opens a browser:
+`normflow ui` and `normflow batch-import` require valid server-side LLM configuration before they start the local server or a Batch Import Run:
 
 | Variable | Requirement |
 |----------|-------------|
@@ -63,13 +62,14 @@ server or opens a browser:
 
 Set these variables in the shell, or put them in an optional `.env` file at the
 active Project root. NormFlow resolves the active Project first, so its `.env`
-is found when `normflow ui` is launched from a nested Project directory. Existing
-shell values take precedence over Project `.env` values.
+is found when `normflow ui` or `normflow batch-import` is launched from a nested
+Project directory. Existing shell values take precedence over Project `.env`
+values.
 
-Credentials remain in the server process: they are not stored in the Project
+Credentials remain in the NormFlow process: they are not stored in the Project
 database or sent to the browser. Launch validation parses local configuration
 only and makes no provider or network request. Invalid configuration exits with
-an error before the server or browser starts.
+an error before the server, browser, or Batch Import starts.
 
 ### Project contents
 
@@ -77,13 +77,15 @@ Initialization creates:
 
 | Item | Purpose |
 |------|---------|
-| `normflow.db` | SQLite database — source of truth for Mappings and Review Items |
+| `normflow.db` | SQLite database — source of truth for Mappings, Review Items, and Batch Import Runs |
 | `input/` | Raw text records awaiting normalization |
 | `output/` | Results after normalization |
 | `samples/` | Portable flat files for demos, seed data, and evaluation fixtures |
 | `.normflow/` | Internal data (FAISS semantic index) |
 
 Existing Project databases remain compatible and are opened in place; no Project marker or schema migration is required for this workflow.
+
+The first Batch Import also creates internal `.batches/` storage for the sole retained Batch CSV and run recovery data.
 
 ### Check Project status
 
@@ -100,9 +102,36 @@ normflow import --source-column source --target-column target mappings.csv
 ```
 
 Reads a CSV file with a header row. Each row becomes a `raw_text → normalized_text` mapping in the database.
+
 - `--source-column` and `--target-column` are required.
 - Duplicate sources (already in the database) are skipped.
 - Empty rows and whitespace are handled gracefully.
+
+### Batch Import records
+
+Use the canonical Batch Import when a CSV contains raw records that need to become Mappings or Review Items:
+
+```bash
+normflow batch-import records.csv --column name
+```
+
+For each unique, nonblank value, NormFlow runs the complete exact-match → semantic-match → LLM-Suggestion fallback chain. Exact and semantic matches are auto-committed as Mappings; LLM Suggestions become pending Review Items for human approval. Duplicate values and values already pending review are skipped. A Batch Import also works when the Mapping library is empty.
+
+Each attempt is a durable Batch Import Run with a unique ID and an `active`, `succeeded`, `failed`, or `interrupted` status. The command prints the run ID immediately to stderr, waits synchronously, and writes one terminal JSON document to stdout.
+
+The outcome is all-or-nothing: a successful run publishes its Mappings, Review Items, semantic-index state, and the Project's sole retained Batch CSV atomically. A failure preserves the previous Project state and retained Batch CSV. Only one writer may modify a Project at a time. When a Batch Import owns the Project, a competing Batch Import fails immediately with exit code `3` and reports the active run.
+
+Inspect a run by ID, or omit the ID to inspect the active or most recent run:
+
+```bash
+normflow batch-import-status [RUN_ID]
+```
+
+Failed and interrupted runs are never retried automatically. Retry one explicitly by resubmitting its CSV; the retry receives a new run ID:
+
+```bash
+normflow batch-import-retry RUN_ID records.csv --column name
+```
 
 ### Export mappings to CSV
 
@@ -111,6 +140,16 @@ normflow export mappings.csv [--source-column raw_text] [--target-column normali
 ```
 
 Writes all current mappings to a CSV file. Column names default to `raw_text` and `normalized_text` but can be overridden with `--source-column` and `--target-column`.
+
+### Export the retained Batch
+
+After reviewing the Batch's Review Items, export the original retained CSV with a normalized-text column populated from approved Mappings:
+
+```bash
+normflow export-batch results.csv --source-column name
+```
+
+The original columns and row order are preserved. Rows without an approved Mapping have a blank value. Use `--output-column` to change the added column name from its `normalized_text` default.
 
 ### Build the semantic search index
 
@@ -140,6 +179,7 @@ normflow suggest "colour" --limit 10
 
 - `--limit` (default: 1) — maximum number of suggestions to return.
 - `--no-semantic` — disable semantic matching fallback (exact match only).
+- `--no-llm` — disable LLM matching fallback.
 - `--semantic-threshold` (default: 0.85) — minimum cosine similarity for semantic matches.
 
 ### Batch-suggest normalizations for a CSV
@@ -148,12 +188,13 @@ normflow suggest "colour" --limit 10
 normflow suggest-batch records.csv --column name
 ```
 
-Reads every row from a CSV, looks up exact-match and semantic suggestions for the specified column, and outputs a CSV with the original columns plus a `normalized_text` column containing the top suggestion (blank if no match).
+Reads every row from a CSV, looks up exact, semantic, and LLM Suggestions for the specified column, and outputs a CSV with the original columns plus a `normalized_text` column containing the top Suggestion (blank if no match). Unlike `batch-import`, this command does not create Mappings or Review Items and does not retain the CSV in the Project.
 
 - `--column` is required — the CSV column holding the raw texts to normalize.
 - `--output-column` (default: `normalized_text`) sets the name of the suggestion column in the output.
 - `--output` writes the result to a file instead of stdout.
 - `--no-semantic` — disable semantic matching fallback.
+- `--no-llm` — disable LLM matching fallback.
 - `--semantic-threshold` (default: 0.85) — minimum cosine similarity for semantic matches.
 - Entirely blank rows are excluded; partial rows are included with a blank suggestion.
 
@@ -203,22 +244,19 @@ normflow version
 src/normflow/
 ├── __init__.py           # Package entry, __version__
 ├── __main__.py           # python -m normflow
-├── cli.py                # Typer CLI: version, init, info, ui, import, export, suggest, suggest-batch, review, index
 ├── api.py                # Same-origin FastAPI adapter and production UI serving
-├── mapping_service.py    # Single seam: CSV import/export, suggest (exact + semantic), review, index build/clear
+├── batch_import.py       # Durable Batch Import coordination, recovery, status, and retry
+├── cli.py                # Thin Typer adapter over the core services
+├── llm_config.py         # Project-aware server-side LLM configuration
+├── llm_matcher.py        # LLM Suggestion provider adapter
+├── mapping_service.py    # Mapping, Suggestion, Review Item, Batch, export, and index workflows
 ├── project.py            # Current-directory Project discovery and validation
 ├── project_service.py    # Project initialization
 ├── semantic_index.py     # FAISS + SentenceTransformer index (build, persist, query)
 ├── static/               # Built browser UI served by FastAPI
-└── suggestion_lookup.py  # Exact, semantic, and LLM Suggestion lookup
+└── suggestion_lookup.py  # Exact, semantic, and LLM fallback chain
 frontend/                 # Framework-free TypeScript UI, Vite build, and Vitest tests
-tests/
-├── conftest.py               # Shared fixtures
-├── helpers.py                # Test helpers
-├── test_cli.py               # CLI tests
-├── test_project_service.py   # Project service tests
-├── test_semantic_index.py    # Semantic index tests
-└── test_suggest_semantic.py  # Semantic suggestion tests
+tests/                    # Pytest unit, adapter, workflow, recovery, and packaging tests
 ```
 
 ## Roadmap
@@ -228,6 +266,8 @@ tests/
 - [x] Exact matching suggestions
 - [x] Batch CSV suggestions
 - [x] Semantic search with embeddings (FAISS + sentence-transformers)
-- [ ] LLM fallback
+- [x] LLM fallback
 - [x] Unified Review Item acceptance
+- [x] Atomic, durable Batch Import Runs with status and explicit retry
+- [x] Retained Batch export
 - [x] Local TypeScript UI bound to the current Project

@@ -69,6 +69,25 @@ def test_readme_documents_unified_review_item_acceptance():
     assert "--record-id" not in readme
 
 
+def test_readme_documents_durable_batch_import_workflow():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "normflow batch-import records.csv --column name" in readme
+    assert "normflow batch-import-status [RUN_ID]" in readme
+    assert (
+        "normflow batch-import-retry RUN_ID records.csv --column name" in readme
+    )
+    assert "normflow export-batch results.csv --source-column name" in readme
+    assert re.search(r"exact.*semantic.*LLM", readme, re.IGNORECASE | re.DOTALL)
+    assert re.search(r"all.or.nothing|atomic", readme, re.IGNORECASE)
+    assert re.search(r"sole retained Batch CSV", readme, re.IGNORECASE)
+    assert re.search(
+        r"(?:ui.*batch-import|batch-import.*ui).*require(?:s)?.*LLM configuration",
+        readme,
+        re.IGNORECASE | re.DOTALL,
+    )
+
+
 def test_domain_docs_define_the_batch_import_run_contract():
     context = (ROOT / "CONTEXT.md").read_text(encoding="utf-8")
     adr = ROOT / "docs" / "adr" / "0001-batch-import-coordination.md"
