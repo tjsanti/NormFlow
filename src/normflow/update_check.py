@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import fcntl
 import json
 import os
@@ -32,7 +32,7 @@ class UpdateCheckState:
     latest_version: str | None = None
     last_notified: datetime | None = None
     dismissed_version: str | None = None
-    dismissed_at: datetime | None = None
+    dismissed_on: date | None = None
 
 
 @dataclass(frozen=True)
@@ -113,7 +113,7 @@ class JsonUpdateCache:
                 latest_version=latest_version,
                 last_notified=_parse_datetime(payload.get("last_notified")),
                 dismissed_version=dismissed_version,
-                dismissed_at=_parse_datetime(payload.get("dismissed_at")),
+                dismissed_on=_parse_date(payload.get("dismissed_on")),
             )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return UpdateCheckState()
@@ -125,7 +125,7 @@ class JsonUpdateCache:
             "latest_version": state.latest_version,
             "last_notified": _format_datetime(state.last_notified),
             "dismissed_version": state.dismissed_version,
-            "dismissed_at": _format_datetime(state.dismissed_at),
+            "dismissed_on": _format_date(state.dismissed_on),
         }
         temporary_path: Path | None = None
         try:
@@ -246,7 +246,7 @@ class UpdateCheckService:
                     replace(
                         state,
                         dismissed_version=latest_version,
-                        dismissed_at=self._now(),
+                        dismissed_on=self._now().date(),
                     )
                 )
         except Exception:
@@ -262,7 +262,7 @@ class UpdateCheckService:
             return None
         if (
             state.dismissed_version == state.latest_version
-            and _same_day(state.dismissed_at, checked_at)
+            and _same_day(state.dismissed_on, checked_at)
         ):
             return None
         return self._notice(state.latest_version)
@@ -311,11 +311,8 @@ def _recent(earlier: datetime | None, now: datetime) -> bool:
     return timedelta(0) <= age < timedelta(hours=24)
 
 
-def _same_day(earlier: datetime | None, now: datetime) -> bool:
-    return (
-        earlier is not None
-        and earlier.astimezone(now.tzinfo).date() == now.date()
-    )
+def _same_day(earlier: date | None, now: datetime) -> bool:
+    return earlier is not None and earlier == now.date()
 
 
 def _parse_datetime(value: object) -> datetime | None:
@@ -330,6 +327,18 @@ def _parse_datetime(value: object) -> datetime | None:
 
 
 def _format_datetime(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _parse_date(value: object) -> date | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("date must be a string")
+    return date.fromisoformat(value)
+
+
+def _format_date(value: date | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 

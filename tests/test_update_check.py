@@ -1,7 +1,7 @@
 """Behavioral tests for the shared update-check service."""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 import json
 from pathlib import Path
 import subprocess
@@ -169,7 +169,7 @@ def test_browser_dismissal_uses_the_callers_local_calendar_day() -> None:
             last_attempt=now,
             latest_version="0.2.0",
             dismissed_version="0.2.0",
-            dismissed_at=datetime(2026, 7, 17, 0, 30, tzinfo=UTC),
+            dismissed_on=date(2026, 7, 16),
         )
     )
     service = UpdateCheckService(
@@ -183,6 +183,32 @@ def test_browser_dismissal_uses_the_callers_local_calendar_day() -> None:
     assert service.browser_status() is None
 
 
+def test_browser_dismissal_expires_on_the_next_local_day_across_dst() -> None:
+    daylight_time = timezone(-timedelta(hours=7))
+    now = datetime(2026, 3, 8, 0, 30, tzinfo=daylight_time)
+    cache = MemoryCache(
+        UpdateCheckState(
+            last_attempt=now,
+            latest_version="0.2.0",
+            dismissed_version="0.2.0",
+            dismissed_on=date(2026, 3, 7),
+        )
+    )
+    service = UpdateCheckService(
+        installed_version="0.1.0",
+        transport=StaticReleaseTransport("0.2.0"),
+        cache=cache,
+        now=lambda: now,
+        environment={},
+    )
+
+    assert service.browser_status() == UpdateNotice(
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+        install_command=INSTALL_COMMAND,
+    )
+
+
 def test_new_release_is_visible_despite_an_older_release_dismissal() -> None:
     now = datetime(2026, 7, 16, 12, tzinfo=UTC)
     cache = MemoryCache(
@@ -190,7 +216,7 @@ def test_new_release_is_visible_despite_an_older_release_dismissal() -> None:
             last_attempt=now,
             latest_version="0.3.0",
             dismissed_version="0.2.0",
-            dismissed_at=now,
+            dismissed_on=now.date(),
         )
     )
     service = UpdateCheckService(
@@ -328,7 +354,7 @@ def test_json_cache_recovers_from_corrupt_data_with_atomic_replacement(
         latest_version="0.2.0",
         last_notified=datetime(2026, 7, 16, 12, tzinfo=UTC),
         dismissed_version="0.2.0",
-        dismissed_at=datetime(2026, 7, 16, 13, tzinfo=UTC),
+        dismissed_on=date(2026, 7, 16),
     )
 
     recovered = cache.load()
