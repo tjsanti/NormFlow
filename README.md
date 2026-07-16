@@ -27,6 +27,21 @@ cd normflow
 uv sync
 ```
 
+## Build the release wheel
+
+From a clean checkout, run the complete release build:
+
+```bash
+./scripts/build-wheel
+```
+
+This installs the locked frontend dependencies with `npm ci`, runs the frontend
+tests and typecheck, builds the production browser assets, and builds only the
+wheel into `dist/`. The command fails if the frontend output is incomplete or
+if the finished wheel does not contain the browser UI. Generated files under
+`src/normflow/static/` are ignored; authored frontend source and
+`package-lock.json` are the inputs to the release artifact.
+
 ## Usage
 
 ### Create and open a Project

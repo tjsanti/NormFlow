@@ -21,8 +21,7 @@ build/
 
 # Frontend
 node_modules/
-!src/normflow/static/
-!src/normflow/static/**
+src/normflow/static/
 
 # Runtime
 normflow.db
