@@ -320,7 +320,7 @@ def suggest_cmd(
         _notify_semantic_refresh_failure(service, attempted=refresh_attempted)
         import json as _json
         print(_json.dumps({"raw_text": raw_text, "suggestions": [s.model_dump() for s in items]}, indent=2))
-    except ValueError as e:
+    except (ValueError, EmbeddingModelUnavailableError) as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from None
 

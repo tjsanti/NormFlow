@@ -560,6 +560,20 @@ class TestSuggestCLI:
             data = json.loads(result.stdout)
             assert len(data["suggestions"]) == 1
 
+    def test_suggest_reports_missing_local_model(self):
+        service = MagicMock()
+        service.project_info.return_value = {"semantic_index_status": "fresh"}
+        service.lookup.side_effect = EmbeddingModelUnavailableError(
+            "NormFlow's required local embedding model is missing. Reinstall NormFlow."
+        )
+
+        with patch("normflow.cli._project_service", return_value=service):
+            result = CliRunner().invoke(app, ["suggest", "colr"])
+
+        assert result.exit_code == 1
+        assert "required local embedding model is missing" in result.stdout
+        assert "Reinstall NormFlow" in result.stdout
+
     @patch(_INDEX_PATCH)
     def test_dirty_index_progress_uses_stderr_and_preserves_json(self, mock_ensure):
         mock_model = MagicMock()

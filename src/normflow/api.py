@@ -282,7 +282,7 @@ def build_index(
         count = service.build_index()
         return IndexBuildResponse(entries=count)
     except EmbeddingModelUnavailableError as error:
-        raise HTTPException(status_code=503, detail=str(error))
+        raise HTTPException(status_code=503, detail=str(error)) from None
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
 
