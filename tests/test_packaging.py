@@ -292,34 +292,28 @@ def test_isolated_wheel_install_can_import_package_and_fetch_browser_ui(
     subprocess.run([sys.executable, "-m", "venv", str(environment)], check=True)
     python = environment / "bin" / "python"
     subprocess.run(
-        [str(python), "-m", "pip", "install", "--no-deps", str(release_wheel)],
+        ["uv", "pip", "install", "--python", str(python), str(release_wheel)],
         check=True,
     )
     smoke_test = """
-from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Thread
-from urllib.request import urlopen
+import re
 
-import normflow
+from fastapi.testclient import TestClient
 
-static = Path(normflow.__file__).with_name("static")
-server = ThreadingHTTPServer(
-    ("127.0.0.1", 0),
-    partial(SimpleHTTPRequestHandler, directory=static),
-)
-thread = Thread(target=server.serve_forever, daemon=True)
-thread.start()
-try:
-    with urlopen(f"http://127.0.0.1:{server.server_port}/", timeout=5) as response:
-        page = response.read()
-finally:
-    server.shutdown()
-    thread.join()
-    server.server_close()
+from normflow.api import create_app
+from normflow.project import project_at
+from normflow.project_service import init_project
 
-assert b"<title>NormFlow</title>" in page
-assert b'/assets/' in page
+project_root = init_project(Path.cwd() / "project")
+with TestClient(create_app(project_at(project_root))) as client:
+    response = client.get("/")
+    page = response.text
+    asset = re.search(r'(?:src|href)="(/assets/[^"]+\\.(?:js|css))"', page)
+    assert response.status_code == 200
+    assert asset is not None
+    assert client.get(asset.group(1)).status_code == 200
+
+assert "<title>NormFlow</title>" in page
 """
     subprocess.run([str(python), "-c", smoke_test], cwd=tmp_path, check=True)
