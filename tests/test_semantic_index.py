@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import faiss
 import pytest
 
+from normflow.embedding_model import EMBEDDING_MODEL_IDENTITY
 from normflow.mapping_service import MappingService
 from normflow.semantic_index import SemanticIndex
 from tests.helpers import seed_mappings
@@ -68,6 +69,21 @@ class TestSemanticIndexBuild:
 
         index_dir = project / ".normflow" / "faiss_index"
         assert index_dir.exists()
+
+    @patch(_INDEX_PATCH)
+    def test_build_persists_the_embedding_model_identity(self, mock_ensure, project):
+        model = MagicMock()
+        model.encode.return_value = [[1.0, 0.0, 0.0] for _ in SEED_PAIRS]
+        mock_ensure.return_value = model
+
+        SemanticIndex(str(project)).build(SEED_PAIRS)
+
+        index_dir = project / ".normflow" / "faiss_index"
+        generation = (index_dir / "current").read_text(encoding="utf-8").strip()
+        active_dir = index_dir / "generations" / generation
+        assert (active_dir / "model_identity").read_text(encoding="utf-8") == (
+            f"{EMBEDDING_MODEL_IDENTITY}\n"
+        )
 
     @patch(_INDEX_PATCH)
     def test_build_skips_empty_raw_text(self, mock_ensure, project):
@@ -187,6 +203,30 @@ class TestSemanticIndexMarkers:
 
         marker_temporary_files = (project / ".normflow").glob(".semantic_index_*.tmp")
         assert list(marker_temporary_files) == []
+
+
+class TestSemanticIndexIdentity:
+    """Only generations built by the current embedding model are verified."""
+
+    @pytest.mark.parametrize("persisted_identity", [None, "different-model@revision"])
+    @patch(_INDEX_PATCH)
+    def test_missing_or_different_model_identity_is_unverified(
+        self, mock_ensure, project, persisted_identity
+    ):
+        model = MagicMock()
+        model.encode.return_value = [[1.0, 0.0, 0.0] for _ in SEED_PAIRS]
+        mock_ensure.return_value = model
+        index = SemanticIndex(str(project))
+        index.build(SEED_PAIRS)
+        index_dir = project / ".normflow" / "faiss_index"
+        generation = (index_dir / "current").read_text(encoding="utf-8").strip()
+        identity_path = index_dir / "generations" / generation / "model_identity"
+        if persisted_identity is None:
+            identity_path.unlink()
+        else:
+            identity_path.write_text(f"{persisted_identity}\n", encoding="utf-8")
+
+        assert index.status() == "unverified"
 
 
 class TestSemanticIndexRecovery:

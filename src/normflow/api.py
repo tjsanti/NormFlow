@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictInt
 
 from .batch_import import BatchImportRunNotFoundError, ProjectBusyError, RunStatus
+from .embedding_model import EmbeddingModelUnavailableError
 
 from .mapping_service import (
     BulkAcceptError,
@@ -280,6 +281,8 @@ def build_index(
     try:
         count = service.build_index()
         return IndexBuildResponse(entries=count)
+    except EmbeddingModelUnavailableError as error:
+        raise HTTPException(status_code=503, detail=str(error))
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
 

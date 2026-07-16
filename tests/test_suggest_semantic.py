@@ -13,6 +13,10 @@ from typer.testing import CliRunner
 
 from tests.helpers import seed_mappings
 from normflow.cli import app
+from normflow.embedding_model import (
+    EMBEDDING_MODEL_IDENTITY,
+    EmbeddingModelUnavailableError,
+)
 from normflow.mapping_service import MappingService
 from normflow.project_service import init_project as _init_project
 
@@ -320,7 +324,9 @@ class TestSuggestSemanticFallback:
             assert service.project_info()["semantic_index_status"] == "refresh_required"
 
     @patch(_INDEX_PATCH)
-    def test_legacy_index_is_verified_by_first_semantic_lookup(self, mock_ensure):
+    def test_legacy_index_without_model_identity_is_rebuilt_before_lookup(
+        self, mock_ensure
+    ):
         """Existing Projects migrate lazily without a separate command."""
         mock_model = MagicMock()
         mock_model.encode.return_value = [[1.0, 0.0, 0.0]]
@@ -339,6 +345,7 @@ class TestSuggestSemanticFallback:
             shutil.copy2(active_dir / "index.faiss", index_dir / "index.faiss")
             (index_dir / "mapping_table.pkl").write_bytes(b"legacy pickle must not be loaded")
             (index_dir / "current").unlink()
+            assert not (index_dir / "model_identity").exists()
             assert service.project_info()["semantic_index_status"] == "unverified"
 
             suggestions = service.lookup(
@@ -347,6 +354,77 @@ class TestSuggestSemanticFallback:
 
             assert suggestions[0].suggested_text == "color"
             assert service.project_info()["semantic_index_status"] == "fresh"
+
+    @patch(_INDEX_PATCH)
+    def test_different_model_identity_is_rebuilt_before_semantic_lookup(
+        self, mock_ensure
+    ):
+        model = MagicMock()
+        model.encode.return_value = [[1.0, 0.0, 0.0]]
+        mock_ensure.return_value = model
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            service = MappingService(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
+            service.build_index()
+            index_dir = project_path / ".normflow" / "faiss_index"
+            old_generation = (
+                index_dir / "current"
+            ).read_text(encoding="utf-8").strip()
+            old_active_dir = index_dir / "generations" / old_generation
+            (old_active_dir / "model_identity").write_text(
+                "different-model@revision\n", encoding="utf-8"
+            )
+
+            suggestions = service.lookup(
+                "colr", semantic=True, llm=False, threshold=0.5,
+            )
+
+            new_generation = (
+                index_dir / "current"
+            ).read_text(encoding="utf-8").strip()
+            new_active_dir = index_dir / "generations" / new_generation
+            assert suggestions[0].suggested_text == "color"
+            assert new_generation != old_generation
+            assert (new_active_dir / "model_identity").read_text(
+                encoding="utf-8"
+            ).strip() == EMBEDDING_MODEL_IDENTITY
+            assert service.project_info()["semantic_index_status"] == "fresh"
+
+    @patch(_INDEX_PATCH)
+    def test_mismatched_model_index_is_not_used_when_rebuild_fails(self, mock_ensure):
+        """Vectors from a different model identity are never queried."""
+        model = MagicMock()
+        model.encode.return_value = [[1.0, 0.0, 0.0]]
+        mock_ensure.return_value = model
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            service = MappingService(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
+            service.build_index()
+            index_dir = project_path / ".normflow" / "faiss_index"
+            generation = (index_dir / "current").read_text(encoding="utf-8").strip()
+            active_dir = index_dir / "generations" / generation
+            (active_dir / "model_identity").write_text(
+                "different-model@revision\n", encoding="utf-8"
+            )
+            mock_ensure.side_effect = EmbeddingModelUnavailableError(
+                "local embedding model missing"
+            )
+
+            suggestions = service.lookup(
+                "colr", semantic=True, llm=False, threshold=0.5,
+            )
+
+            info = service.project_info()
+            assert suggestions == []
+            assert info["semantic_index_status"] == "unverified"
+            assert "will not be used" in info["semantic_index_warning"]
+            assert "normflow index build" in info["semantic_index_warning"]
 
     @patch(_INDEX_PATCH)
     def test_batch_retries_failed_refresh_only_on_the_next_operation(self, mock_ensure):
@@ -553,6 +631,24 @@ class TestIndexCLI:
             result = runner.invoke(app, ["index", "build"])
             assert result.exit_code == 0
             assert "2" in result.stdout
+
+    @patch(
+        _INDEX_PATCH,
+        side_effect=EmbeddingModelUnavailableError(
+            "NormFlow's required local embedding model is missing. Reinstall NormFlow."
+        ),
+    )
+    def test_index_build_reports_missing_local_model(self, _mock_ensure):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "proj"
+            init_project(str(project_path))
+            seed_mappings(project_path, [("colour", "color")])
+
+            result = runner.invoke(app, ["index", "build"])
+
+            assert result.exit_code == 1
+            assert "required local embedding model is missing" in result.stdout
+            assert "Reinstall NormFlow" in result.stdout
 
     @patch(_INDEX_PATCH)
     def test_index_clear_succeeds(self, mock_ensure):

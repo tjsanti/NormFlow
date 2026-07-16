@@ -13,15 +13,20 @@ from uuid import uuid4
 
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+from .embedding_model import (
+    EMBEDDING_MODEL_IDENTITY,
+    EmbeddingModel,
+    load_embedding_model,
+)
 
 
 SemanticIndexStatus = Literal["fresh", "refresh_required", "unverified", "missing"]
 
 
 @cache
-def _ensure_model() -> SentenceTransformer:
-    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+def _ensure_model() -> EmbeddingModel:
+    return load_embedding_model()
 
 
 class SemanticIndex:
@@ -61,6 +66,15 @@ class SemanticIndex:
         generation = self._current_generation()
         return self._generations_dir / generation if generation else self._index_dir
 
+    def _has_current_model_identity(self, active_dir: Path) -> bool:
+        try:
+            identity = (active_dir / "model_identity").read_text(
+                encoding="utf-8"
+            ).strip()
+        except (FileNotFoundError, OSError):
+            return False
+        return identity == EMBEDDING_MODEL_IDENTITY
+
     def status(self, current_mapping_revision: int | None = None) -> SemanticIndexStatus:
         """Return the persisted freshness state of this Project's index."""
         if not self.exists():
@@ -69,6 +83,8 @@ class SemanticIndex:
         if (active_dir / "mapping_table.pkl").exists():
             return "unverified"
         if not (active_dir / "mapping_table.json").exists():
+            return "unverified"
+        if not self._has_current_model_identity(active_dir):
             return "unverified"
         if current_mapping_revision is not None:
             try:
@@ -106,18 +122,25 @@ class SemanticIndex:
 
     def warning(self, current_mapping_revision: int | None = None) -> str | None:
         """Describe non-fresh index behavior for adapters and users."""
+        status = self.status(current_mapping_revision)
         if self._refresh_failed_path.exists():
-            if self.status(current_mapping_revision) == "missing":
+            if status == "missing":
                 return (
                     "Automatic semantic index refresh failed; semantic and LLM Suggestions "
                     "are unavailable. Exact matching remains available. Run `normflow index "
                     "build` to retry."
                 )
+            if status == "unverified":
+                return (
+                    "Automatic semantic index rebuild failed; the unverified index will not "
+                    "be used, so semantic and LLM Suggestions are unavailable. Exact matching "
+                    "remains available. Restore the local embedding model and run `normflow "
+                    "index build` to retry."
+                )
             return (
                 "Automatic semantic index refresh failed; Suggestions may use earlier "
                 "Mappings. Run `normflow index build` to retry."
             )
-        status = self.status(current_mapping_revision)
         if status == "refresh_required":
             return "The semantic index will refresh before the next semantic Suggestion."
         if status == "unverified":
@@ -275,7 +298,7 @@ class SemanticIndex:
             if previous_generation is not None:
                 for legacy_name in (
                     "index.faiss", "mapping_table.json", "mapping_table.pkl",
-                    "mapping_revision", "freshness",
+                    "mapping_revision", "model_identity", "freshness",
                 ):
                     (self._index_dir / legacy_name).unlink(missing_ok=True)
         finally:
@@ -292,6 +315,8 @@ class SemanticIndex:
     def load(self) -> tuple[faiss.Index, list[tuple[str, str]]] | None:
         active_dir = self._active_index_dir()
         if not (active_dir / "index.faiss").exists():
+            return None
+        if not self._has_current_model_identity(active_dir):
             return None
         mapping_table_path = active_dir / "mapping_table.json"
         if not mapping_table_path.exists():
@@ -337,6 +362,9 @@ class SemanticIndex:
                 (temporary_dir / "mapping_revision").write_text(
                     f"{mapping_revision}\n", encoding="utf-8"
                 )
+            (temporary_dir / "model_identity").write_text(
+                f"{EMBEDDING_MODEL_IDENTITY}\n", encoding="utf-8"
+            )
             (temporary_dir / "freshness").write_text("verified\n", encoding="utf-8")
 
             os.replace(temporary_dir, generation_dir)

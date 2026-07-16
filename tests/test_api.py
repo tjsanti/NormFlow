@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from normflow.api import create_app, get_project_service
+from normflow.embedding_model import EmbeddingModelUnavailableError
 from normflow.mapping_service import (
     BulkAcceptError,
     BulkAcceptPersistenceError,
@@ -195,6 +196,24 @@ def test_bound_application_retains_mapping_import_export_and_index_http_contract
         assert exported.status_code == 200
         assert exported.text == "name,normalized_text\no2 sensor,Oxygen Sensor\n"
         assert "/index/build" in client.get("/openapi.json").json()["paths"]
+
+
+def test_index_build_reports_an_actionable_missing_model_error(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    client, service = _client_with_fake_service(str(project_root))
+    service.build_index.side_effect = EmbeddingModelUnavailableError(
+        "NormFlow's required local embedding model is missing. Reinstall NormFlow."
+    )
+
+    response = client.post("/index/build")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": (
+            "NormFlow's required local embedding model is missing. "
+            "Reinstall NormFlow."
+        )
+    }
 
 
 def test_mapping_import_validation_reports_available_csv_headers(tmp_path: Path):
