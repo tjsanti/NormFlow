@@ -21,6 +21,26 @@ def test_readme_documents_current_directory_project_workflow():
     assert re.search(r"discover", readme, re.IGNORECASE)
 
 
+def test_release_docs_define_the_public_distribution_contract():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    adr_path = ROOT / "docs" / "adr" / "0005-distribute-through-github-releases.md"
+
+    assert "https://github.com/tjsanti/NormFlow/releases/latest/download/install.sh" in readme
+    assert "uv tool install normflow" not in readme
+    assert "pip install normflow" not in readme
+    assert re.search(r"macOS.*Linux", readme, re.IGNORECASE | re.DOTALL)
+    assert re.search(r"Project data", readme, re.IGNORECASE)
+    assert re.search(r"migrate safely.*refuse clearly", readme, re.IGNORECASE | re.DOTALL)
+
+    assert adr_path.exists()
+    decision = adr_path.read_text(encoding="utf-8")
+    assert re.search(r"^Status: Accepted$", decision, re.MULTILINE)
+    assert re.search(r"immutable\s+GitHub\s+Releases", decision, re.IGNORECASE)
+    assert re.search(r"never.*PyPI", decision, re.IGNORECASE | re.DOTALL)
+    assert re.search(r"no\s+silent\s+self.update", decision, re.IGNORECASE)
+    assert re.search(r"migrate safely.*refuse clearly", decision, re.IGNORECASE | re.DOTALL)
+
+
 def test_readme_documents_safe_ui_automation_and_project_switching():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
