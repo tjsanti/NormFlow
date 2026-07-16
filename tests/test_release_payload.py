@@ -50,6 +50,7 @@ def _release_checkout(
             ".pytest_cache",
             ".venv",
             "__pycache__",
+            "dist",
             "node_modules",
             "static",
         ),
