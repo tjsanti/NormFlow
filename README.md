@@ -13,9 +13,17 @@ Import approved `raw_text → normalized_text` Mappings, process new records thr
 
 ## Install
 
+NormFlow 0.1.0 is distributed only through immutable GitHub Releases. The
+initial supported platforms are macOS and Linux; Windows is not yet supported.
+
 ```bash
-uv tool install normflow
+curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+  https://github.com/tjsanti/NormFlow/releases/latest/download/install.sh | sh
 ```
+
+Do not install the package named `normflow` from PyPI. That name belongs to an
+unrelated project, and this NormFlow project does not publish to PyPI. The
+GitHub Release installer URL above is the stable installation entry point.
 
 FastAPI, Uvicorn, multipart upload support, and the production browser assets are included in the normal installation. No optional server extra is needed.
 
@@ -84,6 +92,13 @@ Initialization creates:
 | `.normflow/` | Internal data (FAISS semantic index) |
 
 Existing Project databases remain compatible and are opened in place; no Project marker or schema migration is required for this workflow.
+
+### 0.x Project-data policy
+
+Command and application interfaces may change during the 0.x series. Project
+data has a stronger guarantee: a newer NormFlow must migrate safely when it
+supports the existing Project data, or refuse clearly before changing it. It
+must never silently corrupt a Project.
 
 The first Batch Import also creates internal `.batches/` storage for the sole retained Batch CSV and run recovery data.
 
@@ -235,7 +250,9 @@ Both forms trim and validate the chosen text, create its Mapping, and remove the
 ### Show version
 
 ```bash
-normflow version
+normflow --version
+# Short form:
+normflow -V
 ```
 
 ## Project structure

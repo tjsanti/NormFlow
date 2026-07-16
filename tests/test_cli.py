@@ -66,13 +66,23 @@ def test_cli_help():
     assert "normflow" in result.stdout
 
 
-def test_version_is_usable_outside_a_project(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("flag", ["--version", "-V"])
+def test_version_is_usable_outside_a_project(
+    flag: str, tmp_path: Path, monkeypatch,
+):
     monkeypatch.chdir(tmp_path)
 
-    result = runner.invoke(app, ["version"])
+    result = runner.invoke(app, [flag])
 
     assert result.exit_code == 0
-    assert result.stdout.strip()
+    assert result.stdout == "0.1.0\n"
+
+
+def test_version_subcommand_is_absent():
+    result = runner.invoke(app, ["version"])
+
+    assert result.exit_code == 2
+    assert "No such command 'version'" in result.output
 
 
 def test_init_creates_discoverable_project_in_current_directory(

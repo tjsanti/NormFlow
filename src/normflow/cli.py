@@ -17,6 +17,28 @@ app = typer.Typer(
     add_completion=False,
 )
 
+
+def _show_version(value: bool) -> bool:
+    if value:
+        typer.echo(__version__)
+        raise typer.Exit()
+    return value
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=_show_version,
+        is_eager=True,
+        help="Show the NormFlow version and exit.",
+    ),
+) -> None:
+    """Run NormFlow commands."""
+
+
 def _project_service() -> MappingService:
     """Return the service for the Project selected by the process directory."""
     from .mapping_service import MappingService
@@ -47,12 +69,6 @@ def _notify_semantic_refresh_failure(service: MappingService, *, attempted: bool
     info = service.project_info()
     if info["semantic_index_status"] != "fresh" and info["semantic_index_warning"]:
         typer.echo(info["semantic_index_warning"], err=True)
-
-
-@app.command()
-def version() -> None:
-    """Show the NormFlow version."""
-    print(__version__)
 
 
 @app.command()

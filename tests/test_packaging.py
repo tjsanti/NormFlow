@@ -20,6 +20,39 @@ def _build_wheel(tmp_path: Path) -> Path:
     return next(tmp_path.glob("normflow-*.whl"))
 
 
+def test_wheel_declares_the_public_release_identity(tmp_path: Path):
+    wheel = _build_wheel(tmp_path)
+
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_name = next(
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        )
+        metadata = BytesParser(policy=default).parsebytes(archive.read(metadata_name))
+
+    assert metadata["Name"] == "normflow"
+    assert metadata["Version"] == "0.1.0"
+    assert metadata["Author-Email"] == (
+        "Trevor Santiago <69698117+tjsanti@users.noreply.github.com>"
+    )
+    assert metadata["License-Expression"] == "MIT"
+    assert metadata.get_all("Project-URL") == [
+        "Repository, https://github.com/tjsanti/NormFlow",
+        "Issues, https://github.com/tjsanti/NormFlow/issues",
+    ]
+    classifiers = metadata.get_all("Classifier")
+    assert "Operating System :: MacOS" in classifiers
+    assert "Operating System :: POSIX :: Linux" in classifiers
+
+    check = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from importlib.metadata import version
+import normflow
+assert normflow.__version__ == version("normflow") == "0.1.0"
+"""
+    subprocess.run([sys.executable, "-c", check, str(wheel)], check=True)
+
+
 def test_wheel_declares_ui_stack_and_contains_browser_build(tmp_path: Path):
     wheel = _build_wheel(tmp_path)
 
