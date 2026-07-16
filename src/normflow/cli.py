@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import typer
 
 from . import __version__
+from .embedding_model import EmbeddingModelUnavailableError
 
 if TYPE_CHECKING:
     from .mapping_service import MappingService
@@ -319,7 +320,7 @@ def suggest_cmd(
         _notify_semantic_refresh_failure(service, attempted=refresh_attempted)
         import json as _json
         print(_json.dumps({"raw_text": raw_text, "suggestions": [s.model_dump() for s in items]}, indent=2))
-    except ValueError as e:
+    except (ValueError, EmbeddingModelUnavailableError) as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from None
 
@@ -420,7 +421,7 @@ def index_build() -> None:
     try:
         count = _project_service().build_index()
         print(f"Index built with {count} entries.")
-    except ValueError as e:
+    except (ValueError, EmbeddingModelUnavailableError) as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from None
 
