@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).parents[1]
 HEAVY_MODULE_ROOTS = (
@@ -94,8 +96,9 @@ def test_top_level_help_does_not_load_heavy_packages():
     assert loaded == []
 
 
-def test_version_does_not_load_heavy_packages():
-    completed, loaded = _run_fresh_cli(["version"])
+@pytest.mark.parametrize("flag", ["--version", "-V"])
+def test_version_flags_do_not_load_heavy_packages(flag: str):
+    completed, loaded = _run_fresh_cli([flag])
 
     assert completed.returncode == 0
     assert completed.stdout == "0.1.0\n"

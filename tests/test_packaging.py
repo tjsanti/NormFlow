@@ -2,28 +2,294 @@
 
 from email.parser import BytesParser
 from email.policy import default
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import zipfile
+
+import pytest
 
 
 ROOT = Path(__file__).parents[1]
 
 
-def _build_wheel(tmp_path: Path) -> Path:
+def _write_executable(path: Path, contents: str) -> None:
+    path.write_text(contents)
+    path.chmod(0o755)
+
+
+def test_editable_install_does_not_require_generated_browser_assets(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    package = checkout / "src" / "normflow"
+    package.parent.mkdir(parents=True)
+    for filename in ("pyproject.toml", "README.md", "LICENSE"):
+        shutil.copy2(ROOT / filename, checkout / filename)
+    shutil.copytree(
+        ROOT / "src" / "normflow",
+        package,
+        ignore=shutil.ignore_patterns("static", "__pycache__"),
+    )
+
+    environment = tmp_path / "environment"
+    subprocess.run(["uv", "venv", str(environment)], check=True)
     subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(tmp_path)],
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(environment / "bin" / "python"),
+            "--no-deps",
+            "--editable",
+            str(checkout),
+        ],
+        check=True,
+    )
+
+
+@pytest.fixture(scope="module")
+def release_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    tmp_path = tmp_path_factory.mktemp("release")
+    subprocess.run(
+        [str(ROOT / "scripts" / "build-wheel"), str(tmp_path)],
         cwd=ROOT,
         check=True,
     )
     return next(tmp_path.glob("normflow-*.whl"))
 
 
-def test_wheel_declares_ui_stack_and_contains_browser_build(tmp_path: Path):
-    wheel = _build_wheel(tmp_path)
+def test_wheel_declares_the_public_release_identity(release_wheel: Path):
+    with zipfile.ZipFile(release_wheel) as archive:
+        metadata_name = next(
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        )
+        metadata = BytesParser(policy=default).parsebytes(archive.read(metadata_name))
 
+    assert metadata["Name"] == "normflow"
+    assert metadata["Version"] == "0.1.0"
+    assert metadata["Author-Email"] == (
+        "Trevor Santiago <69698117+tjsanti@users.noreply.github.com>"
+    )
+    assert metadata["License-Expression"] == "MIT"
+    assert metadata.get_all("Project-URL") == [
+        "Repository, https://github.com/tjsanti/NormFlow",
+        "Issues, https://github.com/tjsanti/NormFlow/issues",
+    ]
+    classifiers = metadata.get_all("Classifier")
+    assert "Operating System :: MacOS" in classifiers
+    assert "Operating System :: POSIX :: Linux" in classifiers
+
+    check = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from importlib.metadata import version
+import normflow
+assert normflow.__version__ == version("normflow") == "0.1.0"
+"""
+    subprocess.run([sys.executable, "-c", check, str(release_wheel)], check=True)
+
+
+def test_release_build_command_builds_frontend_and_wheel(release_wheel: Path):
+    with zipfile.ZipFile(release_wheel) as archive:
+        names = archive.namelist()
+
+    assert "normflow/static/index.html" in names
+    assert any(
+        name.startswith("normflow/static/assets/") and name.endswith(".js")
+        for name in names
+    )
+    assert any(
+        name.startswith("normflow/static/assets/") and name.endswith(".css")
+        for name in names
+    )
+
+
+def test_release_build_fails_when_frontend_build_produces_no_assets(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    scripts = checkout / "scripts"
+    scripts.mkdir(parents=True)
+    build_script = ROOT / "scripts" / "build-wheel"
+    if build_script.exists():
+        shutil.copy2(build_script, scripts / "build-wheel")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "npm", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "uv",
+        "#!/bin/sh\ntouch \"$PWD/uv-was-called\"\nexit 0\n",
+    )
+    environment = os.environ.copy()
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+
+    result = subprocess.run(
+        ["sh", str(scripts / "build-wheel")],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "required browser asset is missing" in result.stderr
+    assert not (checkout / "uv-was-called").exists()
+
+
+def test_release_build_discards_ignored_stale_browser_assets(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    scripts = checkout / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "build-wheel", scripts / "build-wheel")
+    stale_asset = checkout / "src" / "normflow" / "static" / "assets" / "stale.js"
+    stale_asset.parent.mkdir(parents=True)
+    stale_asset.write_text("stale browser build")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "npm",
+        """#!/bin/sh
+if [ "$1" = "run" ] && [ "$2" = "build" ]; then
+    mkdir -p src/normflow/static/assets
+    printf 'current index' > src/normflow/static/index.html
+    printf 'current script' > src/normflow/static/assets/app.js
+    printf 'current style' > src/normflow/static/assets/app.css
+fi
+""",
+    )
+    _write_executable(
+        fake_bin / "uv",
+        f"""#!{sys.executable}
+from pathlib import Path
+import sys
+import zipfile
+
+arguments = sys.argv[1:]
+output = Path(arguments[arguments.index("--out-dir") + 1])
+wheel = output / "normflow-0.1.0-py3-none-any.whl"
+wheel.parent.mkdir(parents=True, exist_ok=True)
+static = Path("src/normflow/static")
+with zipfile.ZipFile(wheel, "w") as archive:
+    for path in static.rglob("*"):
+        if path.is_file():
+            archive.write(
+                path,
+                f"normflow/static/{{path.relative_to(static).as_posix()}}",
+            )
+""",
+    )
+    environment = os.environ.copy()
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+    output = tmp_path / "wheel"
+
+    subprocess.run(
+        ["sh", str(scripts / "build-wheel"), str(output)],
+        cwd=checkout,
+        env=environment,
+        check=True,
+    )
+
+    wheel = next(output.glob("normflow-*.whl"))
     with zipfile.ZipFile(wheel) as archive:
+        assert "normflow/static/assets/stale.js" not in archive.namelist()
+
+
+def test_release_build_fails_when_wheel_omits_browser_assets(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    scripts = checkout / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "build-wheel", scripts / "build-wheel")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "npm",
+        """#!/bin/sh
+mkdir -p src/normflow/static/assets
+touch src/normflow/static/index.html
+touch src/normflow/static/assets/app.js
+touch src/normflow/static/assets/app.css
+""",
+    )
+    _write_executable(
+        fake_bin / "uv",
+        f"""#!{sys.executable}
+from pathlib import Path
+import zipfile
+
+wheel = Path("dist/normflow-0.1.0-py3-none-any.whl")
+wheel.parent.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(wheel, "w") as archive:
+    archive.writestr("normflow/__init__.py", "")
+""",
+    )
+    environment = os.environ.copy()
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+
+    result = subprocess.run(
+        ["sh", str(scripts / "build-wheel")],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "wheel is missing required browser asset" in result.stderr
+
+
+def test_release_build_fails_when_wheel_browser_assets_differ_from_build(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    scripts = checkout / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "build-wheel", scripts / "build-wheel")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "npm",
+        """#!/bin/sh
+mkdir -p src/normflow/static/assets
+printf 'current index' > src/normflow/static/index.html
+printf 'current script' > src/normflow/static/assets/app.js
+printf 'current style' > src/normflow/static/assets/app.css
+""",
+    )
+    _write_executable(
+        fake_bin / "uv",
+        f"""#!{sys.executable}
+from pathlib import Path
+import zipfile
+
+wheel = Path("dist/normflow-0.1.0-py3-none-any.whl")
+wheel.parent.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(wheel, "w") as archive:
+    archive.writestr("normflow/static/index.html", "stale index")
+    archive.writestr("normflow/static/assets/app.js", "stale script")
+    archive.writestr("normflow/static/assets/app.css", "stale style")
+""",
+    )
+    environment = os.environ.copy()
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+
+    result = subprocess.run(
+        ["sh", str(scripts / "build-wheel")],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "wheel browser assets do not match frontend build" in result.stderr
+
+
+def test_wheel_declares_ui_stack_and_contains_browser_build(release_wheel: Path):
+    with zipfile.ZipFile(release_wheel) as archive:
         names = archive.namelist()
         metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
         metadata = BytesParser(policy=default).parsebytes(archive.read(metadata_name))
@@ -34,12 +300,19 @@ def test_wheel_declares_ui_stack_and_contains_browser_build(tmp_path: Path):
     assert any(value.startswith("python-multipart") for value in requirements)
     assert not any("extra == 'server'" in value or 'extra == "server"' in value for value in requirements)
     assert "normflow/static/index.html" in names
-    assert any(name.startswith("normflow/static/assets/") and name.endswith(".js") for name in names)
-    assert any(name.startswith("normflow/static/assets/") and name.endswith(".css") for name in names)
+    assert any(
+        name.startswith("normflow/static/assets/") and name.endswith(".js")
+        for name in names
+    )
+    assert any(
+        name.startswith("normflow/static/assets/") and name.endswith(".css")
+        for name in names
+    )
 
 
-def test_wheel_can_import_ui_server_stack_from_a_normal_environment(tmp_path: Path):
-    wheel = _build_wheel(tmp_path)
+def test_wheel_can_import_ui_server_stack_from_a_normal_environment(
+    release_wheel: Path, tmp_path: Path
+):
     check = """
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -53,16 +326,14 @@ assert app.info.name == 'normflow'
 """
 
     subprocess.run(
-        [sys.executable, "-c", check, str(wheel)],
+        [sys.executable, "-c", check, str(release_wheel)],
         cwd=tmp_path,
         check=True,
     )
 
 
-def test_wheel_browser_build_uses_unified_review_item_acceptance(tmp_path: Path):
-    wheel = _build_wheel(tmp_path)
-
-    with zipfile.ZipFile(wheel) as archive:
+def test_wheel_browser_build_uses_unified_review_item_acceptance(release_wheel: Path):
+    with zipfile.ZipFile(release_wheel) as archive:
         javascript = b"\n".join(
             archive.read(name)
             for name in archive.namelist()
@@ -71,3 +342,37 @@ def test_wheel_browser_build_uses_unified_review_item_acceptance(tmp_path: Path)
 
     assert b"/edit-and-accept" not in javascript
     assert b"/accept" in javascript
+
+
+def test_isolated_wheel_install_can_import_package_and_fetch_browser_ui(
+    release_wheel: Path, tmp_path: Path
+):
+    environment = tmp_path / "environment"
+    subprocess.run([sys.executable, "-m", "venv", str(environment)], check=True)
+    python = environment / "bin" / "python"
+    subprocess.run(
+        ["uv", "pip", "install", "--python", str(python), str(release_wheel)],
+        check=True,
+    )
+    smoke_test = """
+from pathlib import Path
+import re
+
+from fastapi.testclient import TestClient
+
+from normflow.api import create_app
+from normflow.project import project_at
+from normflow.project_service import init_project
+
+project_root = init_project(Path.cwd() / "project")
+with TestClient(create_app(project_at(project_root))) as client:
+    response = client.get("/")
+    page = response.text
+    asset = re.search(r'(?:src|href)="(/assets/[^"]+\\.(?:js|css))"', page)
+    assert response.status_code == 200
+    assert asset is not None
+    assert client.get(asset.group(1)).status_code == 200
+
+assert "<title>NormFlow</title>" in page
+"""
+    subprocess.run([str(python), "-c", smoke_test], cwd=tmp_path, check=True)

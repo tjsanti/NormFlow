@@ -1,0 +1,109 @@
+#!/bin/sh
+
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+
+if [ "$#" -gt 1 ]; then
+    echo "usage: scripts/build-wheel [OUTPUT_DIRECTORY]" >&2
+    exit 2
+fi
+out_dir=${1:-dist}
+
+npm ci
+npm test
+npm run typecheck
+
+static_dir=src/normflow/static
+rm -rf "$static_dir"
+npm run build
+
+if [ ! -f "$static_dir/index.html" ]; then
+    echo "required browser asset is missing: $static_dir/index.html" >&2
+    exit 1
+fi
+
+has_javascript=false
+for asset in "$static_dir"/assets/*.js; do
+    if [ -f "$asset" ]; then
+        has_javascript=true
+        break
+    fi
+done
+if [ "$has_javascript" = false ]; then
+    echo "required browser asset is missing: $static_dir/assets/*.js" >&2
+    exit 1
+fi
+
+has_stylesheet=false
+for asset in "$static_dir"/assets/*.css; do
+    if [ -f "$asset" ]; then
+        has_stylesheet=true
+        break
+    fi
+done
+if [ "$has_stylesheet" = false ]; then
+    echo "required browser asset is missing: $static_dir/assets/*.css" >&2
+    exit 1
+fi
+
+uv build --wheel --out-dir "$out_dir"
+
+wheel=
+for candidate in "$out_dir"/normflow-*.whl; do
+    if [ -f "$candidate" ]; then
+        if [ -n "$wheel" ]; then
+            echo "release build produced more than one NormFlow wheel in $out_dir" >&2
+            exit 1
+        fi
+        wheel=$candidate
+    fi
+done
+if [ -z "$wheel" ]; then
+    echo "release build did not produce a NormFlow wheel in $out_dir" >&2
+    exit 1
+fi
+
+python3 - "$wheel" <<'PY'
+from pathlib import Path
+import sys
+import zipfile
+
+wheel = Path(sys.argv[1])
+with zipfile.ZipFile(wheel) as archive:
+    names = archive.namelist()
+
+required = {
+    "normflow/static/index.html": "normflow/static/index.html" in names,
+    "normflow/static/assets/*.js": any(
+        name.startswith("normflow/static/assets/") and name.endswith(".js")
+        for name in names
+    ),
+    "normflow/static/assets/*.css": any(
+        name.startswith("normflow/static/assets/") and name.endswith(".css")
+        for name in names
+    ),
+}
+missing = [asset for asset, present in required.items() if not present]
+if missing:
+    for asset in missing:
+        print(f"wheel is missing required browser asset: {asset}", file=sys.stderr)
+    raise SystemExit(1)
+
+static = Path("src/normflow/static")
+built_assets = {
+    f"normflow/static/{path.relative_to(static).as_posix()}": path.read_bytes()
+    for path in static.rglob("*")
+    if path.is_file()
+}
+with zipfile.ZipFile(wheel) as archive:
+    wheel_assets = {
+        name: archive.read(name)
+        for name in names
+        if name.startswith("normflow/static/") and not name.endswith("/")
+    }
+if wheel_assets != built_assets:
+    print("wheel browser assets do not match frontend build", file=sys.stderr)
+    raise SystemExit(1)
+PY
