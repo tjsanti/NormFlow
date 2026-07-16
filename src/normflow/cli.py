@@ -1,6 +1,9 @@
 """NormFlow CLI — Typer application."""
 from __future__ import annotations
 
+import sys
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,12 +14,66 @@ from .embedding_model import EmbeddingModelUnavailableError
 
 if TYPE_CHECKING:
     from .mapping_service import MappingService
+    from .update_check import UpdateNotice
 
 app = typer.Typer(
     name="normflow",
     help="CLI-first, human-in-the-loop text normalization workbench.",
     add_completion=False,
 )
+
+_HUMAN_UPDATE_COMMANDS = frozenset(
+    {"export", "export-batch", "import", "index", "info", "init", "ui"}
+)
+
+
+@dataclass(frozen=True)
+class CliUpdateBoundaries:
+    """Injected terminal and service boundaries for the CLI lifecycle."""
+
+    is_interactive: Callable[[], bool]
+    check_for_update: Callable[[str, Mapping[str, str]], UpdateNotice | None]
+
+
+def _default_cli_update_boundaries() -> CliUpdateBoundaries:
+    def check_for_update(
+        installed_version: str,
+        environment: Mapping[str, str],
+    ) -> UpdateNotice | None:
+        from .update_check import default_update_check_service
+
+        return default_update_check_service(
+            installed_version,
+            environment=environment,
+        ).check()
+
+    return CliUpdateBoundaries(
+        is_interactive=lambda: all(
+            stream.isatty() for stream in (sys.stdin, sys.stdout, sys.stderr)
+        ),
+        check_for_update=check_for_update,
+    )
+
+
+def _notify_cli_update(ctx: typer.Context) -> None:
+    boundaries = ctx.find_object(CliUpdateBoundaries)
+    if boundaries is None:
+        boundaries = _default_cli_update_boundaries()
+    if not boundaries.is_interactive():
+        return
+    try:
+        import os
+
+        notice = boundaries.check_for_update(__version__, os.environ)
+    except Exception:
+        return
+    if notice is not None:
+        typer.echo(
+            f"NormFlow update available: {notice.installed_version} → "
+            f"{notice.latest_version}\n"
+            f"Install it explicitly with:\n{notice.install_command}",
+            err=True,
+        )
 
 
 def _show_version(value: bool) -> bool:
@@ -28,6 +85,7 @@ def _show_version(value: bool) -> bool:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False,
         "--version",
@@ -38,6 +96,9 @@ def main(
     ),
 ) -> None:
     """Run NormFlow commands."""
+    if ctx.invoked_subcommand not in _HUMAN_UPDATE_COMMANDS:
+        return
+    _notify_cli_update(ctx)
 
 
 def _project_service() -> MappingService:
@@ -366,9 +427,12 @@ review_app = typer.Typer(
 
 @review_app.command(name="list")
 def list_review_items(
+    ctx: typer.Context,
     as_json: bool = typer.Option(False, "--json", help="Output as JSON instead of a table."),
 ) -> None:
     """List pending Review Items."""
+    if not as_json:
+        _notify_cli_update(ctx)
     try:
         items = _project_service().list_review_items()
     except ValueError as e:
@@ -385,6 +449,7 @@ def list_review_items(
 
 @review_app.command()
 def accept(
+    ctx: typer.Context,
     review_item_id: int = typer.Option(
         ...,
         "--review-item-id",
@@ -397,6 +462,7 @@ def accept(
     ),
 ) -> None:
     """Accept a Review Item, inserting it into the Mapping library."""
+    _notify_cli_update(ctx)
     try:
         _project_service().accept_review_item(review_item_id, normalized_text)
         print(f"Review Item {review_item_id} accepted.")
