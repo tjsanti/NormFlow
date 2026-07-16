@@ -3,14 +3,16 @@
 from contextlib import asynccontextmanager
 import tempfile
 from pathlib import Path
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictInt
 
+from .batch_import import BatchImportRunNotFoundError, ProjectBusyError, RunStatus
+
 from .mapping_service import (
-    BatchImportError,
     BulkAcceptError,
     BulkAcceptPersistenceError,
     BulkAcceptStaleItemsError,
@@ -49,14 +51,6 @@ class ImportMappingsResponse(BaseModel):
     skipped: int
 
 
-class ImportRecordsResponse(BaseModel):
-    auto_committed: int
-    review_items: int
-    skipped: int
-    semantic_index_status: SemanticIndexStatus
-    semantic_index_warning: str | None
-
-
 class ReviewItemResponse(BaseModel):
     id: int
     raw_text: str
@@ -69,6 +63,28 @@ class StatusResponse(BaseModel):
 
 class IndexBuildResponse(BaseModel):
     entries: int
+
+
+class BatchImportResultResponse(BaseModel):
+    auto_committed: int
+    review_items: int
+    skipped: int
+    semantic_index_status: SemanticIndexStatus
+    semantic_index_warning: str | None
+
+
+class BatchImportRunResponse(BaseModel):
+    id: str
+    status: RunStatus
+    input_name: str
+    input_fingerprint: str
+    created_at: str
+    started_at: str
+    updated_at: str
+    terminal_at: str | None
+    result: BatchImportResultResponse | None
+    error: str | None
+    replacement_run_id: str | None
 
 
 @asynccontextmanager
@@ -89,6 +105,19 @@ async def _temporary_upload_csv(file: UploadFile | None):
 def get_project_service(request: Request) -> MappingService:
     """Return the canonical Project service bound to this application."""
     return request.app.state.project_service
+
+
+def _project_busy_response(request: Request, error: ProjectBusyError) -> JSONResponse:
+    """Translate the shared Project writer conflict for every HTTP adapter."""
+    active = error.active_run
+    if active is None:
+        active = get_project_service(request).active_batch_import_run()
+    detail: str | dict = str(error)
+    headers = None
+    if active:
+        detail = {"message": str(error), "active_run": active}
+        headers = {"Location": f"/batch-import-runs/{active['id']}"}
+    return JSONResponse(status_code=409, content={"detail": detail}, headers=headers)
 
 
 @router.get("/project/info", response_model=ProjectInfoResponse)
@@ -115,25 +144,79 @@ async def import_mappings(
             raise HTTPException(status_code=400, detail=str(error)) from error
 
 
-@router.post("/import/records", response_model=ImportRecordsResponse)
-async def import_records(
+@router.post("/import/records", include_in_schema=False)
+def legacy_import_records(request: Request) -> RedirectResponse:
+    """Redirect the former Batch endpoint to the durable canonical resource."""
+    column = request.query_params.get("column", "")
+    target = f"/batch-import-runs?{urlencode({'column': column})}"
+    return RedirectResponse(target, status_code=307)
+
+
+@router.post(
+    "/batch-import-runs",
+    status_code=202,
+    response_model=BatchImportRunResponse,
+)
+async def start_batch_import_run(
+    response: Response,
     column: str = Query(...),
-    semantic: bool = Query(True),
-    llm: bool = Query(True),
-    threshold: float = Query(0.85),
     file: UploadFile | None = None,
     service: MappingService = Depends(get_project_service),
-) -> ImportRecordsResponse:
+) -> BatchImportRunResponse:
     async with _temporary_upload_csv(file) as csv_path:
         try:
-            result = service.import_records_for_review(
-                str(csv_path), column, semantic=semantic, llm=llm, threshold=threshold
-            )
-            return ImportRecordsResponse(**result)
-        except BatchImportError as error:
-            raise HTTPException(status_code=502, detail=str(error))
-        except ValueError as error:
+            run = service.start_batch_import(csv_path, column)
+        except (ValueError, FileNotFoundError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+    response.headers["Location"] = f"/batch-import-runs/{run['id']}"
+    return BatchImportRunResponse(**run)
+
+
+@router.get("/batch-import-runs", response_model=BatchImportRunResponse)
+def latest_batch_import_run_status(
+    service: MappingService = Depends(get_project_service),
+) -> BatchImportRunResponse:
+    try:
+        return BatchImportRunResponse(**service.batch_import_status())
+    except BatchImportRunNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post(
+    "/batch-import-runs/{run_id}/retry",
+    status_code=202,
+    response_model=BatchImportRunResponse,
+)
+async def retry_batch_import_run(
+    run_id: str,
+    response: Response,
+    column: str = Query(...),
+    file: UploadFile | None = None,
+    service: MappingService = Depends(get_project_service),
+) -> BatchImportRunResponse:
+    async with _temporary_upload_csv(file) as csv_path:
+        try:
+            run = service.start_batch_import_retry(run_id, csv_path, column)
+        except BatchImportRunNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (ValueError, FileNotFoundError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+    response.headers["Location"] = f"/batch-import-runs/{run['id']}"
+    return BatchImportRunResponse(**run)
+
+
+@router.get(
+    "/batch-import-runs/{run_id}",
+    response_model=BatchImportRunResponse,
+)
+def batch_import_run_status(
+    run_id: str,
+    service: MappingService = Depends(get_project_service),
+) -> BatchImportRunResponse:
+    try:
+        return BatchImportRunResponse(**service.batch_import_status(run_id))
+    except BatchImportRunNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @router.get("/review-items", response_model=list[ReviewItemResponse])
@@ -201,6 +284,14 @@ def build_index(
         raise HTTPException(status_code=422, detail=str(error))
 
 
+@router.post("/index/clear", response_model=StatusResponse)
+def clear_index(
+    service: MappingService = Depends(get_project_service),
+) -> StatusResponse:
+    service.clear_index()
+    return StatusResponse(status="cleared")
+
+
 _static_dir = Path(__file__).with_name("static")
 
 
@@ -212,6 +303,7 @@ def ui_index() -> FileResponse:
 def create_app(project: Project) -> FastAPI:
     """Construct an HTTP application bound to one canonical Project."""
     project_app = FastAPI(title="NormFlow", redirect_slashes=False)
+    project_app.add_exception_handler(ProjectBusyError, _project_busy_response)
     project_app.state.project_service = MappingService(str(project.root))
     project_app.include_router(router)
     project_app.mount(

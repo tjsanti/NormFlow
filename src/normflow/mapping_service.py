@@ -7,17 +7,28 @@ model imports are internal.
 
 import csv
 import io
+import json
 import os
 import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import cache
 from pathlib import Path
-from typing import TypedDict
+from typing import Callable, TypedDict, Unpack
+
+from .batch_import import (
+    BatchImportRun,
+    BatchImportOptions,
+    BatchImportResult,
+    BatchImportRuns,
+    ProjectBusyError,
+    coordinated_writer,
+    project_writer,
+)
 
 from sqlalchemy import delete, inspect, text, update
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import NullPool
 from sqlmodel import (
     Field as SField,
     Session as _Session,
@@ -73,14 +84,7 @@ class ProjectInfo(TypedDict):
     semantic_index_warning: str | None
 
 
-class ImportRecordsResult(TypedDict):
-    """Batch Import routing counts plus semantic-index state."""
-
-    auto_committed: int
-    review_items: int
-    skipped: int
-    semantic_index_status: SemanticIndexStatus
-    semantic_index_warning: str | None
+ImportRecordsResult = BatchImportResult
 
 
 class ReviewItemInfo(TypedDict):
@@ -89,6 +93,13 @@ class ReviewItemInfo(TypedDict):
     id: int
     raw_text: str
     suggested_text: str
+
+
+class _BatchImportRecoveryState(TypedDict):
+    mapping_ids: list[int]
+    review_item_ids: list[int]
+    revision: int
+    retained: bool
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +138,8 @@ class _MappingRevision(_SQLModel, table=True):
     revision: int = 0
 
 
-@cache
 def _make_engine(db_url: str):
-    return create_engine(f"sqlite:///{db_url}")
+    return create_engine(f"sqlite:///{db_url}", poolclass=NullPool)
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +163,8 @@ class MappingService:
         """Create the Project schema behind the service boundary."""
         root = Path(project_path).expanduser().resolve()
         engine = _make_engine(str(root / "normflow.db"))
-        _SQLModel.metadata.create_all(engine)
+        with project_writer(root):
+            _SQLModel.metadata.create_all(engine)
         return cls(root)
 
     def _migrate_legacy_suggestions(self) -> None:
@@ -161,26 +172,55 @@ class MappingService:
         if "suggestion" not in inspect(self._engine).get_table_names():
             return
 
-        with self._engine.begin() as connection:
-            _ReviewItem.__table__.create(connection, checkfirst=True)
-            connection.execute(text(
-                """
-                INSERT INTO reviewitem (id, raw_text, suggested_text, created_at)
-                SELECT id, raw_text, suggested_text, created_at
-                FROM suggestion
-                WHERE status = 'pending'
-                ORDER BY created_at, id
-                """
-            ))
-            connection.execute(text("DROP TABLE suggestion"))
+        with project_writer(self._path):
+            if "suggestion" not in inspect(self._engine).get_table_names():
+                return
+            with self._engine.begin() as connection:
+                _ReviewItem.__table__.create(connection, checkfirst=True)
+                connection.execute(text(
+                    """
+                    INSERT INTO reviewitem (id, raw_text, suggested_text, created_at)
+                    SELECT id, raw_text, suggested_text, created_at
+                    FROM suggestion
+                    WHERE status = 'pending'
+                    ORDER BY created_at, id
+                    """
+                ))
+                connection.execute(text("DROP TABLE suggestion"))
 
     def _ensure_mapping_revision(self) -> None:
         """Add revision state to Projects created before revision tracking."""
-        with self._engine.begin() as connection:
-            _MappingRevision.__table__.create(connection, checkfirst=True)
-            connection.execute(text(
-                "INSERT OR IGNORE INTO mappingrevision (id, revision) VALUES (1, 0)"
-            ))
+        inspector = inspect(self._engine)
+        tables = set(inspector.get_table_names())
+        mapping_indexes = (
+            {item["name"] for item in inspector.get_indexes("examplemapping")}
+            if "examplemapping" in tables else set()
+        )
+        review_indexes = (
+            {item["name"] for item in inspector.get_indexes("reviewitem")}
+            if "reviewitem" in tables else set()
+        )
+        if (
+            "mappingrevision" in tables
+            and "unique_mapping_raw_text" in mapping_indexes
+            and "unique_review_item_raw_text" in review_indexes
+        ):
+            return
+
+        with project_writer(self._path):
+            with self._engine.begin() as connection:
+                _MappingRevision.__table__.create(connection, checkfirst=True)
+                connection.execute(text(
+                    "INSERT OR IGNORE INTO mappingrevision (id, revision) VALUES (1, 0)"
+                ))
+                connection.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS unique_mapping_raw_text "
+                    "ON examplemapping(raw_text)"
+                ))
+                connection.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS unique_review_item_raw_text "
+                    "ON reviewitem(raw_text)"
+                ))
 
     def validate(self) -> None:
         if not self._db_path.exists():
@@ -293,6 +333,7 @@ class MappingService:
                 f"CSV could not be parsed: {error}.{available_detail}"
             ) from error
 
+    @coordinated_writer
     def import_mappings(
         self,
         csv_path: str,
@@ -398,6 +439,8 @@ class MappingService:
             return
         try:
             self.build_index()
+        except ProjectBusyError:
+            raise
         except Exception:
             # Preserve the previous index as a visible stale fallback. Adapters
             # report the still-non-fresh Project status to the user.
@@ -521,6 +564,78 @@ class MappingService:
                 )
             session.commit()
 
+    def _validate_batch_import_input(self, csv_path: str, column: str) -> None:
+        self._read_csv(csv_path, column)
+
+    def _snapshot_batch_import_state(self, destination: Path) -> None:
+        """Persist an opaque snapshot owned by the Mapping and index modules."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(
+            prefix=f".{destination.name}-", suffix=".tmp", dir=destination.parent,
+        ))
+        try:
+            with self._session() as session:
+                revision = session.get(_MappingRevision, 1)
+                state: _BatchImportRecoveryState = {
+                    "mapping_ids": list(session.exec(select(_ExampleMapping.id)).all()),
+                    "review_item_ids": list(session.exec(select(_ReviewItem.id)).all()),
+                    "revision": revision.revision if revision else 0,
+                    "retained": (self._batch_csv_dir() / "current.csv").exists(),
+                }
+            (temporary / "mapping.json").write_text(
+                json.dumps(state), encoding="utf-8"
+            )
+            retained = self._batch_csv_dir() / "current.csv"
+            if retained.exists():
+                shutil.copy2(retained, temporary / "retained.csv")
+            SemanticIndex(str(self._path)).snapshot(temporary / "semantic")
+            os.replace(temporary, destination)
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+
+    def _restore_batch_import_state(self, snapshot: Path) -> None:
+        """Restore a snapshot without exposing Mapping or index persistence."""
+        state: _BatchImportRecoveryState = json.loads(
+            (snapshot / "mapping.json").read_text(encoding="utf-8")
+        )
+        with self._session() as session:
+            current_mapping_ids = set(
+                session.exec(select(_ExampleMapping.id)).all()
+            )
+            current_review_item_ids = set(
+                session.exec(select(_ReviewItem.id)).all()
+            )
+        self._compensate_batch_changes(
+            sorted(current_mapping_ids - set(state["mapping_ids"])),
+            sorted(current_review_item_ids - set(state["review_item_ids"])),
+            state["revision"],
+        )
+        retained = self._batch_csv_dir() / "current.csv"
+        saved_retained = snapshot / "retained.csv"
+        if state["retained"] and saved_retained.exists():
+            shutil.copy2(saved_retained, retained)
+        else:
+            retained.unlink(missing_ok=True)
+        SemanticIndex(str(self._path)).restore(snapshot / "semantic")
+
+    def _cleanup_batch_import_temporaries(self) -> None:
+        for pattern in (".current-*.tmp", ".previous-*.tmp"):
+            for temporary in self._batch_csv_dir().glob(pattern):
+                temporary.unlink(missing_ok=True)
+
+    def _batch_import_runs(self) -> BatchImportRuns:
+        return BatchImportRuns(
+            project=self._path,
+            database=self._db_path,
+            validate_input=self._validate_batch_import_input,
+            execute=self.import_records_for_review,
+            snapshot_state=self._snapshot_batch_import_state,
+            restore_state=self._restore_batch_import_state,
+            cleanup_temporaries=self._cleanup_batch_import_temporaries,
+        )
+
+    @coordinated_writer
     def import_records_for_review(
         self,
         csv_path: str,
@@ -529,6 +644,7 @@ class MappingService:
         semantic: bool = True,
         llm: bool = True,
         threshold: float = 0.85,
+        _on_published: Callable[[BatchImportResult], None] | None = None,
     ) -> ImportRecordsResult:
         if semantic or llm:
             self._refresh_semantic_index_if_needed()
@@ -625,6 +741,16 @@ class MappingService:
                     raise
                 try:
                     os.replace(staged_batch, self._batch_csv_dir() / "current.csv")
+                    info = self.project_info()
+                    result: ImportRecordsResult = {
+                        "auto_committed": auto_committed,
+                        "review_items": review_items,
+                        "skipped": skipped,
+                        "semantic_index_status": info["semantic_index_status"],
+                        "semantic_index_warning": info["semantic_index_warning"],
+                    }
+                    if _on_published:
+                        _on_published(result)
                 except Exception:
                     try:
                         self._compensate_batch_changes(
@@ -642,15 +768,7 @@ class MappingService:
                     backup.unlink(missing_ok=True)
         finally:
             staged_batch.unlink(missing_ok=True)
-
-        info = self.project_info()
-        return {
-            "auto_committed": auto_committed,
-            "review_items": review_items,
-            "skipped": skipped,
-            "semantic_index_status": info["semantic_index_status"],
-            "semantic_index_warning": info["semantic_index_warning"],
-        }
+        return result
 
     def export_normalized_csv(
         self,
@@ -668,7 +786,19 @@ class MappingService:
 
         with open(batch_csv, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            fieldnames = list((reader.fieldnames or [])) + [output_column]
+            fieldnames = list(reader.fieldnames or [])
+            if source_column not in fieldnames:
+                available = ", ".join(fieldnames) or "none"
+                raise ValueError(
+                    f"Retained Batch CSV does not contain a column named "
+                    f"'{source_column}'. Available columns: {available}"
+                )
+            if output_column in fieldnames:
+                raise ValueError(
+                    f"Retained Batch CSV already contains a column named "
+                    f"'{output_column}'. Choose a different output column."
+                )
+            fieldnames.append(output_column)
             rows = list(reader)
 
         output = io.StringIO()
@@ -701,6 +831,7 @@ class MappingService:
             for item in items
         ]
 
+    @coordinated_writer
     def accept_review_item(
         self,
         review_item_id: int,
@@ -730,6 +861,7 @@ class MappingService:
             session.delete(item)
             self._commit_mapping_changes(session)
 
+    @coordinated_writer
     def accept_review_items(self, record_ids: list[int]) -> BulkAcceptResult:
         if not record_ids:
             raise BulkAcceptError("Select at least one Review Item")
@@ -774,6 +906,7 @@ class MappingService:
     # Index
     # ------------------------------------------------------------------
 
+    @coordinated_writer
     def build_index(self) -> int:
         with self._session() as session:
             revision = session.get(_MappingRevision, 1)
@@ -794,6 +927,55 @@ class MappingService:
                 idx.mark_refresh_failed()
             raise
 
+    @coordinated_writer
     def clear_index(self) -> None:
         idx = SemanticIndex(str(self._path))
         idx.clear()
+
+    # ------------------------------------------------------------------
+    # Durable Batch Import Runs
+    # ------------------------------------------------------------------
+
+    def run_batch_import(
+        self,
+        csv_path: str | Path,
+        column: str,
+        **kwargs: Unpack[BatchImportOptions],
+    ) -> BatchImportRun:
+        """Run a Batch Import in the foreground and return its durable terminal state."""
+        return self._batch_import_runs().run(csv_path, column, **kwargs)
+
+    def start_batch_import(
+        self,
+        csv_path: str | Path,
+        column: str,
+    ) -> BatchImportRun:
+        """Start a server-owned Batch Import and return its durable active state."""
+        return self._batch_import_runs().start_background(csv_path, column)
+
+    def batch_import_status(self, run_id: str | None = None) -> BatchImportRun:
+        """Observe an identified run, or the active/most recent run."""
+        return self._batch_import_runs().status(run_id)
+
+    def active_batch_import_run(self) -> BatchImportRun | None:
+        """Return the active run only, without falling back to the latest run."""
+        return self._batch_import_runs().active()
+
+    def retry_batch_import(
+        self,
+        run_id: str,
+        csv_path: str | Path,
+        column: str,
+        **kwargs: Unpack[BatchImportOptions],
+    ) -> BatchImportRun:
+        """Explicitly retry a failed/interrupted run with resubmitted input."""
+        return self._batch_import_runs().retry(run_id, csv_path, column, **kwargs)
+
+    def start_batch_import_retry(
+        self,
+        run_id: str,
+        csv_path: str | Path,
+        column: str,
+    ) -> BatchImportRun:
+        """Start a server-owned explicit retry and return its active state."""
+        return self._batch_import_runs().retry_background(run_id, csv_path, column)

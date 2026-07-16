@@ -3,12 +3,16 @@
 import json
 import sqlite3
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import chdir
 from pathlib import Path
+from threading import Event
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
+from normflow.batch_import import BatchImportExecutionError, ProjectBusyError
 from normflow.cli import app
 from normflow.mapping_service import MappingService, ReviewItemInfo
 from normflow.project_service import init_project as _init_project
@@ -29,7 +33,18 @@ class ProjectCliRunner(CliRunner):
     """Invoke Project-dependent commands from the initialized Project root."""
 
     def invoke(self, cli, args=None, **kwargs):
-        project_commands = {"import", "export", "suggest", "suggest-batch", "review", "index"}
+        project_commands = {
+            "batch-import",
+            "batch-import-retry",
+            "batch-import-status",
+            "import",
+            "export",
+            "export-batch",
+            "suggest",
+            "suggest-batch",
+            "review",
+            "index",
+        }
         if (
             args
             and args[0] in project_commands
@@ -442,6 +457,232 @@ def _write_csv(path: Path, header: str, *rows: str) -> None:
     path.write_text(header + "\n" + "\n".join(rows) + "\n")
 
 
+def test_batch_import_runs_complete_fallback_chain_and_returns_json(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """`normflow batch-import` synchronously reports the canonical Batch result."""
+    project_path = init_project(tmp_path / "project")
+    csv_path = project_path / "batch.csv"
+    _write_csv(
+        csv_path,
+        "raw",
+        "colour",
+        "colr",
+        "new phrase",
+        "colr",
+    )
+    seed_mappings(project_path, [("colour", "color")])
+    (project_path / ".env").write_text(
+        "OPENAI_API_KEY=project-secret\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_MODEL", raising=False)
+
+    encoder = MagicMock()
+    vectors = {
+        "colour": [1.0, 0.0, 0.0],
+        "colr": [1.0, 0.0, 0.0],
+        "new phrase": [0.0, 1.0, 0.0],
+    }
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        vectors[text] for text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 3
+    client = MagicMock()
+    client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="New Phrase"))]
+    )
+
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        patch("normflow.llm_matcher.build_client", return_value=client),
+    ):
+        result = runner.invoke(
+            app,
+            ["batch-import", str(csv_path), "--column", "raw"],
+        )
+
+    assert result.exit_code == 0
+    terminal = json.loads(result.stdout)
+    assert terminal["status"] == "succeeded"
+    assert result.stderr.strip() == terminal["id"]
+    assert terminal["result"] == {
+        "auto_committed": 2,
+        "review_items": 1,
+        "skipped": 1,
+        "semantic_index_status": "refresh_required",
+        "semantic_index_warning": (
+            "The semantic index will refresh before the next semantic Suggestion."
+        ),
+    }
+    assert "project-secret" not in result.output
+    assert MappingService(project_path).list_review_items() == [
+        {"id": 1, "raw_text": "new phrase", "suggested_text": "New Phrase"}
+    ]
+
+
+def test_batch_import_waits_for_delayed_provider_completion(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The CLI remains in flight until the provider-backed Batch finishes."""
+    project_path = init_project(tmp_path / "project")
+    csv_path = project_path / "batch.csv"
+    _write_csv(csv_path, "raw", "new phrase")
+    seed_mappings(project_path, [("colour", "color")])
+    (project_path / ".env").write_text(
+        "OPENAI_API_KEY=project-secret\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_MODEL", raising=False)
+
+    encoder = MagicMock()
+    vectors = {
+        "colour": [1.0, 0.0],
+        "new phrase": [0.0, 1.0],
+    }
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        vectors[text] for text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 2
+
+    provider_started = Event()
+    allow_provider_completion = Event()
+
+    def delayed_completion(**_kwargs):
+        provider_started.set()
+        if not allow_provider_completion.wait(timeout=5):
+            raise RuntimeError("test did not release the provider")
+        return MagicMock(
+            choices=[MagicMock(message=MagicMock(content="New Phrase"))]
+        )
+
+    client = MagicMock()
+    client.chat.completions.create.side_effect = delayed_completion
+
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        patch("normflow.llm_matcher.build_client", return_value=client),
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        invocation = executor.submit(
+            runner.invoke,
+            app,
+            ["batch-import", str(csv_path), "--column", "raw"],
+        )
+        assert provider_started.wait(timeout=5)
+        try:
+            assert not invocation.done()
+        finally:
+            allow_provider_completion.set()
+        result = invocation.result(timeout=5)
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["result"]["review_items"] == 1
+    assert MappingService(project_path).list_review_items() == [
+        {"id": 1, "raw_text": "new phrase", "suggested_text": "New Phrase"}
+    ]
+
+
+def test_batch_import_provider_failure_is_actionable_and_atomic(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """A failed CLI Batch Import reports exit 1 and preserves Project state."""
+    project_path = init_project(tmp_path / "project")
+    seed_mappings(project_path, [("colour", "color")])
+    service = MappingService(project_path)
+
+    previous_batch = project_path / "previous.csv"
+    _write_csv(previous_batch, "raw", "preserved")
+    service.import_records_for_review(
+        str(previous_batch), "raw", semantic=False, llm=False
+    )
+
+    failed_batch = project_path / "failed.csv"
+    _write_csv(failed_batch, "raw", "colr", "provider fail")
+    (project_path / ".env").write_text(
+        "OPENAI_API_KEY=project-secret\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_MODEL", raising=False)
+
+    encoder = MagicMock()
+    vectors = {
+        "colour": [1.0, 0.0],
+        "colr": [1.0, 0.0],
+        "provider fail": [0.0, 1.0],
+    }
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        vectors[text] for text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 2
+    client = MagicMock()
+    client.chat.completions.create.side_effect = RuntimeError("provider unavailable")
+
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        patch("normflow.llm_matcher.build_client", return_value=client),
+    ):
+        result = runner.invoke(
+            app,
+            ["batch-import", str(failed_batch), "--column", "raw"],
+        )
+
+    assert result.exit_code == 1
+    assert "provider unavailable" in result.output
+    assert "no changes were made" in result.output
+    assert "project-secret" not in result.output
+    assert service.project_info()["mappings"] == 1
+    assert service.list_review_items() == [
+        {"id": 1, "raw_text": "preserved", "suggested_text": ""}
+    ]
+    assert (project_path / ".batches" / "current.csv").read_bytes() == (
+        previous_batch.read_bytes()
+    )
+
+
+def test_batch_import_retry_reports_the_active_run_as_json(tmp_path: Path):
+    project_path = init_project(tmp_path / "project")
+    csv_path = project_path / "batch.csv"
+    _write_csv(csv_path, "raw", "new phrase")
+    (project_path / ".env").write_text("OPENAI_API_KEY=test-key\n", encoding="utf-8")
+    active_run = {"id": "active-run", "status": "active"}
+
+    with patch.object(
+        MappingService,
+        "retry_batch_import",
+        side_effect=ProjectBusyError(active_run),
+    ):
+        result = runner.invoke(
+            app,
+            ["batch-import-retry", "failed-run", str(csv_path), "--column", "raw"],
+        )
+
+    assert result.exit_code == 3
+    assert json.loads(result.stdout) == active_run
+
+
+def test_batch_import_status_resolves_the_initialized_project(tmp_path: Path, monkeypatch):
+    project_path = init_project(tmp_path / "project")
+    malformed = project_path / "malformed.csv"
+    _write_csv(malformed, "other", "value")
+    with pytest.raises(BatchImportExecutionError) as failed:
+        MappingService(project_path).run_batch_import(malformed, "raw")
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    monkeypatch.chdir(ambient)
+
+    result = runner.invoke(app, ["batch-import-status", failed.value.run["id"]])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["id"] == failed.value.run["id"]
+
+
 def test_import_creates_mappings():
     """`normflow import` should insert CSV rows as mappings."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -615,6 +856,136 @@ def test_import_export_round_trip():
         )
         assert result2.exit_code == 0
         assert "0 new" in result2.stdout
+
+
+def test_export_batch_writes_retained_rows_with_normalized_values():
+    """`normflow export-batch` exports the retained Batch rather than Mappings."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_path = Path(tmpdir) / "proj"
+        batch_csv = project_path / "batch.csv"
+        output_csv = project_path / "normalized.csv"
+
+        init_project(str(project_path))
+        _write_csv(batch_csv, "id,name", "1,United States", "2,Canada")
+        service = MappingService(str(project_path))
+        service.import_records_for_review(
+            str(batch_csv), "name", semantic=False, llm=False,
+        )
+        united_states = next(
+            item for item in service.list_review_items()
+            if item["raw_text"] == "United States"
+        )
+        service.accept_review_item(united_states["id"], "US")
+
+        result = runner.invoke(
+            app,
+            ["export-batch", str(output_csv), "--source-column", "name"],
+        )
+
+        assert result.exit_code == 0
+        assert result.stdout == f"Exported normalized Batch CSV to {output_csv}\n"
+        assert output_csv.read_text(encoding="utf-8") == (
+            "id,name,normalized_text\n"
+            "1,United States,US\n"
+            "2,Canada,\n"
+        )
+
+
+def test_export_batch_uses_selected_source_and_output_columns():
+    """Batch export preserves retained columns and uses the selected output name."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_path = Path(tmpdir) / "proj"
+        batch_csv = project_path / "batch.csv"
+        output_csv = project_path / "normalized.csv"
+
+        init_project(str(project_path))
+        _write_csv(batch_csv, "id,label,note", "1,Canada,", "2,Mexico,south")
+        service = MappingService(str(project_path))
+        service.import_records_for_review(
+            str(batch_csv), "label", semantic=False, llm=False,
+        )
+        canada = next(
+            item for item in service.list_review_items()
+            if item["raw_text"] == "Canada"
+        )
+        service.accept_review_item(canada["id"], "CA")
+
+        result = runner.invoke(
+            app,
+            [
+                "export-batch",
+                str(output_csv),
+                "--source-column",
+                "label",
+                "--output-column",
+                "clean_label",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert output_csv.read_text(encoding="utf-8") == (
+            "id,label,note,clean_label\n"
+            "1,Canada,,CA\n"
+            "2,Mexico,south,\n"
+        )
+
+
+def test_export_batch_without_retained_batch_fails_with_next_step():
+    """Batch export reports how to create the missing retained Batch."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_path = Path(tmpdir) / "proj"
+        output_csv = project_path / "normalized.csv"
+        init_project(str(project_path))
+
+        result = runner.invoke(app, ["export-batch", str(output_csv)])
+
+        assert result.exit_code == 1
+        assert result.stdout == "Error: No batch CSV found. Import records first.\n"
+        assert not output_csv.exists()
+
+
+def test_export_batch_rejects_missing_source_column():
+    """Batch export fails instead of silently producing an all-blank output."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_path = Path(tmpdir) / "proj"
+        batch_csv = project_path / "batch.csv"
+        output_csv = project_path / "normalized.csv"
+        init_project(str(project_path))
+        _write_csv(batch_csv, "name", "Canada")
+        MappingService(project_path).import_records_for_review(
+            batch_csv, "name", semantic=False, llm=False,
+        )
+
+        result = runner.invoke(
+            app,
+            ["export-batch", str(output_csv), "--source-column", "missing"],
+        )
+
+        assert result.exit_code == 1
+        assert "does not contain a column named 'missing'" in result.stdout
+        assert not output_csv.exists()
+
+
+def test_export_batch_rejects_an_existing_output_column():
+    """Batch export preserves every retained column instead of overwriting one."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_path = Path(tmpdir) / "proj"
+        batch_csv = project_path / "batch.csv"
+        output_csv = project_path / "normalized.csv"
+        init_project(str(project_path))
+        _write_csv(batch_csv, "name,clean", "Canada,original")
+        MappingService(project_path).import_records_for_review(
+            batch_csv, "name", semantic=False, llm=False,
+        )
+
+        result = runner.invoke(
+            app,
+            ["export-batch", str(output_csv), "--source-column", "name", "--output-column", "clean"],
+        )
+
+        assert result.exit_code == 1
+        assert "already contains a column named 'clean'" in result.stdout
+        assert not output_csv.exists()
 
 
 # ---- suggest tests ----

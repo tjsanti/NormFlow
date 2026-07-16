@@ -2,9 +2,12 @@
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from unittest.mock import MagicMock, patch
 
+import faiss
 import pytest
 
 from normflow.mapping_service import MappingService
@@ -184,6 +187,62 @@ class TestSemanticIndexMarkers:
 
         marker_temporary_files = (project / ".normflow").glob(".semantic_index_*.tmp")
         assert list(marker_temporary_files) == []
+
+
+class TestSemanticIndexRecovery:
+    """A failed restore never removes the active semantic generation."""
+
+    @patch(_INDEX_PATCH)
+    def test_failed_restore_keeps_the_active_generation(self, mock_ensure, project):
+        model = MagicMock()
+        model.encode.return_value = [[1.0, 0.0, 0.0] for _ in SEED_PAIRS]
+        model.get_sentence_embedding_dimension.return_value = 3
+        mock_ensure.return_value = model
+        index = SemanticIndex(str(project))
+        index.build(SEED_PAIRS)
+        snapshot = project / "snapshot"
+        index.snapshot(snapshot)
+
+        with (
+            patch(
+                "normflow.semantic_index.shutil.copytree",
+                side_effect=OSError("restore interrupted"),
+            ),
+            pytest.raises(OSError, match="restore interrupted"),
+        ):
+            index.restore(snapshot)
+
+        assert index.exists()
+        assert index.load()[1] == SEED_PAIRS
+
+    @patch(_INDEX_PATCH)
+    def test_restore_keeps_generation_for_concurrent_reader(self, mock_ensure, project):
+        model = MagicMock()
+        model.encode.return_value = [[1.0, 0.0, 0.0] for _ in SEED_PAIRS]
+        mock_ensure.return_value = model
+        index = SemanticIndex(str(project))
+        index.build(SEED_PAIRS)
+        snapshot = project / "snapshot"
+        index.snapshot(snapshot)
+        reader_started = Event()
+        continue_reader = Event()
+        read_index = faiss.read_index
+
+        def delayed_read_index(path):
+            reader_started.set()
+            assert continue_reader.wait(timeout=5)
+            return read_index(path)
+
+        with (
+            patch("normflow.semantic_index.faiss.read_index", side_effect=delayed_read_index),
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            loaded = executor.submit(index.load)
+            assert reader_started.wait(timeout=5)
+            index.restore(snapshot)
+            continue_reader.set()
+
+            assert loaded.result(timeout=5)[1] == SEED_PAIRS
 
 
 class TestSemanticIndexSearch:

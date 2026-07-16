@@ -52,7 +52,7 @@ class SemanticIndex:
         except (FileNotFoundError, OSError):
             return None
         candidate = self._generations_dir / generation
-        if generation and (candidate / "index.faiss").exists():
+        if generation and candidate.is_dir():
             return generation
         return None
 
@@ -202,6 +202,88 @@ class SemanticIndex:
             shutil.rmtree(self._index_dir)
         self._refresh_required_path.unlink(missing_ok=True)
         self._refresh_failed_path.unlink(missing_ok=True)
+
+    def snapshot(self, destination: Path) -> None:
+        """Copy the complete persisted index state into an opaque snapshot."""
+        destination.mkdir(parents=True, exist_ok=False)
+        for name, source in (
+            ("index", self._index_dir),
+            ("refresh_required", self._refresh_required_path),
+            ("refresh_failed", self._refresh_failed_path),
+        ):
+            target = destination / name
+            if source.is_dir():
+                shutil.copytree(source, target)
+            elif source.exists():
+                shutil.copy2(source, target)
+
+    def restore(self, snapshot: Path) -> None:
+        """Stage a replacement generation before atomically activating it."""
+        saved_index = snapshot / "index"
+        saved_generation: Path | None = None
+        try:
+            saved_current = (saved_index / "current").read_text(
+                encoding="utf-8"
+            ).strip()
+            candidate = saved_index / "generations" / saved_current
+            if candidate.is_dir():
+                saved_generation = candidate
+        except (FileNotFoundError, OSError):
+            pass
+        if saved_generation is None and (saved_index / "index.faiss").exists():
+            saved_generation = saved_index
+
+        self._generations_dir.mkdir(parents=True, exist_ok=True)
+        previous_generation = self._current_generation()
+        existing_generations = {
+            path.name
+            for path in self._generations_dir.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+        }
+        generation = uuid4().hex
+        temporary_dir = Path(tempfile.mkdtemp(
+            prefix=".restoring-", dir=self._generations_dir,
+        ))
+        generation_dir = self._generations_dir / generation
+        temporary_pointer = self._index_dir / f".current-{generation}"
+        published = False
+        try:
+            if saved_generation is not None:
+                shutil.rmtree(temporary_dir)
+                shutil.copytree(saved_generation, temporary_dir)
+            os.replace(temporary_dir, generation_dir)
+            temporary_pointer.write_text(f"{generation}\n", encoding="utf-8")
+            os.replace(temporary_pointer, self._current_path)
+            published = True
+
+            for source_name, destination in (
+                ("refresh_required", self._refresh_required_path),
+                ("refresh_failed", self._refresh_failed_path),
+            ):
+                source = snapshot / source_name
+                if source.exists():
+                    self._publish_marker(
+                        destination, source.read_text(encoding="utf-8")
+                    )
+                else:
+                    destination.unlink(missing_ok=True)
+
+            for old_generation in existing_generations - {previous_generation}:
+                shutil.rmtree(
+                    self._generations_dir / old_generation, ignore_errors=True
+                )
+            if previous_generation is not None:
+                for legacy_name in (
+                    "index.faiss", "mapping_table.json", "mapping_table.pkl",
+                    "mapping_revision", "freshness",
+                ):
+                    (self._index_dir / legacy_name).unlink(missing_ok=True)
+        finally:
+            if temporary_dir.exists():
+                shutil.rmtree(temporary_dir)
+            temporary_pointer.unlink(missing_ok=True)
+            if not published and generation_dir.exists():
+                shutil.rmtree(generation_dir, ignore_errors=True)
 
     # ------------------------------------------------------------------
     # Internal: persistence
