@@ -18,6 +18,21 @@ function okJson(value: unknown): Response {
   });
 }
 
+function stubFetch(
+  fetchMock: ReturnType<typeof vi.fn>,
+  updateStatus: unknown = null,
+): ReturnType<typeof vi.fn> {
+  const request = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (typeof input === "string" && input.startsWith("/update-status?browser_date=")) {
+      if (updateStatus instanceof Error) return Promise.reject(updateStatus);
+      return Promise.resolve(okJson(updateStatus));
+    }
+    return init === undefined ? fetchMock(input) : fetchMock(input, init);
+  });
+  vi.stubGlobal("fetch", request);
+  return request;
+}
+
 function chooseFile(input: HTMLInputElement, contents: string, name = "mappings.csv"): File {
   const file = new File([contents], name, { type: "text/csv" });
   Object.defineProperty(input, "files", { configurable: true, value: [file] });
@@ -63,11 +78,12 @@ describe("Bound Project launch", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
   test("shows the Project summary above accessible Import and Review Items tabs", async () => {
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson(projectInfo))
       .mockResolvedValueOnce(okJson([])));
 
@@ -90,7 +106,7 @@ describe("Bound Project launch", () => {
       .mockResolvedValueOnce(okJson([]))
       .mockResolvedValueOnce(okJson(emptyProject))
       .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
@@ -111,7 +127,7 @@ describe("Bound Project launch", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(okJson(projectInfo))
       .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
@@ -135,7 +151,7 @@ describe("Bound Project launch", () => {
       ...projectInfo,
       project: "/tmp/<img src=x onerror=alert(1)>",
     };
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson(project))
       .mockResolvedValueOnce(okJson([])));
 
@@ -152,7 +168,7 @@ describe("Bound Project launch", () => {
       ...projectInfo,
       project: "C:\\Projects\\customer-names",
     };
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson(project))
       .mockResolvedValueOnce(okJson([])));
 
@@ -169,7 +185,7 @@ describe("Bound Project launch", () => {
       semantic_index_status: "refresh_required",
       semantic_index_warning: "The semantic index will refresh before the next semantic Suggestion.",
     };
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson(project))
       .mockResolvedValueOnce(okJson([])));
 
@@ -180,6 +196,123 @@ describe("Bound Project launch", () => {
     expect(status?.textContent).toContain(project.semantic_index_warning);
     expect(status?.getAttribute("aria-live")).toBe("polite");
     expect(document.querySelector<HTMLButtonElement>("#refresh-review-items")?.disabled).toBe(false);
+  });
+
+  test("shows and dismisses an accessible update banner with the exact installer command", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 6, 16, 12));
+    const installCommand = "curl --proto '=https' --tlsv1.2 --fail --silent "
+      + "--show-error --location https://github.com/tjsanti/NormFlow/releases/latest/"
+      + "download/install.sh | sh";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson(projectInfo))
+      .mockResolvedValueOnce(okJson([]))
+      .mockResolvedValueOnce(okJson({ status: "dismissed" }));
+    const requests = stubFetch(fetchMock, {
+      installed_version: "0.1.0",
+      latest_version: "0.2.0",
+      install_command: installCommand,
+    });
+
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#update-banner")).not.toBeNull());
+    expect(requests).toHaveBeenCalledWith(
+      "/update-status?browser_date=2026-07-16",
+    );
+    const banner = document.querySelector<HTMLElement>("#update-banner")!;
+    const dismiss = banner.querySelector<HTMLButtonElement>("button")!;
+    expect(banner.textContent).toContain("0.1.0");
+    expect(banner.textContent).toContain("0.2.0");
+    expect(banner.querySelector("code")?.textContent).toBe(installCommand);
+    expect(dismiss.type).toBe("button");
+    dismiss.focus();
+    expect(document.activeElement).toBe(dismiss);
+
+    dismiss.click();
+
+    await vi.waitFor(() => expect(document.querySelector("#update-banner")).toBeNull());
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/update-status/dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        latest_version: "0.2.0",
+        browser_date: "2026-07-16",
+      }),
+    });
+  });
+
+  test.each([
+    ["current", null],
+    ["dismissed today", null],
+    ["opted out", null],
+    ["offline", new Error("offline")],
+    ["malformed response", { latest_version: "0.2.0" }],
+  ])("keeps the Project usable without a banner when update status is %s", async (_, status) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okJson(projectInfo))
+      .mockResolvedValueOnce(okJson([]));
+    stubFetch(fetchMock, status);
+
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
+    expect(document.querySelector("#update-banner")).toBeNull();
+    expect(document.querySelector<HTMLButtonElement>("#refresh-review-items")?.disabled)
+      .toBe(false);
+  });
+
+  test("requests the update again on the next browser-local day", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 6, 16, 23, 59));
+    const firstFetch = vi.fn()
+      .mockResolvedValueOnce(okJson(projectInfo))
+      .mockResolvedValueOnce(okJson([]))
+      .mockResolvedValueOnce(okJson({ status: "dismissed" }));
+    const firstRequests = stubFetch(
+      firstFetch,
+      {
+        installed_version: "0.1.0",
+        latest_version: "0.2.0",
+        install_command: "install command",
+      },
+    );
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#update-banner")).not.toBeNull());
+    expect(firstRequests).toHaveBeenCalledWith(
+      "/update-status?browser_date=2026-07-16",
+    );
+    document.querySelector<HTMLButtonElement>("#update-banner button")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#update-banner")).toBeNull());
+    expect(firstFetch).toHaveBeenNthCalledWith(3, "/update-status/dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        latest_version: "0.2.0",
+        browser_date: "2026-07-16",
+      }),
+    });
+
+    vi.setSystemTime(new Date(2026, 6, 17, 0, 1));
+    document.body.innerHTML = '<div id="app"></div>';
+    const nextRequests = stubFetch(
+      vi.fn()
+        .mockResolvedValueOnce(okJson(projectInfo))
+        .mockResolvedValueOnce(okJson([])),
+      {
+        installed_version: "0.1.0",
+        latest_version: "0.2.0",
+        install_command: "install command",
+      },
+    );
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#update-banner")).not.toBeNull());
+    expect(nextRequests).toHaveBeenCalledWith(
+      "/update-status?browser_date=2026-07-17",
+    );
+    expect(document.querySelector("#update-banner")?.textContent).toContain("0.2.0");
   });
 });
 
@@ -194,7 +327,7 @@ describe("Mapping Import", () => {
   });
 
   test("opens Import when no work is pending and selects only exact standard CSV headers", async () => {
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([])));
     startApp();
@@ -220,7 +353,7 @@ describe("Mapping Import", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("#mapping-file")).not.toBeNull());
@@ -250,7 +383,7 @@ describe("Mapping Import", () => {
       .mockReturnValueOnce(importResponse)
       .mockResolvedValueOnce(okJson({ ...projectInfo, mappings: 14, review_items: 0 }))
       .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("#mapping-file")).not.toBeNull());
@@ -294,7 +427,7 @@ describe("Mapping Import", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({
         detail: "CSV does not contain a column named 'clean'. Available columns: raw, approved",
       }), { status: 400, headers: { "Content-Type": "application/json" } }));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("#mapping-file")).not.toBeNull());
@@ -318,7 +451,7 @@ describe("Mapping Import", () => {
   });
 
   test("clears stale headers as soon as a different CSV is selected", async () => {
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([])));
     startApp();
@@ -344,7 +477,7 @@ describe("Mapping Import", () => {
 
   test("ignores headers from an older file selection that finishes last", async () => {
     const readers = useControlledFileReaders();
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([])));
     startApp();
@@ -367,7 +500,7 @@ describe("Mapping Import", () => {
 
   test("ignores a read error from an older file selection", async () => {
     const readers = useControlledFileReaders();
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([])));
     startApp();
@@ -399,7 +532,7 @@ describe("Batch Import", () => {
   });
 
   test("is the second Import workflow and stays available without Mappings", async () => {
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson({
         ...projectInfo,
         mappings: 0,
@@ -421,7 +554,7 @@ describe("Batch Import", () => {
   });
 
   test("loads source headers and auto-selects only an exact raw_text header", async () => {
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([])));
     startApp();
@@ -459,7 +592,7 @@ describe("Batch Import", () => {
       }))
       .mockResolvedValueOnce(okJson(projectInfo))
       .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("#batch-file")).not.toBeNull());
@@ -531,7 +664,7 @@ describe("Batch Import", () => {
         semantic_index_warning: warning,
       }))
       .mockResolvedValueOnce(okJson(pending));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("#batch-file")).not.toBeNull());
@@ -580,7 +713,7 @@ describe("Batch Import", () => {
         review_items: 0,
       }))
       .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("#batch-file")).not.toBeNull());
@@ -607,7 +740,7 @@ describe("Batch Import", () => {
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([]))
       .mockReturnValueOnce(importResponse);
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("#batch-file")).not.toBeNull());
@@ -655,7 +788,7 @@ describe("Review queue", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(okJson(projectInfo))
       .mockReturnValueOnce(queueResponse);
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("[role=status]")?.textContent).toContain("Loading"));
@@ -682,7 +815,7 @@ describe("Review queue", () => {
   });
 
   test("only eligible rows can be selected and select-all covers the complete loaded queue", async () => {
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson(projectInfo))
       .mockResolvedValueOnce(okJson([
         { id: 4, raw_text: "first raw", suggested_text: "First" },
@@ -724,7 +857,7 @@ describe("Review queue", () => {
       .mockResolvedValueOnce(okJson({ accepted: 2 }))
       .mockResolvedValueOnce(okJson({ ...projectInfo, mappings: 14, review_items: 2 }))
       .mockResolvedValueOnce(okJson(remaining));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const confirmMock = vi.fn().mockReturnValue(true);
     vi.stubGlobal("confirm", confirmMock);
     startApp();
@@ -763,7 +896,7 @@ describe("Review queue", () => {
         JSON.stringify({ detail: "Could not accept selected Review Items; no changes were made" }),
         { status: 500, headers: { "Content-Type": "application/json" } },
       ));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
     startApp();
 
@@ -795,7 +928,7 @@ describe("Review queue", () => {
       ))
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 0 }))
       .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
     startApp();
 
@@ -810,7 +943,7 @@ describe("Review queue", () => {
   });
 
   test("Edit opens one prefilled inline input and Escape or Cancel restores the row", async () => {
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson(projectInfo))
       .mockResolvedValueOnce(okJson([
         { id: 4, raw_text: "first raw", suggested_text: "First" },
@@ -845,7 +978,7 @@ describe("Review queue", () => {
       .mockResolvedValueOnce(okJson([
         { id: 9, raw_text: "no suggestion", suggested_text: "" },
       ]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("tbody")).not.toBeNull());
@@ -870,7 +1003,7 @@ describe("Review queue", () => {
       .mockResolvedValueOnce(okJson({ status: "accepted" }))
       .mockResolvedValueOnce(okJson({ ...projectInfo, mappings: 13, review_items: 3 }))
       .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("tbody")).not.toBeNull());
@@ -907,7 +1040,7 @@ describe("Review queue", () => {
         JSON.stringify({ detail: "Mapping could not be saved" }),
         { status: 500, headers: { "Content-Type": "application/json" } },
       ));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("tbody")).not.toBeNull());
@@ -937,7 +1070,7 @@ describe("Review queue", () => {
       ))
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 3 }))
       .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("tbody")).not.toBeNull());
@@ -963,7 +1096,7 @@ describe("Review queue", () => {
       .mockResolvedValueOnce(okJson({ status: "accepted" }))
       .mockResolvedValueOnce(okJson({ ...projectInfo, mappings: 13, review_items: 3 }))
       .mockResolvedValueOnce(okJson(remaining));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelectorAll("tbody tr")).toHaveLength(2));
@@ -988,7 +1121,7 @@ describe("Review queue", () => {
       .mockResolvedValueOnce(okJson([
         { id: 12, raw_text: "new raw", suggested_text: "New" },
       ]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
@@ -1010,7 +1143,7 @@ describe("Review queue", () => {
       .mockResolvedValueOnce(okJson([
         { id: 12, raw_text: "new raw", suggested_text: "New" },
       ]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector(".empty-state")).not.toBeNull());
@@ -1029,7 +1162,7 @@ describe("Review queue", () => {
       .mockResolvedValueOnce(okJson([]))
       .mockResolvedValueOnce(okJson(projectInfo))
       .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.runAllTimersAsync();
@@ -1050,7 +1183,7 @@ describe("Review queue", () => {
         JSON.stringify({ detail: "Mapping could not be saved" }),
         { status: 500, headers: { "Content-Type": "application/json" } },
       ));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("tbody button")).not.toBeNull());
@@ -1073,7 +1206,7 @@ describe("Review queue", () => {
       ))
       .mockResolvedValueOnce(okJson({ ...projectInfo, review_items: 3 }))
       .mockResolvedValueOnce(okJson([]));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     startApp();
 
     await vi.waitFor(() => expect(document.querySelector("tbody button")).not.toBeNull());
@@ -1085,7 +1218,7 @@ describe("Review queue", () => {
   });
 
   test("a queue request error replaces loading with an accessible message", async () => {
-    vi.stubGlobal("fetch", vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce(okJson(projectInfo))
       .mockResolvedValueOnce(new Response(
         JSON.stringify({ detail: "Database is unavailable" }),
