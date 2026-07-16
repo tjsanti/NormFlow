@@ -45,3 +45,4 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/normflow"]
+artifacts = ["src/normflow/static"]
