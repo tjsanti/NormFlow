@@ -1,6 +1,7 @@
 """FastAPI layer — thin adapter over MappingService."""
 
 from contextlib import asynccontextmanager
+import os
 import tempfile
 from pathlib import Path
 from urllib.parse import urlencode
@@ -10,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictInt
 
+from . import __version__
 from .batch_import import BatchImportRunNotFoundError, ProjectBusyError, RunStatus
 from .embedding_model import EmbeddingModelUnavailableError
 
@@ -22,6 +24,7 @@ from .mapping_service import (
 )
 from .project import Project
 from .semantic_index import SemanticIndexStatus
+from .update_check import UpdateCheckService, default_update_check_service
 
 router = APIRouter()
 
@@ -60,6 +63,16 @@ class ReviewItemResponse(BaseModel):
 
 class StatusResponse(BaseModel):
     status: str
+
+
+class UpdateStatusResponse(BaseModel):
+    installed_version: str
+    latest_version: str
+    install_command: str
+
+
+class DismissUpdateRequest(BaseModel):
+    latest_version: str
 
 
 class IndexBuildResponse(BaseModel):
@@ -108,6 +121,11 @@ def get_project_service(request: Request) -> MappingService:
     return request.app.state.project_service
 
 
+def get_update_check_service(request: Request) -> UpdateCheckService:
+    """Return the shared update service used by the browser adapter."""
+    return request.app.state.update_check_service
+
+
 def _project_busy_response(request: Request, error: ProjectBusyError) -> JSONResponse:
     """Translate the shared Project writer conflict for every HTTP adapter."""
     active = error.active_run
@@ -126,6 +144,29 @@ def project_info(
     service: MappingService = Depends(get_project_service),
 ) -> ProjectInfoResponse:
     return ProjectInfoResponse(**service.project_info())
+
+
+@router.get("/update-status", response_model=UpdateStatusResponse | None)
+def update_status(
+    service: UpdateCheckService = Depends(get_update_check_service),
+) -> UpdateStatusResponse | None:
+    notice = service.browser_status()
+    if notice is None:
+        return None
+    return UpdateStatusResponse(
+        installed_version=notice.installed_version,
+        latest_version=notice.latest_version,
+        install_command=notice.install_command,
+    )
+
+
+@router.post("/update-status/dismiss", response_model=StatusResponse)
+def dismiss_update_status(
+    request: DismissUpdateRequest,
+    service: UpdateCheckService = Depends(get_update_check_service),
+) -> StatusResponse:
+    service.dismiss_browser_notice(request.latest_version)
+    return StatusResponse(status="dismissed")
 
 
 @router.post("/import/mappings", response_model=ImportMappingsResponse)
@@ -308,6 +349,9 @@ def create_app(project: Project) -> FastAPI:
     project_app = FastAPI(title="NormFlow", redirect_slashes=False)
     project_app.add_exception_handler(ProjectBusyError, _project_busy_response)
     project_app.state.project_service = MappingService(str(project.root))
+    project_app.state.update_check_service = default_update_check_service(
+        __version__, environment=os.environ
+    )
     project_app.include_router(router)
     project_app.mount(
         "/assets",

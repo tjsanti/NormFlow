@@ -23,6 +23,7 @@ from normflow.mapping_service import (
 )
 from normflow.project import resolve_project
 from normflow.project_service import init_project
+from normflow.update_check import INSTALL_COMMAND, UpdateCheckService, UpdateNotice
 
 
 def _client_with_fake_service(project_root: str) -> tuple[TestClient, MagicMock]:
@@ -428,6 +429,45 @@ def test_production_ui_and_api_are_served_from_same_origin():
         script = client.get(script_path)
         assert script.status_code == 200
         assert "javascript" in script.headers["content-type"]
+
+
+def test_update_status_exposes_the_shared_browser_notice(tmp_path: Path):
+    project_root = init_project(tmp_path / "project")
+    app = create_app(resolve_project(project_root))
+    update_service = MagicMock(spec=UpdateCheckService)
+    update_service.browser_status.return_value = UpdateNotice(
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+        install_command=INSTALL_COMMAND,
+    )
+    app.state.update_check_service = update_service
+
+    response = TestClient(app).get("/update-status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "installed_version": "0.1.0",
+        "latest_version": "0.2.0",
+        "install_command": INSTALL_COMMAND,
+    }
+
+
+def test_update_status_dismissal_delegates_the_release_to_shared_policy(
+    tmp_path: Path,
+):
+    project_root = init_project(tmp_path / "project")
+    app = create_app(resolve_project(project_root))
+    update_service = MagicMock(spec=UpdateCheckService)
+    app.state.update_check_service = update_service
+
+    response = TestClient(app).post(
+        "/update-status/dismiss",
+        json={"latest_version": "0.2.0"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "dismissed"}
+    update_service.dismiss_browser_notice.assert_called_once_with("0.2.0")
 
 
 def test_json_endpoints_publish_explicit_response_schemas(tmp_path: Path):

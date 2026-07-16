@@ -10,6 +10,12 @@ interface ProjectInfo {
   semantic_index_warning: string | null;
 }
 
+interface UpdateStatus {
+  installed_version: string;
+  latest_version: string;
+  install_command: string;
+}
+
 interface ReviewItem {
   id: number;
   raw_text: string;
@@ -85,6 +91,57 @@ async function fetchReviewItems(): Promise<ReviewItem[]> {
     throw new Error(error.detail ?? `Could not load Review Items (${response.status}).`);
   }
   return response.json() as Promise<ReviewItem[]>;
+}
+
+function isUpdateStatus(value: unknown): value is UpdateStatus {
+  if (!value || typeof value !== "object") return false;
+  const status = value as Partial<UpdateStatus>;
+  return typeof status.installed_version === "string"
+    && typeof status.latest_version === "string"
+    && typeof status.install_command === "string";
+}
+
+async function loadUpdateBanner(root: HTMLElement): Promise<void> {
+  try {
+    const response = await fetch("/update-status");
+    if (!response.ok) return;
+    const status: unknown = await response.json();
+    if (!isUpdateStatus(status)) return;
+
+    const banner = document.createElement("aside");
+    banner.id = "update-banner";
+    banner.setAttribute("aria-live", "polite");
+    const message = document.createElement("p");
+    message.textContent = `NormFlow ${status.latest_version} is available; `
+      + `you have ${status.installed_version}. Install it explicitly with:`;
+    const command = document.createElement("code");
+    command.textContent = status.install_command;
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.textContent = "Dismiss for today";
+    dismiss.setAttribute(
+      "aria-label",
+      `Dismiss NormFlow ${status.latest_version} update for today`,
+    );
+    dismiss.addEventListener("click", async () => {
+      dismiss.disabled = true;
+      try {
+        const dismissed = await fetch("/update-status/dismiss", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ latest_version: status.latest_version }),
+        });
+        if (dismissed.ok) banner.remove();
+        else dismiss.disabled = false;
+      } catch {
+        dismiss.disabled = false;
+      }
+    });
+    banner.append(message, command, dismiss);
+    root.querySelector("header")?.after(banner);
+  } catch {
+    // Update checks are advisory and never block the Project UI.
+  }
 }
 
 function showNotice(root: HTMLElement, message: string, error = false): void {
@@ -696,6 +753,7 @@ async function loadBoundProject(root: HTMLElement): Promise<void> {
   root.innerHTML = '<main class="review-project"><p role="status">Loading Project…</p></main>';
   try {
     showProject(root, await fetchProject());
+    void loadUpdateBanner(root);
   } catch (error) {
     const message = document.createElement("p");
     message.role = "alert";

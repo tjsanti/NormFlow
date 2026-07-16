@@ -98,6 +98,139 @@ def test_check_and_notice_happen_at_most_once_within_24_hours() -> None:
     assert transport.timeouts == [1.0]
 
 
+def test_browser_status_keeps_newer_release_visible_without_duplicate_check() -> None:
+    now = datetime(2026, 7, 16, 12, tzinfo=UTC)
+    cache = MemoryCache()
+    transport = StaticReleaseTransport("0.2.0")
+    service = UpdateCheckService(
+        installed_version="0.1.0",
+        transport=transport,
+        cache=cache,
+        now=lambda: now,
+        environment={},
+    )
+
+    first = service.browser_status()
+    refreshed = service.browser_status()
+
+    expected = UpdateNotice(
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+        install_command=INSTALL_COMMAND,
+    )
+    assert first == expected
+    assert refreshed == expected
+    assert transport.timeouts == [1.0]
+
+
+def test_dismissing_browser_notice_hides_that_release_for_the_day() -> None:
+    now = datetime(2026, 7, 16, 12, tzinfo=UTC)
+    service = UpdateCheckService(
+        installed_version="0.1.0",
+        transport=StaticReleaseTransport("0.2.0"),
+        cache=MemoryCache(),
+        now=lambda: now,
+        environment={},
+    )
+
+    notice = service.browser_status()
+    service.dismiss_browser_notice("0.2.0")
+
+    assert notice is not None
+    assert service.browser_status() is None
+
+
+def test_dismissed_browser_notice_returns_on_the_next_day() -> None:
+    current = [datetime(2026, 7, 16, 23, 59, tzinfo=UTC)]
+    service = UpdateCheckService(
+        installed_version="0.1.0",
+        transport=StaticReleaseTransport("0.2.0"),
+        cache=MemoryCache(),
+        now=lambda: current[0],
+        environment={},
+    )
+    service.browser_status()
+    service.dismiss_browser_notice("0.2.0")
+
+    current[0] = datetime(2026, 7, 17, 0, 1, tzinfo=UTC)
+
+    assert service.browser_status() == UpdateNotice(
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+        install_command=INSTALL_COMMAND,
+    )
+
+
+def test_new_release_is_visible_despite_an_older_release_dismissal() -> None:
+    now = datetime(2026, 7, 16, 12, tzinfo=UTC)
+    cache = MemoryCache(
+        UpdateCheckState(
+            last_attempt=now,
+            latest_version="0.3.0",
+            dismissed_version="0.2.0",
+            dismissed_at=now,
+        )
+    )
+    service = UpdateCheckService(
+        installed_version="0.1.0",
+        transport=StaticReleaseTransport("0.3.0"),
+        cache=cache,
+        now=lambda: now,
+        environment={},
+    )
+
+    assert service.browser_status() == UpdateNotice(
+        installed_version="0.1.0",
+        latest_version="0.3.0",
+        install_command=INSTALL_COMMAND,
+    )
+
+
+def test_browser_status_is_absent_when_installed_release_is_current() -> None:
+    service = UpdateCheckService(
+        installed_version="0.2.0",
+        transport=StaticReleaseTransport("0.2.0"),
+        cache=MemoryCache(),
+        now=lambda: datetime(2026, 7, 16, 12, tzinfo=UTC),
+        environment={},
+    )
+
+    assert service.browser_status() is None
+
+
+def test_browser_status_opt_out_avoids_network_access() -> None:
+    transport = StaticReleaseTransport("0.2.0")
+    service = UpdateCheckService(
+        installed_version="0.1.0",
+        transport=transport,
+        cache=MemoryCache(),
+        now=lambda: datetime(2026, 7, 16, 12, tzinfo=UTC),
+        environment={"NORMFLOW_NO_UPDATE_CHECK": "1"},
+    )
+
+    assert service.browser_status() is None
+    assert transport.timeouts == []
+
+
+@pytest.mark.parametrize(
+    "transport",
+    [OfflineTransport(), StaticReleaseTransport("malformed")],
+    ids=["offline", "malformed-response"],
+)
+def test_browser_status_suppresses_unavailable_release_information(
+    transport,
+) -> None:
+    service = UpdateCheckService(
+        installed_version="0.1.0",
+        transport=transport,
+        cache=MemoryCache(),
+        now=lambda: datetime(2026, 7, 16, 12, tzinfo=UTC),
+        environment={},
+    )
+
+    assert service.browser_status() is None
+
+
 def test_opt_out_avoids_network_access_entirely() -> None:
     transport = StaticReleaseTransport("0.2.0")
     service = UpdateCheckService(
@@ -146,6 +279,8 @@ def test_json_cache_recovers_from_corrupt_data_with_atomic_replacement(
         last_attempt=datetime(2026, 7, 16, 12, tzinfo=UTC),
         latest_version="0.2.0",
         last_notified=datetime(2026, 7, 16, 12, tzinfo=UTC),
+        dismissed_version="0.2.0",
+        dismissed_at=datetime(2026, 7, 16, 13, tzinfo=UTC),
     )
 
     recovered = cache.load()

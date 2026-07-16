@@ -24,6 +24,11 @@ header h1 { margin: 0; font-size: 2rem; }
 .counts strong { font-size: 1.5rem; }
 #semantic-index-status { padding: 10px 5vw; color: #684f0f; background: #fff2bf; border-bottom: 1px solid #dbc66d; }
 #semantic-index-status:empty { display: none; }
+#update-banner { display: flex; align-items: center; gap: 18px; padding: 14px 5vw; color: #503d09; background: #fff2bf; border-bottom: 1px solid #dbc66d; }
+#update-banner p { margin: 0; }
+#update-banner code { overflow-x: auto; padding: 8px 10px; color: #183028; background: #fffdf7; border: 1px solid #d4cdbc; border-radius: 4px; white-space: nowrap; }
+#update-banner button { flex: 0 0 auto; margin-left: auto; padding: 8px 12px; }
+#update-banner button:focus-visible { outline: 3px solid #d09d35; outline-offset: 2px; }
 
 .review-project { width: min(1180px, calc(100% - 40px)); margin: 40px auto; }
 .project-tabs { display: flex; gap: 4px; margin-bottom: 28px; border-bottom: 1px solid #bcb5a6; }
@@ -76,6 +81,8 @@ td input[type="checkbox"] { width: 18px; height: 18px; accent-color: #2f6b52; }
   .counts { margin: 0; }
   .review-heading { align-items: stretch; flex-direction: column; }
   .header-selectors { grid-template-columns: 1fr; }
+  #update-banner { align-items: stretch; flex-direction: column; }
+  #update-banner button { align-self: start; margin-left: 0; }
   #review-queue { overflow-x: auto; }
   table { min-width: 720px; }
 }

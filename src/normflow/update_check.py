@@ -29,6 +29,8 @@ class UpdateCheckState:
     last_attempt: datetime | None = None
     latest_version: str | None = None
     last_notified: datetime | None = None
+    dismissed_version: str | None = None
+    dismissed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -99,10 +101,17 @@ class JsonUpdateCache:
             latest_version = payload.get("latest_version")
             if latest_version is not None and not isinstance(latest_version, str):
                 return UpdateCheckState()
+            dismissed_version = payload.get("dismissed_version")
+            if dismissed_version is not None and not isinstance(
+                dismissed_version, str
+            ):
+                return UpdateCheckState()
             return UpdateCheckState(
                 last_attempt=_parse_datetime(payload.get("last_attempt")),
                 latest_version=latest_version,
                 last_notified=_parse_datetime(payload.get("last_notified")),
+                dismissed_version=dismissed_version,
+                dismissed_at=_parse_datetime(payload.get("dismissed_at")),
             )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return UpdateCheckState()
@@ -113,6 +122,8 @@ class JsonUpdateCache:
             "last_attempt": _format_datetime(state.last_attempt),
             "latest_version": state.latest_version,
             "last_notified": _format_datetime(state.last_notified),
+            "dismissed_version": state.dismissed_version,
+            "dismissed_at": _format_datetime(state.dismissed_at),
         }
         temporary_path: Path | None = None
         try:
@@ -188,6 +199,82 @@ class UpdateCheckService:
         except Exception:
             return None
 
+    def browser_status(self) -> UpdateNotice | None:
+        """Return a persistent browser notice using the shared daily check."""
+        if self._environment.get("NORMFLOW_NO_UPDATE_CHECK") == "1":
+            return None
+        try:
+            with self._lock.hold():
+                return self._browser_status_locked()
+        except Exception:
+            return None
+
+    def dismiss_browser_notice(self, latest_version: str) -> None:
+        """Dismiss one known release without suppressing a newer release."""
+        try:
+            with self._lock.hold():
+                state = self._cache.load()
+                if state.latest_version != latest_version:
+                    return
+                self._cache.save(
+                    UpdateCheckState(
+                        last_attempt=state.last_attempt,
+                        latest_version=state.latest_version,
+                        last_notified=state.last_notified,
+                        dismissed_version=latest_version,
+                        dismissed_at=self._now(),
+                    )
+                )
+        except Exception:
+            return
+
+    def _browser_status_locked(self) -> UpdateNotice | None:
+        checked_at = self._now()
+        try:
+            state = self._cache.load()
+        except Exception:
+            state = UpdateCheckState()
+        if not _recent(state.last_attempt, checked_at):
+            self._cache.save(
+                UpdateCheckState(
+                    last_attempt=checked_at,
+                    last_notified=state.last_notified,
+                    dismissed_version=state.dismissed_version,
+                    dismissed_at=state.dismissed_at,
+                )
+            )
+            try:
+                latest_version = self._transport.latest_stable_version(
+                    timeout_seconds=1.0
+                ).removeprefix("v")
+                _version_key(latest_version)
+            except Exception:
+                return None
+            state = UpdateCheckState(
+                last_attempt=checked_at,
+                latest_version=latest_version,
+                last_notified=state.last_notified,
+                dismissed_version=state.dismissed_version,
+                dismissed_at=state.dismissed_at,
+            )
+            self._cache.save(state)
+        if (
+            state.latest_version is None
+            or _version_key(state.latest_version)
+            <= _version_key(self._installed_version)
+        ):
+            return None
+        if (
+            state.dismissed_version == state.latest_version
+            and _same_day(state.dismissed_at, checked_at)
+        ):
+            return None
+        return UpdateNotice(
+            installed_version=self._installed_version,
+            latest_version=state.latest_version,
+            install_command=INSTALL_COMMAND,
+        )
+
     def _check_locked(self) -> UpdateNotice | None:
         checked_at = self._now()
         try:
@@ -207,6 +294,8 @@ class UpdateCheckService:
                             last_attempt=state.last_attempt,
                             latest_version=state.latest_version,
                             last_notified=checked_at,
+                            dismissed_version=state.dismissed_version,
+                            dismissed_at=state.dismissed_at,
                         )
                     )
                 except Exception:
@@ -220,6 +309,8 @@ class UpdateCheckService:
         attempted = UpdateCheckState(
             last_attempt=checked_at,
             last_notified=state.last_notified,
+            dismissed_version=state.dismissed_version,
+            dismissed_at=state.dismissed_at,
         )
         try:
             self._cache.save(attempted)
@@ -239,6 +330,8 @@ class UpdateCheckService:
                     UpdateCheckState(
                         last_attempt=checked_at,
                         latest_version=latest_version,
+                        dismissed_version=state.dismissed_version,
+                        dismissed_at=state.dismissed_at,
                     )
                 )
             except Exception:
@@ -250,6 +343,8 @@ class UpdateCheckService:
                     last_attempt=checked_at,
                     latest_version=latest_version,
                     last_notified=checked_at,
+                    dismissed_version=state.dismissed_version,
+                    dismissed_at=state.dismissed_at,
                 )
             )
         except Exception:
@@ -270,6 +365,10 @@ def _recent(earlier: datetime | None, now: datetime) -> bool:
         return False
     age = now - earlier
     return timedelta(0) <= age < timedelta(hours=24)
+
+
+def _same_day(earlier: datetime | None, now: datetime) -> bool:
+    return earlier is not None and earlier.date() == now.date()
 
 
 def _parse_datetime(value: object) -> datetime | None:
