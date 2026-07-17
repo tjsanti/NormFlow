@@ -112,9 +112,20 @@ download_verified_asset() {
 install_uv() {
     UV="$APP_HOME/uv/$UV_VERSION/bin/uv"
     [ -x "$UV" ] && return
+    case "$UV_TARGET" in
+        aarch64-apple-darwin)
+            expected_sha256=4ea4731010fbd1bc8e790e07f199f55a5c7c2c732e9b77f85e302b0bee61b756
+            ;;
+        x86_64-unknown-linux-gnu)
+            expected_sha256=0aaf451c391d3913823bfb8ed354b446dcfd0553a32ed8266611e4181c61fd51
+            ;;
+        *) fail "no pinned uv bootstrap is available for $UV_TARGET" ;;
+    esac
     mkdir -p "$(dirname "$UV")"
     archive="$TEMP_DIR/uv-$UV_VERSION-$UV_TARGET.tar.gz"
     download "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$UV_TARGET.tar.gz" "$archive"
+    actual_sha256=$(sha256 "$archive")
+    [ "$actual_sha256" = "$expected_sha256" ] || fail "uv bootstrap checksum verification failed"
     tar -xzf "$archive" -C "$TEMP_DIR"
     candidate="$TEMP_DIR/uv-$UV_TARGET/uv"
     [ -x "$candidate" ] || fail "the pinned uv bootstrap archive is invalid"
@@ -172,7 +183,7 @@ main() {
     MANIFEST="$TEMP_DIR/normflow-payload-$PLATFORM.json"
     download "$RELEASE_URL/normflow-payload-$PLATFORM.json" "$MANIFEST"
     version=$(awk -F '"' '/"version"[[:space:]]*:/ { print $4; exit }' "$MANIFEST")
-    case "$version" in ''|*[!0-9A-Za-z.+-]*) fail "release manifest has an invalid version" ;; esac
+    case "$version" in ''|'.'|'..'|*[!0-9A-Za-z.+-]*) fail "release manifest has an invalid version" ;; esac
     manifest_platform=$(awk -F '"' '/"platform"[[:space:]]*:/ { print $4; exit }' "$MANIFEST")
     [ "$manifest_platform" = "$PLATFORM" ] || fail "release manifest is not for $PLATFORM"
 
