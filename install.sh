@@ -333,11 +333,11 @@ activate_runtime() {
     previous_cli=$(readlink "$BIN_DIR/normflow" 2>/dev/null || true)
     previous_release=$(readlink "$release_runtime" 2>/dev/null || true)
     if [ -L "$release_runtime" ]; then
-        previous_release_kind=link
+        previous_release_kind="link"
     elif [ -e "$release_runtime" ]; then
-        previous_release_kind=path
+        previous_release_kind="path"
     else
-        previous_release_kind=missing
+        previous_release_kind="missing"
     fi
 
     activate_durable_runtime "$durable_runtime" || fail "could not activate the verified release"
@@ -352,9 +352,9 @@ activate_runtime() {
         fi
     fi
     if ! switch_link "$durable_runtime" "$release_runtime"; then
-        if [ "$previous_release_kind" = path ] && [ -n "${retired_runtime:-}" ]; then
+        if [ "$previous_release_kind" = "path" ] && [ -n "${retired_runtime:-}" ]; then
             mv "$retired_runtime" "$release_runtime" || true
-        elif [ "$previous_release_kind" = link ]; then
+        elif [ "$previous_release_kind" = "link" ]; then
             restore_link "$previous_release" "$release_runtime" || true
         fi
         restore_link "$previous_current" "$APP_HOME/current" || true

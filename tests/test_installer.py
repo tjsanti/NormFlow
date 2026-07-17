@@ -152,9 +152,12 @@ if [ "${NORMFLOW_TEST_FAIL_DURABLE_MOVE:-}" = 1 ]; then
   case "${1:-}:${2:-}" in */runtime:*/runtimes/*) exit 1 ;; esac
 fi
 case "${NORMFLOW_TEST_FAIL_LINK:-}:$destination" in
-  current:*/normflow/current) exit 1 ;;
-  cli:*/user-bin/normflow) exit 1 ;;
-  release:*/normflow/releases/*) exit 1 ;;
+  current:*/normflow/current|cli:*/user-bin/normflow|release:*/normflow/releases/*)
+    if [ ! -e "$NORMFLOW_TEST_FAIL_LINK_RECORD" ]; then
+      : > "$NORMFLOW_TEST_FAIL_LINK_RECORD"
+      exit 1
+    fi
+    ;;
 esac
 exec "$NORMFLOW_REAL_MV" "$@"
 """,
@@ -203,6 +206,7 @@ esac
         "NORMFLOW_TEST_NORMFLOW_RECORD": str(tmp_path / "normflow-record"),
         "NORMFLOW_TEST_CURL_RECORD": str(tmp_path / "curl-record"),
         "NORMFLOW_TEST_TAR_RECORD": str(tmp_path / "tar-record"),
+        "NORMFLOW_TEST_FAIL_LINK_RECORD": str(tmp_path / "link-failure-record"),
         "NORMFLOW_REAL_MV": real_mv,
     }
     return environment, record
@@ -407,9 +411,17 @@ def test_install_sh_keeps_active_release_callable_when_durable_activation_fails(
     assert not (tmp_path / "data" / "normflow" / "releases" / "0.2.0").exists()
 
 
-@pytest.mark.parametrize("failure", ["current", "cli", "release"])
+@pytest.mark.parametrize(
+    ("failure", "legacy_release"),
+    [
+        ("current", False),
+        ("cli", False),
+        ("release", False),
+        ("release", True),
+    ],
+)
 def test_install_sh_restores_every_active_link_when_activation_recording_fails(
-    tmp_path: Path, failure: str
+    tmp_path: Path, failure: str, legacy_release: bool
 ):
     environment, _record = _installer_environment(tmp_path, version="0.1.0")
     installed = subprocess.run(
@@ -422,9 +434,17 @@ def test_install_sh_restores_every_active_link_when_activation_recording_fails(
 
     app_home = tmp_path / "data" / "normflow"
     executable = tmp_path / "user-bin" / "normflow"
+    release_runtime = app_home / "releases" / "0.1.0"
+    if legacy_release:
+        durable_runtime = release_runtime.resolve()
+        release_runtime.unlink()
+        shutil.move(durable_runtime, release_runtime)
+        (app_home / "current").unlink()
+        (app_home / "current").symlink_to(release_runtime)
+
     original_current = (app_home / "current").readlink()
     original_cli = executable.readlink()
-    original_release = (app_home / "releases" / "0.1.0").readlink()
+    original_release = release_runtime.readlink() if release_runtime.is_symlink() else None
 
     if failure == "release":
         _release_assets(
@@ -446,7 +466,11 @@ def test_install_sh_restores_every_active_link_when_activation_recording_fails(
     assert failed.returncode != 0
     assert (app_home / "current").readlink() == original_current
     assert executable.readlink() == original_cli
-    assert (app_home / "releases" / "0.1.0").readlink() == original_release
+    if original_release is None:
+        assert release_runtime.is_dir()
+        assert (release_runtime / "bin" / "normflow").is_file()
+    else:
+        assert release_runtime.readlink() == original_release
     assert subprocess.run([executable, "--version"], env=environment).returncode == 0
 
 
