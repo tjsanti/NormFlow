@@ -25,6 +25,12 @@ def test_ci_pins_supported_toolchains_and_caches_locked_dependencies():
         re.fullmatch(r"[^@]+@[0-9a-f]{40}", reference)
         for reference in action_references
     )
+    assert action_references == [
+        "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+        "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+        "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990",
+    ]
     assert "python-version: \"3.13.14\"" in workflow
     assert "node-version: \"22.23.1\"" in workflow
     assert "version: \"0.11.29\"" in workflow
