@@ -154,8 +154,8 @@ update_path() {
 }
 
 smoke_test() {
-    "$RUNTIME/bin/normflow" --version >/dev/null
-    "$RUNTIME/bin/normflow" -V >/dev/null
+    "$RUNTIME/bin/normflow" --version >/dev/null || return 1
+    "$RUNTIME/bin/normflow" -V >/dev/null || return 1
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 NORMFLOW_DISABLE_NETWORK=1 \
         "$RUNTIME/bin/python" -c '
 from fastapi.testclient import TestClient
@@ -171,6 +171,7 @@ with tempfile.TemporaryDirectory(prefix="normflow-install-smoke-") as temporary:
         assert client.get("/").status_code == 200
     assert len(load_embedding_model().encode(["NormFlow installer smoke test"], normalize_embeddings=True)) == 1
 '
+    return $?
 }
 
 release_is_current() {
@@ -182,35 +183,113 @@ release_is_current() {
 }
 
 installed_release_version() {
+    [ -x "$BIN_DIR/normflow" ] || return 0
     active_target=$(readlink "$BIN_DIR/normflow" 2>/dev/null || true)
     case "$active_target" in
-        "$APP_HOME"/releases/*/bin/normflow)
-            active_release=${active_target%/bin/normflow}
-            printf '%s\n' "${active_release##*/}"
-            ;;
+        "$APP_HOME/current/bin/normflow"|"$APP_HOME"/releases/*/bin/normflow) ;;
+        *) return 0 ;;
     esac
+    installed_version=$("$BIN_DIR/normflow" --version 2>/dev/null || true)
+    case "$installed_version" in
+        ''|*[!0-9A-Za-z.+-]*) return 0 ;;
+    esac
+    printf '%s\n' "$installed_version"
 }
 
 version_is_newer() {
     awk -v installed="$1" -v requested="$2" '
+        function normalized(version) {
+            sub(/^v/, "", version)
+            sub(/\+.*/, "", version)
+            return tolower(version)
+        }
+        function suffix_rank(suffix) {
+            sub(/^[-._]*/, "", suffix)
+            if (suffix == "") return 4
+            if (suffix ~ /^post/) return 5
+            if (suffix ~ /^dev/) return 0
+            if (suffix ~ /^(a|alpha)/) return 1
+            if (suffix ~ /^(b|beta)/) return 2
+            if (suffix ~ /^(c|rc|pre|preview)/) return 3
+            return -1
+        }
+        function suffix_number(suffix) {
+            sub(/^[-._]*/, "", suffix)
+            sub(/^(post|dev|alpha|beta|preview|pre|rc|a|b|c)[-._]*/, "", suffix)
+            return suffix ~ /^[0-9]+$/ ? suffix + 0 : 0
+        }
         BEGIN {
-            installed_count = split(installed, installed_parts, /[.+-]/)
-            requested_count = split(requested, requested_parts, /[.+-]/)
+            installed = normalized(installed)
+            requested = normalized(requested)
+            if (!match(installed, /^[0-9]+(\.[0-9]+)*/) ||
+                !match(requested, /^[0-9]+(\.[0-9]+)*/)) exit 1
+
+            installed_release = substr(installed, RSTART, RLENGTH)
+            installed_suffix = substr(installed, RLENGTH + 1)
+            match(requested, /^[0-9]+(\.[0-9]+)*/)
+            requested_release = substr(requested, RSTART, RLENGTH)
+            requested_suffix = substr(requested, RLENGTH + 1)
+            installed_count = split(installed_release, installed_parts, ".")
+            requested_count = split(requested_release, requested_parts, ".")
             count = installed_count > requested_count ? installed_count : requested_count
             for (i = 1; i <= count; i++) {
-                left = installed_parts[i]
-                right = requested_parts[i]
-                if (left ~ /^[0-9]+$/ && right ~ /^[0-9]+$/) {
-                    if ((left + 0) > (right + 0)) exit 0
-                    if ((left + 0) < (right + 0)) exit 1
-                } else {
-                    if (left > right) exit 0
-                    if (left < right) exit 1
-                }
+                left = installed_parts[i] + 0
+                right = requested_parts[i] + 0
+                if (left > right) exit 0
+                if (left < right) exit 1
             }
+            installed_rank = suffix_rank(installed_suffix)
+            requested_rank = suffix_rank(requested_suffix)
+            if (installed_rank > requested_rank) exit 0
+            if (installed_rank < requested_rank) exit 1
+            installed_number = suffix_number(installed_suffix)
+            requested_number = suffix_number(requested_suffix)
+            if (installed_number > requested_number) exit 0
+            if (installed_number < requested_number) exit 1
             exit 1
         }
     '
+}
+
+switch_link() {
+    target=$1
+    destination=$2
+    link_candidate="$destination.normflow-new-$$"
+    rm -f "$link_candidate"
+    ln -s "$target" "$link_candidate" || return 1
+    if [ -L "$destination" ]; then
+        mv -hf "$link_candidate" "$destination" 2>/dev/null || \
+            mv -Tf "$link_candidate" "$destination" 2>/dev/null || {
+                rm -f "$link_candidate"
+                return 1
+            }
+    elif ! mv -f "$link_candidate" "$destination"; then
+        rm -f "$link_candidate"
+        return 1
+    fi
+}
+
+activate_runtime() {
+    candidate=$1
+    durable_runtime="$APP_HOME/runtimes/$version-$MODEL_SHA256-$$"
+    mkdir -p "$(dirname "$durable_runtime")"
+    mv "$candidate" "$durable_runtime" || fail "could not preserve the verified release"
+
+    previous_current=$(readlink "$APP_HOME/current" 2>/dev/null || true)
+    switch_link "$durable_runtime" "$APP_HOME/current" || fail "could not stage the verified release"
+    mkdir -p "$BIN_DIR"
+    if ! switch_link "$APP_HOME/current/bin/normflow" "$BIN_DIR/normflow"; then
+        [ -z "$previous_current" ] || switch_link "$previous_current" "$APP_HOME/current"
+        fail "could not activate the verified release"
+    fi
+
+    mkdir -p "$(dirname "$release_runtime")"
+    if [ -e "$release_runtime" ] && [ ! -L "$release_runtime" ]; then
+        retired_runtime="$APP_HOME/runtimes/retired-$version-$$"
+        mv "$release_runtime" "$retired_runtime" || fail "could not preserve the previous release"
+    fi
+    switch_link "$durable_runtime" "$release_runtime" || fail "could not record the active release"
+    RUNTIME=$durable_runtime
 }
 
 main() {
@@ -267,19 +346,7 @@ main() {
         mkdir -p "$(dirname "$MODEL_CACHE")"
         mv -f "$model" "$MODEL_CACHE"
     fi
-    mkdir -p "$(dirname "$release_runtime")"
-    previous_runtime=
-    if [ -e "$release_runtime" ]; then
-        previous_runtime="$TEMP_DIR/previous-runtime"
-        mv "$release_runtime" "$previous_runtime"
-    fi
-    if ! mv "$staging" "$release_runtime"; then
-        [ -z "$previous_runtime" ] || mv "$previous_runtime" "$release_runtime"
-        fail "could not activate the verified release"
-    fi
-    RUNTIME=$release_runtime
-    mkdir -p "$BIN_DIR"
-    ln -sfn "$RUNTIME/bin/normflow" "$BIN_DIR/normflow"
+    activate_runtime "$staging"
     NEW_TERMINAL=0
     update_path
     printf 'NormFlow %s installed at %s\n' "$version" "$RUNTIME"

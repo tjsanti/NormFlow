@@ -76,6 +76,8 @@ def _installer_environment(
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     record = tmp_path / "record"
+    real_mv = shutil.which("mv")
+    assert real_mv
 
     _executable(
         fake_bin / "curl",
@@ -141,6 +143,16 @@ case " $* " in
 esac
 """,
     )
+    _executable(
+        fake_bin / "mv",
+        """#!/bin/sh
+set -eu
+if [ "${NORMFLOW_TEST_FAIL_DURABLE_MOVE:-}" = 1 ]; then
+  case "${1:-}:${2:-}" in */runtime:*/runtimes/*) exit 1 ;; esac
+fi
+exec "$NORMFLOW_REAL_MV" "$@"
+""",
+    )
     fake_uv = tmp_path / "fake-uv"
     _executable(
         fake_uv,
@@ -185,6 +197,7 @@ esac
         "NORMFLOW_TEST_NORMFLOW_RECORD": str(tmp_path / "normflow-record"),
         "NORMFLOW_TEST_CURL_RECORD": str(tmp_path / "curl-record"),
         "NORMFLOW_TEST_TAR_RECORD": str(tmp_path / "tar-record"),
+        "NORMFLOW_REAL_MV": real_mv,
     }
     return environment, record
 
@@ -226,7 +239,6 @@ def test_install_sh_reports_a_healthy_target_release_as_current_without_reinstal
         capture_output=True,
     )
     assert installed.returncode == 0, installed.stderr
-
     record.unlink()
     (tmp_path / "curl-record").unlink()
     (tmp_path / "tar-record").unlink()
@@ -262,6 +274,7 @@ def test_install_sh_keeps_the_previous_release_callable_when_an_upgrade_fails(
         capture_output=True,
     )
     assert installed.returncode == 0, installed.stderr
+    original_target = (tmp_path / "user-bin" / "normflow").resolve()
 
     _release_assets(
         tmp_path / "assets", "linux-x86_64-py313", version="0.2.0", model=b"new-model"
@@ -276,13 +289,40 @@ def test_install_sh_keeps_the_previous_release_callable_when_an_upgrade_fails(
 
     executable = tmp_path / "user-bin" / "normflow"
     assert failed.returncode != 0
-    assert executable.resolve() == (
-        tmp_path / "data" / "normflow" / "releases" / "0.1.0" / "bin" / "normflow"
-    )
+    assert executable.resolve() == original_target
     environment.pop("NORMFLOW_TEST_FAIL_SMOKE")
     assert subprocess.run([executable, "--version"], env=environment).returncode == 0
     assert not (tmp_path / "data" / "normflow" / "releases" / "0.2.0").exists()
     assert not list((tmp_path / "data" / "normflow").glob("*.staging-*"))
+
+
+def test_install_sh_keeps_active_release_callable_when_durable_activation_fails(
+    tmp_path: Path,
+):
+    environment, _record = _installer_environment(tmp_path, version="0.1.0")
+    installed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert installed.returncode == 0, installed.stderr
+    executable = tmp_path / "user-bin" / "normflow"
+    original_target = executable.resolve()
+
+    _release_assets(tmp_path / "assets", "linux-x86_64-py313", version="0.2.0")
+    environment["NORMFLOW_TEST_FAIL_DURABLE_MOVE"] = "1"
+    failed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert failed.returncode != 0
+    assert executable.resolve() == original_target
+    assert subprocess.run([executable, "--version"], env=environment).returncode == 0
+    assert not (tmp_path / "data" / "normflow" / "releases" / "0.2.0").exists()
 
 
 def test_install_sh_repairs_a_damaged_target_release_transactionally(tmp_path: Path):
@@ -312,6 +352,34 @@ def test_install_sh_repairs_a_damaged_target_release_transactionally(tmp_path: P
     assert "pip install" in record.read_text(encoding="utf-8")
 
 
+def test_install_sh_repairs_an_executable_target_that_fails_version_smoke(
+    tmp_path: Path,
+):
+    environment, record = _installer_environment(tmp_path)
+    installed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    runtime = tmp_path / "data" / "normflow" / "releases" / "0.1.0"
+    _executable(runtime / "bin" / "normflow", "#!/bin/sh\nexit 1\n")
+    record.unlink()
+
+    repaired = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert repaired.returncode == 0, repaired.stderr
+    assert "pip install" in record.read_text(encoding="utf-8")
+    assert subprocess.run([runtime / "bin" / "normflow", "--version"], env=environment).returncode == 0
+
+
 def test_install_sh_refuses_to_downgrade_a_newer_managed_release(tmp_path: Path):
     environment, _record = _installer_environment(tmp_path, version="0.2.0")
     installed = subprocess.run(
@@ -321,6 +389,7 @@ def test_install_sh_refuses_to_downgrade_a_newer_managed_release(tmp_path: Path)
         capture_output=True,
     )
     assert installed.returncode == 0, installed.stderr
+    original_target = (tmp_path / "user-bin" / "normflow").resolve()
 
     _release_assets(tmp_path / "assets", "linux-x86_64-py313", version="0.1.0")
     failed = subprocess.run(
@@ -333,10 +402,34 @@ def test_install_sh_refuses_to_downgrade_a_newer_managed_release(tmp_path: Path)
     executable = tmp_path / "user-bin" / "normflow"
     assert failed.returncode != 0
     assert "newer managed release" in failed.stderr
-    assert executable.resolve() == (
-        tmp_path / "data" / "normflow" / "releases" / "0.2.0" / "bin" / "normflow"
-    )
+    assert executable.resolve() == original_target
     assert not (tmp_path / "data" / "normflow" / "releases" / "0.1.0").exists()
+
+
+def test_install_sh_refuses_to_replace_a_final_release_with_a_prerelease(
+    tmp_path: Path,
+):
+    environment, _record = _installer_environment(tmp_path, version="1.0.0")
+    installed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert installed.returncode == 0, installed.stderr
+    original_target = (tmp_path / "user-bin" / "normflow").resolve()
+
+    _release_assets(tmp_path / "assets", "linux-x86_64-py313", version="1.0.0-rc.1")
+    failed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert failed.returncode != 0
+    assert "newer managed release" in failed.stderr
+    assert (tmp_path / "user-bin" / "normflow").resolve() == original_target
 
 
 def test_install_sh_reuses_an_exact_verified_model_bundle_when_repairing(
@@ -411,6 +504,7 @@ def test_install_sh_keeps_active_release_when_an_upgrade_checksum_mismatches(
         capture_output=True,
     )
     assert installed.returncode == 0, installed.stderr
+    original_target = (tmp_path / "user-bin" / "normflow").resolve()
 
     _release_assets(tmp_path / "assets", "linux-x86_64-py313", version="0.2.0")
     manifest = tmp_path / "assets" / "normflow-payload-linux-x86_64-py313.json"
@@ -427,9 +521,7 @@ def test_install_sh_keeps_active_release_when_an_upgrade_checksum_mismatches(
 
     assert failed.returncode != 0
     assert "wheel checksum verification failed" in failed.stderr
-    assert (tmp_path / "user-bin" / "normflow").resolve() == (
-        tmp_path / "data" / "normflow" / "releases" / "0.1.0" / "bin" / "normflow"
-    )
+    assert (tmp_path / "user-bin" / "normflow").resolve() == original_target
     assert not (tmp_path / "data" / "normflow" / "releases" / "0.2.0").exists()
 
 
