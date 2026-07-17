@@ -179,7 +179,6 @@ class PayloadManifest:
             "version": self.identity.version,
             "platform": self.platform,
             "dependency_backend": "cpu",
-            "dependency_index_strategy": "unsafe-best-match",
             "model": {
                 **self.identity.model.as_dict(),
                 "license": "Apache-2.0",
@@ -279,8 +278,6 @@ def _export_constraints(staging: Path, version: str, platform_tag: str) -> Path:
             "--no-emit-project",
             "--no-annotate",
             "--no-header",
-            "--no-hashes",
-            "--emit-index-url",
         ],
         cwd=ROOT,
         text=True,
@@ -299,10 +296,15 @@ def _export_constraints(staging: Path, version: str, platform_tag: str) -> Path:
     unpinned = [
         line
         for line in constraints.splitlines()
-        if line and not line.startswith("--") and "==" not in line
+        if line
+        and not line[0].isspace()
+        and not line.startswith("--")
+        and "==" not in line
     ]
     if unpinned:
         raise PayloadError(f"constraints contain unpinned dependencies: {unpinned[0]}")
+    if "--hash=sha256:" not in constraints:
+        raise PayloadError("constraints do not include package integrity hashes")
     path = staging / f"normflow-{version}-constraints-{platform_tag}.txt"
     path.write_text(constraints, encoding="utf-8")
     return path
@@ -436,8 +438,10 @@ def _smoke(wheel: Path, constraints: Path, model: Path, version: str) -> None:
                 str(python),
                 "--constraint",
                 str(constraints),
-                "--index-strategy",
-                "unsafe-best-match",
+                # Route only Torch packages to uv's CPU index, avoiding a global
+                # extra index that could introduce dependency confusion.
+                "--torch-backend",
+                "cpu",
                 str(wheel),
             ],
             cwd=ROOT,

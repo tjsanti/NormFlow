@@ -18,7 +18,6 @@ ROOT = Path(__file__).parents[1]
 VERSION = "0.1.0"
 REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
 MODEL_BUNDLE = f"all-MiniLM-L6-v2-{REVISION}"
-MODEL_SOURCE_PROVENANCE = "normflow-model-source.json"
 TRUSTED_MODEL_SOURCE = Path("release/model/SOURCE.json")
 MODEL_FILES = {
     "1_Pooling/config.json": "{}",
@@ -110,7 +109,10 @@ with zipfile.ZipFile(wheel, "w") as archive:
     export_behavior = (
         f'os.execv("{real_uv}", ["{real_uv}", *sys.argv[1:]])'
         if use_maintained_lock
-        else 'print("sentence-transformers==5.6.0")\n    print("torch==2.12.1+cpu")'
+        else (
+            'print("sentence-transformers==5.6.0 --hash=sha256:" + "a" * 64)\n'
+            '    print("torch==2.12.1+cpu --hash=sha256:" + "b" * 64)'
+        )
     )
     fake_smoke_python = f"""#!{sys.executable}
 import os
@@ -136,8 +138,10 @@ elif sys.argv[1] == "venv":
     python.write_text({fake_smoke_python!r})
     python.chmod(0o755)
 elif sys.argv[1:3] == ["pip", "install"]:
-    if "--index-strategy" not in sys.argv or "unsafe-best-match" not in sys.argv:
-        raise SystemExit("CPU index must coexist with the primary package index")
+    if "--torch-backend" not in sys.argv or "cpu" not in sys.argv:
+        raise SystemExit("the smoke install must select the CPU Torch backend")
+    if "--index-strategy" in sys.argv or "unsafe-best-match" in sys.argv:
+        raise SystemExit("the smoke install must not weaken index isolation")
     Path(os.environ["NORMFLOW_TEST_INSTALL_RECORD"]).write_text("installed")
 elif sys.argv[1] == "run":
     record = Path(os.environ["NORMFLOW_TEST_SMOKE_RECORD"])
@@ -234,7 +238,8 @@ def test_release_payload_exports_the_maintained_cpu_only_lock(tmp_path: Path):
 
     constraints_path = next(output.glob("normflow-*-constraints-*.txt"))
     constraints = constraints_path.read_text(encoding="utf-8").lower()
-    assert "--extra-index-url https://download.pytorch.org/whl/cpu" in constraints
+    assert "--extra-index-url" not in constraints
+    assert "--hash=sha256:" in constraints
     assert re.search(r"(?m)^torch==[^\s;]+\+cpu(?:\s|;|$)", constraints)
     assert not any(
         term in constraints
@@ -326,37 +331,12 @@ def test_model_source_override_requires_verified_provenance(tmp_path: Path):
     assert not output.exists()
 
 
-def test_model_source_override_rejects_self_attested_alternate_bytes(
+def test_model_source_override_rejects_altered_bytes_against_trusted_provenance(
     tmp_path: Path,
 ):
     checkout, model_source, environment = _release_checkout(tmp_path)
     alternate_weights = "untrusted model weights"
     (model_source / "model.safetensors").write_text(alternate_weights)
-    provenance_path = model_source / MODEL_SOURCE_PROVENANCE
-    provenance_path.write_text(
-        json.dumps(
-            {
-                "model": {
-                    "repository": "sentence-transformers/all-MiniLM-L6-v2",
-                    "revision": REVISION,
-                    "identity": (
-                        f"sentence-transformers/all-MiniLM-L6-v2@{REVISION}"
-                    ),
-                    "bundle": MODEL_BUNDLE,
-                },
-                "files": {
-                    name: hashlib.sha256(
-                        (
-                            alternate_weights
-                            if name == "model.safetensors"
-                            else contents
-                        ).encode()
-                    ).hexdigest()
-                    for name, contents in MODEL_FILES.items()
-                },
-            }
-        )
-    )
     output = tmp_path / "payload"
 
     result = subprocess.run(
