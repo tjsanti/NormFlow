@@ -222,7 +222,9 @@ def _platform_tag() -> str:
     machine = {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine)
     if machine not in {"x86_64", "aarch64"}:
         raise PayloadError(f"unsupported release architecture: {platform.machine()}")
-    return f"{system}-{machine}-py{sys.version_info.major}{sys.version_info.minor}"
+    # The managed installer always provisions this runtime, independently of
+    # the Python used to assemble a release payload.
+    return f"{system}-{machine}-py313"
 
 
 def _validate_wheel(wheel: Path, version: str) -> None:
@@ -508,9 +510,15 @@ def build(output: Path) -> None:
             platform=platform_tag,
             assets=tuple(assets),
         )
+        manifest_text = json.dumps(manifest.as_dict(), indent=2, sort_keys=True) + "\n"
         (staging / f"normflow-{identity.version}-payload.json").write_text(
-            json.dumps(manifest.as_dict(), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+            manifest_text, encoding="utf-8"
+        )
+        # The installer can choose its platform before it knows the release
+        # version. This stable, per-platform entry point contains the same
+        # versioned manifest and the checksums for every executable payload.
+        (staging / f"normflow-payload-{platform_tag}.json").write_text(
+            manifest_text, encoding="utf-8"
         )
         shutil.rmtree(staging / "model-tree")
         download = staging / "model-download"

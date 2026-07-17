@@ -181,6 +181,7 @@ def test_release_payload_command_emits_one_versioned_payload(tmp_path: Path):
     manifest = json.loads((output / f"normflow-{VERSION}-payload.json").read_text())
     assert {path.name for path in output.iterdir()} == {
         f"normflow-{VERSION}-payload.json",
+        "normflow-payload-macos-aarch64-py313.json",
         *(asset["filename"] for asset in manifest["assets"]),
     }
     assert manifest["version"] == VERSION
@@ -217,6 +218,7 @@ def test_release_payload_command_has_a_nonconflicting_default_output(tmp_path: P
     manifest = json.loads((output / f"normflow-{VERSION}-payload.json").read_text())
     assert {path.name for path in output.iterdir()} == {
         f"normflow-{VERSION}-payload.json",
+        "normflow-payload-macos-aarch64-py313.json",
         *(asset["filename"] for asset in manifest["assets"]),
     }
     assert not list(output.glob("*.tar"))

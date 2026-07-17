@@ -6,15 +6,14 @@ Import approved `raw_text → normalized_text` Mappings, process new records thr
 
 **Current state:** Project init, a local browser UI, Mapping and Batch CSV imports, exact/semantic/LLM Suggestions, durable Batch Import Runs, Review Item acceptance, and CSV export.
 
-## Prerequisites
-
-- [uv](https://docs.astral.sh/uv/) (Python project manager)
-- Python ≥ 3.13
-
 ## Install
 
-NormFlow 0.1.0 is distributed only through immutable GitHub Releases. The
-initial supported platforms are macOS and Linux; Windows is not yet supported.
+NormFlow is distributed only through immutable GitHub Releases. The managed
+installer supports Apple Silicon macOS 14 or later and x86-64 Linux with glibc.
+It does not support Intel macOS, Linux ARM, musl/Alpine, or Windows. It installs
+its own private uv bootstrap, Python 3.13 runtime, CPU-only dependencies, and
+the bundled local embedding model; no existing Python or uv configuration is
+changed.
 
 ```bash
 curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
@@ -24,6 +23,19 @@ curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
 Do not install the package named `normflow` from PyPI. That name belongs to an
 unrelated project, and this NormFlow project does not publish to PyPI. The
 GitHub Release installer URL above is the stable installation entry point.
+
+The first installation downloads the NormFlow wheel, locked CPU dependencies,
+and the embedding model (expect several hundred MB and a broadband connection).
+Each release asset is SHA-256 verified before installation. If you prefer to
+inspect the script first, download and review it before executing it:
+
+```bash
+curl --fail --silent --show-error --location \
+  https://github.com/tjsanti/NormFlow/releases/latest/download/install.sh \
+  --output install.sh
+less install.sh
+sh install.sh
+```
 
 FastAPI, Uvicorn, multipart upload support, and the production browser assets are included in the normal installation. No optional server extra is needed.
 
