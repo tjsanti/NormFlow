@@ -263,6 +263,82 @@ def test_install_sh_reports_a_healthy_target_release_as_current_without_reinstal
     assert not (tmp_path / "tar-record").exists()
 
 
+@pytest.mark.parametrize("link_state", ["missing", "dangling"])
+def test_install_sh_reactivates_a_healthy_target_with_a_broken_cli_link(
+    tmp_path: Path, link_state: str
+):
+    environment, record = _installer_environment(tmp_path)
+    installed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    executable = tmp_path / "user-bin" / "normflow"
+    executable.unlink()
+    if link_state == "dangling":
+        executable.symlink_to(tmp_path / "missing-normflow")
+    record.unlink()
+
+    repaired = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert repaired.returncode == 0, repaired.stderr
+    assert "activated" in repaired.stdout
+    assert subprocess.run([executable, "--version"], env=environment).returncode == 0
+    assert "pip install" not in record.read_text(encoding="utf-8")
+
+
+def test_install_sh_reactivates_a_healthy_target_when_current_points_to_older_release(
+    tmp_path: Path,
+):
+    environment, _record = _installer_environment(tmp_path, version="0.1.0")
+    first = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert first.returncode == 0, first.stderr
+
+    _release_assets(tmp_path / "assets", "linux-x86_64-py313", version="0.2.0")
+    upgraded = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    app_home = tmp_path / "data" / "normflow"
+    older_runtime = next((app_home / "runtimes").glob("0.1.0-*"))
+    current = app_home / "current"
+    current.unlink()
+    current.symlink_to(older_runtime)
+    executable = tmp_path / "user-bin" / "normflow"
+    executable.unlink()
+    executable.symlink_to(current / "bin" / "normflow")
+
+    repaired = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert repaired.returncode == 0, repaired.stderr
+    assert "activated" in repaired.stdout
+    assert subprocess.run(
+        [executable, "--version"], env=environment, text=True, capture_output=True
+    ).stdout.strip() == "0.2.0"
+
+
 def test_install_sh_keeps_the_previous_release_callable_when_an_upgrade_fails(
     tmp_path: Path,
 ):

@@ -269,12 +269,8 @@ switch_link() {
     fi
 }
 
-activate_runtime() {
-    candidate=$1
-    durable_runtime="$APP_HOME/runtimes/$version-$MODEL_SHA256-$$"
-    mkdir -p "$(dirname "$durable_runtime")"
-    mv "$candidate" "$durable_runtime" || fail "could not preserve the verified release"
-
+activate_durable_runtime() {
+    durable_runtime=$1
     previous_current=$(readlink "$APP_HOME/current" 2>/dev/null || true)
     switch_link "$durable_runtime" "$APP_HOME/current" || fail "could not stage the verified release"
     mkdir -p "$BIN_DIR"
@@ -283,13 +279,38 @@ activate_runtime() {
         fail "could not activate the verified release"
     fi
 
+    RUNTIME=$durable_runtime
+}
+
+release_target() {
+    if [ -L "$1" ]; then
+        readlink "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+activation_points_to() {
+    desired_runtime=$1
+    [ "$(readlink "$APP_HOME/current" 2>/dev/null || true)" = "$desired_runtime" ] || return 1
+    [ "$(readlink "$BIN_DIR/normflow" 2>/dev/null || true)" = "$APP_HOME/current/bin/normflow" ] || return 1
+    [ -x "$BIN_DIR/normflow" ]
+}
+
+activate_runtime() {
+    candidate=$1
+    durable_runtime="$APP_HOME/runtimes/$version-$MODEL_SHA256-$$"
+    mkdir -p "$(dirname "$durable_runtime")"
+    mv "$candidate" "$durable_runtime" || fail "could not preserve the verified release"
+
+    activate_durable_runtime "$durable_runtime"
+
     mkdir -p "$(dirname "$release_runtime")"
     if [ -e "$release_runtime" ] && [ ! -L "$release_runtime" ]; then
         retired_runtime="$APP_HOME/runtimes/retired-$version-$$"
         mv "$release_runtime" "$retired_runtime" || fail "could not preserve the previous release"
     fi
     switch_link "$durable_runtime" "$release_runtime" || fail "could not record the active release"
-    RUNTIME=$durable_runtime
 }
 
 main() {
@@ -318,7 +339,20 @@ main() {
     MODEL_CACHE="$APP_HOME/models/$MODEL_FILENAME.$MODEL_SHA256"
     release_runtime="$APP_HOME/releases/$version"
     if release_is_current "$release_runtime"; then
-        printf 'NormFlow %s is already current at %s\n' "$version" "$release_runtime"
+        durable_runtime=$(release_target "$release_runtime")
+        if activation_points_to "$durable_runtime"; then
+            printf 'NormFlow %s is already current at %s\n' "$version" "$release_runtime"
+            return
+        fi
+        activate_durable_runtime "$durable_runtime"
+        NEW_TERMINAL=0
+        update_path
+        printf 'NormFlow %s activated at %s\n' "$version" "$RUNTIME"
+        if [ "$NEW_TERMINAL" = 1 ]; then
+            printf 'Open a new terminal, then run: normflow --version\n'
+        else
+            printf 'Run: normflow --version\n'
+        fi
         return
     fi
 
