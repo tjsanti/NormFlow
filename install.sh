@@ -173,6 +173,46 @@ with tempfile.TemporaryDirectory(prefix="normflow-install-smoke-") as temporary:
 '
 }
 
+release_is_current() {
+    [ -x "$1/bin/normflow" ] || return 1
+    [ -f "$1/share/normflow/model-identity" ] || return 1
+    [ "$(cat "$1/share/normflow/model-identity")" = "$MODEL_FILENAME $MODEL_SHA256" ] || return 1
+    RUNTIME=$1
+    smoke_test
+}
+
+installed_release_version() {
+    active_target=$(readlink "$BIN_DIR/normflow" 2>/dev/null || true)
+    case "$active_target" in
+        "$APP_HOME"/releases/*/bin/normflow)
+            active_release=${active_target%/bin/normflow}
+            printf '%s\n' "${active_release##*/}"
+            ;;
+    esac
+}
+
+version_is_newer() {
+    awk -v installed="$1" -v requested="$2" '
+        BEGIN {
+            installed_count = split(installed, installed_parts, /[.+-]/)
+            requested_count = split(requested, requested_parts, /[.+-]/)
+            count = installed_count > requested_count ? installed_count : requested_count
+            for (i = 1; i <= count; i++) {
+                left = installed_parts[i]
+                right = requested_parts[i]
+                if (left ~ /^[0-9]+$/ && right ~ /^[0-9]+$/) {
+                    if ((left + 0) > (right + 0)) exit 0
+                    if ((left + 0) < (right + 0)) exit 1
+                } else {
+                    if (left > right) exit 0
+                    if (left < right) exit 1
+                }
+            }
+            exit 1
+        }
+    '
+}
+
 main() {
     detect_platform
     require_command curl
@@ -187,28 +227,57 @@ main() {
     manifest_platform=$(awk -F '"' '/"platform"[[:space:]]*:/ { print $4; exit }' "$MANIFEST")
     [ "$manifest_platform" = "$PLATFORM" ] || fail "release manifest is not for $PLATFORM"
 
+    installed_version=$(installed_release_version)
+    if [ -n "$installed_version" ] && version_is_newer "$installed_version" "$version"; then
+        fail "refuses to run release $version over newer managed release $installed_version"
+    fi
+
+    model_record=$(read_asset model)
+    set -- $model_record
+    MODEL_FILENAME=$1
+    MODEL_SHA256=$2
+    MODEL_CACHE="$APP_HOME/models/$MODEL_FILENAME.$MODEL_SHA256"
+    release_runtime="$APP_HOME/releases/$version"
+    if release_is_current "$release_runtime"; then
+        printf 'NormFlow %s is already current at %s\n' "$version" "$release_runtime"
+        return
+    fi
+
     wheel=$(download_verified_asset wheel)
     constraints=$(download_verified_asset constraints)
-    model=$(download_verified_asset model)
+    if [ -f "$MODEL_CACHE" ] && [ "$(sha256 "$MODEL_CACHE")" = "$MODEL_SHA256" ]; then
+        model=$MODEL_CACHE
+        cache_model=0
+    else
+        model=$(download_verified_asset model)
+        cache_model=1
+    fi
     install_uv
 
-    release_runtime="$APP_HOME/releases/$version"
-    RUNTIME=$release_runtime
-    if [ ! -x "$RUNTIME/bin/normflow" ]; then
-        staging="$TEMP_DIR/runtime"
-        UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" python install "$PYTHON_VERSION"
-        UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" venv --python "$PYTHON_VERSION" "$staging"
-        "$UV" pip install --python "$staging/bin/python" --constraint "$constraints" --torch-backend cpu "$wheel"
-        mkdir -p "$staging/share/normflow/models"
-        tar -xzf "$model" -C "$staging/share/normflow/models"
-        RUNTIME=$staging
-        smoke_test
-        mkdir -p "$(dirname "$release_runtime")"
-        mv "$staging" "$release_runtime"
-        RUNTIME=$release_runtime
-    else
-        smoke_test
+    staging="$TEMP_DIR/runtime"
+    UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" python install "$PYTHON_VERSION"
+    UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" venv --python "$PYTHON_VERSION" "$staging"
+    "$UV" pip install --python "$staging/bin/python" --constraint "$constraints" --torch-backend cpu "$wheel"
+    mkdir -p "$staging/share/normflow/models"
+    tar -xzf "$model" -C "$staging/share/normflow/models"
+    printf '%s %s\n' "$MODEL_FILENAME" "$MODEL_SHA256" > "$staging/share/normflow/model-identity"
+    RUNTIME=$staging
+    smoke_test
+    if [ "$cache_model" = 1 ]; then
+        mkdir -p "$(dirname "$MODEL_CACHE")"
+        mv -f "$model" "$MODEL_CACHE"
     fi
+    mkdir -p "$(dirname "$release_runtime")"
+    previous_runtime=
+    if [ -e "$release_runtime" ]; then
+        previous_runtime="$TEMP_DIR/previous-runtime"
+        mv "$release_runtime" "$previous_runtime"
+    fi
+    if ! mv "$staging" "$release_runtime"; then
+        [ -z "$previous_runtime" ] || mv "$previous_runtime" "$release_runtime"
+        fail "could not activate the verified release"
+    fi
+    RUNTIME=$release_runtime
     mkdir -p "$BIN_DIR"
     ln -sfn "$RUNTIME/bin/normflow" "$BIN_DIR/normflow"
     NEW_TERMINAL=0
