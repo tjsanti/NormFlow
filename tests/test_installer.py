@@ -147,17 +147,16 @@ esac
         fake_bin / "mv",
         """#!/bin/sh
 set -eu
-for argument do destination=$argument; done
+source=
+destination=
+for argument do source=$destination; destination=$argument; done
 if [ "${NORMFLOW_TEST_FAIL_DURABLE_MOVE:-}" = 1 ]; then
   case "${1:-}:${2:-}" in */runtime:*/runtimes/*) exit 1 ;; esac
 fi
-case "${NORMFLOW_TEST_FAIL_LINK:-}:$destination" in
-  current:*/normflow/current|cli:*/user-bin/normflow|release:*/normflow/releases/*)
-    if [ ! -e "$NORMFLOW_TEST_FAIL_LINK_RECORD" ]; then
-      : > "$NORMFLOW_TEST_FAIL_LINK_RECORD"
-      exit 1
-    fi
-    ;;
+case "${NORMFLOW_TEST_FAIL_LINK:-}:$source:$destination" in
+  current:*/normflow/current.normflow-new-*:*/normflow/current) exit 1 ;;
+  cli:*/user-bin/normflow.normflow-new-*:*/user-bin/normflow) exit 1 ;;
+  release:*/normflow/releases/*.normflow-new-*:*/normflow/releases/*) exit 1 ;;
 esac
 exec "$NORMFLOW_REAL_MV" "$@"
 """,
@@ -206,7 +205,6 @@ esac
         "NORMFLOW_TEST_NORMFLOW_RECORD": str(tmp_path / "normflow-record"),
         "NORMFLOW_TEST_CURL_RECORD": str(tmp_path / "curl-record"),
         "NORMFLOW_TEST_TAR_RECORD": str(tmp_path / "tar-record"),
-        "NORMFLOW_TEST_FAIL_LINK_RECORD": str(tmp_path / "link-failure-record"),
         "NORMFLOW_REAL_MV": real_mv,
     }
     return environment, record
@@ -455,7 +453,6 @@ def test_install_sh_restores_every_active_link_when_activation_recording_fails(
         )
     else:
         _release_assets(tmp_path / "assets", "linux-x86_64-py313", version="0.2.0")
-    Path(environment["NORMFLOW_TEST_FAIL_LINK_RECORD"]).unlink(missing_ok=True)
     environment["NORMFLOW_TEST_FAIL_LINK"] = failure
     failed = subprocess.run(
         ["sh", str(ROOT / "install.sh")],
