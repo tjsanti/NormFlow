@@ -183,13 +183,22 @@ release_is_current() {
 }
 
 installed_release_version() {
-    [ -x "$BIN_DIR/normflow" ] || return 0
-    active_target=$(readlink "$BIN_DIR/normflow" 2>/dev/null || true)
-    case "$active_target" in
-        "$APP_HOME/current/bin/normflow"|"$APP_HOME"/releases/*/bin/normflow) ;;
-        *) return 0 ;;
-    esac
-    installed_version=$("$BIN_DIR/normflow" --version 2>/dev/null || true)
+    if [ -x "$BIN_DIR/normflow" ]; then
+        active_target=$(readlink "$BIN_DIR/normflow" 2>/dev/null || true)
+        case "$active_target" in
+            "$APP_HOME/current/bin/normflow"|"$APP_HOME"/releases/*/bin/normflow) executable="$BIN_DIR/normflow" ;;
+            *) return 0 ;;
+        esac
+    else
+        current_runtime=$(readlink "$APP_HOME/current" 2>/dev/null || true)
+        case "$current_runtime" in
+            "$APP_HOME"/runtimes/*|"$APP_HOME"/releases/*) ;;
+            *) return 0 ;;
+        esac
+        executable="$current_runtime/bin/normflow"
+        [ -x "$executable" ] || return 0
+    fi
+    installed_version=$("$executable" --version 2>/dev/null || true)
     case "$installed_version" in
         ''|*[!0-9A-Za-z.+-]*) return 0 ;;
     esac
@@ -257,6 +266,10 @@ switch_link() {
     link_candidate="$destination.normflow-new-$$"
     rm -f "$link_candidate"
     ln -s "$target" "$link_candidate" || return 1
+    if [ -d "$destination" ] && [ ! -L "$destination" ]; then
+        rm -f "$link_candidate"
+        return 1
+    fi
     if [ -L "$destination" ]; then
         mv -hf "$link_candidate" "$destination" 2>/dev/null || \
             mv -Tf "$link_candidate" "$destination" 2>/dev/null || {
@@ -269,14 +282,27 @@ switch_link() {
     fi
 }
 
+restore_link() {
+    target=$1
+    destination=$2
+    if [ -n "$target" ]; then
+        [ "$(readlink "$destination" 2>/dev/null || true)" = "$target" ] || \
+            switch_link "$target" "$destination"
+    elif [ -L "$destination" ] || [ -f "$destination" ]; then
+        rm -f "$destination"
+    fi
+}
+
 activate_durable_runtime() {
     durable_runtime=$1
     previous_current=$(readlink "$APP_HOME/current" 2>/dev/null || true)
-    switch_link "$durable_runtime" "$APP_HOME/current" || fail "could not stage the verified release"
+    previous_cli=$(readlink "$BIN_DIR/normflow" 2>/dev/null || true)
+    switch_link "$durable_runtime" "$APP_HOME/current" || return 1
     mkdir -p "$BIN_DIR"
     if ! switch_link "$APP_HOME/current/bin/normflow" "$BIN_DIR/normflow"; then
-        [ -z "$previous_current" ] || switch_link "$previous_current" "$APP_HOME/current"
-        fail "could not activate the verified release"
+        restore_link "$previous_current" "$APP_HOME/current" || return 1
+        restore_link "$previous_cli" "$BIN_DIR/normflow" || return 1
+        return 1
     fi
 
     RUNTIME=$durable_runtime
@@ -303,14 +329,38 @@ activate_runtime() {
     mkdir -p "$(dirname "$durable_runtime")"
     mv "$candidate" "$durable_runtime" || fail "could not preserve the verified release"
 
-    activate_durable_runtime "$durable_runtime"
+    previous_current=$(readlink "$APP_HOME/current" 2>/dev/null || true)
+    previous_cli=$(readlink "$BIN_DIR/normflow" 2>/dev/null || true)
+    previous_release=$(readlink "$release_runtime" 2>/dev/null || true)
+    if [ -L "$release_runtime" ]; then
+        previous_release_kind=link
+    elif [ -e "$release_runtime" ]; then
+        previous_release_kind=path
+    else
+        previous_release_kind=missing
+    fi
+
+    activate_durable_runtime "$durable_runtime" || fail "could not activate the verified release"
 
     mkdir -p "$(dirname "$release_runtime")"
     if [ -e "$release_runtime" ] && [ ! -L "$release_runtime" ]; then
         retired_runtime="$APP_HOME/runtimes/retired-$version-$$"
-        mv "$release_runtime" "$retired_runtime" || fail "could not preserve the previous release"
+        if ! mv "$release_runtime" "$retired_runtime"; then
+            restore_link "$previous_current" "$APP_HOME/current" || true
+            restore_link "$previous_cli" "$BIN_DIR/normflow" || true
+            fail "could not preserve the previous release"
+        fi
     fi
-    switch_link "$durable_runtime" "$release_runtime" || fail "could not record the active release"
+    if ! switch_link "$durable_runtime" "$release_runtime"; then
+        if [ "$previous_release_kind" = path ] && [ -n "${retired_runtime:-}" ]; then
+            mv "$retired_runtime" "$release_runtime" || true
+        elif [ "$previous_release_kind" = link ]; then
+            restore_link "$previous_release" "$release_runtime" || true
+        fi
+        restore_link "$previous_current" "$APP_HOME/current" || true
+        restore_link "$previous_cli" "$BIN_DIR/normflow" || true
+        fail "could not record the active release"
+    fi
 }
 
 main() {

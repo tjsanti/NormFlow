@@ -138,7 +138,7 @@ for argument do
 done
 case " $* " in
   *uv-*) mkdir -p "$destination/uv-$NORMFLOW_TEST_UV_TARGET"; cp "$NORMFLOW_TEST_UV" "$destination/uv-$NORMFLOW_TEST_UV_TARGET/uv"; chmod +x "$destination/uv-$NORMFLOW_TEST_UV_TARGET/uv" ;;
-  *model*) exit 0 ;;
+  *model*) mkdir -p "$destination"; for argument do case "$argument" in *model*.tar.gz) cat "$argument" > "$destination/model-payload" ;; esac; done ;;
   *) command tar "$@" ;;
 esac
 """,
@@ -147,9 +147,15 @@ esac
         fake_bin / "mv",
         """#!/bin/sh
 set -eu
+for argument do destination=$argument; done
 if [ "${NORMFLOW_TEST_FAIL_DURABLE_MOVE:-}" = 1 ]; then
   case "${1:-}:${2:-}" in */runtime:*/runtimes/*) exit 1 ;; esac
 fi
+case "${NORMFLOW_TEST_FAIL_LINK:-}:$destination" in
+  current:*/normflow/current) exit 1 ;;
+  cli:*/user-bin/normflow) exit 1 ;;
+  release:*/normflow/releases/*) exit 1 ;;
+esac
 exec "$NORMFLOW_REAL_MV" "$@"
 """,
     )
@@ -401,6 +407,96 @@ def test_install_sh_keeps_active_release_callable_when_durable_activation_fails(
     assert not (tmp_path / "data" / "normflow" / "releases" / "0.2.0").exists()
 
 
+@pytest.mark.parametrize("failure", ["current", "cli", "release"])
+def test_install_sh_restores_every_active_link_when_activation_recording_fails(
+    tmp_path: Path, failure: str
+):
+    environment, _record = _installer_environment(tmp_path, version="0.1.0")
+    installed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    app_home = tmp_path / "data" / "normflow"
+    executable = tmp_path / "user-bin" / "normflow"
+    original_current = (app_home / "current").readlink()
+    original_cli = executable.readlink()
+    original_release = (app_home / "releases" / "0.1.0").readlink()
+
+    if failure == "release":
+        _release_assets(
+            tmp_path / "assets",
+            "linux-x86_64-py313",
+            version="0.1.0",
+            model=b"replacement-model",
+        )
+    else:
+        _release_assets(tmp_path / "assets", "linux-x86_64-py313", version="0.2.0")
+    environment["NORMFLOW_TEST_FAIL_LINK"] = failure
+    failed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert failed.returncode != 0
+    assert (app_home / "current").readlink() == original_current
+    assert executable.readlink() == original_cli
+    assert (app_home / "releases" / "0.1.0").readlink() == original_release
+    assert subprocess.run([executable, "--version"], env=environment).returncode == 0
+
+
+def test_install_sh_rejects_a_directory_at_the_cli_destination(tmp_path: Path):
+    environment, _record = _installer_environment(tmp_path)
+    executable = tmp_path / "user-bin" / "normflow"
+    executable.mkdir(parents=True)
+
+    failed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert failed.returncode != 0
+    assert executable.is_dir()
+    assert list(executable.iterdir()) == []
+
+
+@pytest.mark.parametrize("link_state", ["missing", "dangling"])
+def test_install_sh_refuses_downgrade_when_current_release_has_no_cli_link(
+    tmp_path: Path, link_state: str
+):
+    environment, _record = _installer_environment(tmp_path, version="0.2.0")
+    installed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    executable = tmp_path / "user-bin" / "normflow"
+    executable.unlink()
+    if link_state == "dangling":
+        executable.symlink_to(tmp_path / "missing-normflow")
+    _release_assets(tmp_path / "assets", "linux-x86_64-py313", version="0.1.0")
+    failed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert failed.returncode != 0
+    assert "newer managed release" in failed.stderr
+    assert not (tmp_path / "data" / "normflow" / "releases" / "0.1.0").exists()
+
+
 def test_install_sh_repairs_a_damaged_target_release_transactionally(tmp_path: Path):
     environment, record = _installer_environment(tmp_path)
     installed = subprocess.run(
@@ -567,6 +663,9 @@ def test_install_sh_stages_and_switches_model_data_when_bundle_changes(
     assert (runtime / "share" / "normflow" / "model-identity").read_text(
         encoding="utf-8"
     ).endswith(f" {model_checksum}\n")
+    assert (runtime / "share" / "normflow" / "models" / "model-payload").read_bytes() == (
+        b"new-model"
+    )
 
 
 def test_install_sh_keeps_active_release_when_an_upgrade_checksum_mismatches(
