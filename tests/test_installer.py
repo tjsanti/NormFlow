@@ -115,7 +115,7 @@ printf '%s\n' "$*" >> "$NORMFLOW_TEST_NORMFLOW_RECORD"
 case "$1" in --version|-V) echo 0.1.0 ;; ui) exit 0 ;; esac
 COMMAND
       chmod +x "$environment/bin/normflow" ;;
-  -c) exit 0 ;;
+  -c) [ "${NORMFLOW_TEST_FAIL_SMOKE:-}" != 1 ] || exit 1; exit 0 ;;
 esac
 """,
     )
@@ -214,3 +214,30 @@ def test_install_sh_does_not_activate_an_asset_with_a_bad_embedded_checksum(
     assert result.returncode != 0
     assert "wheel checksum verification failed" in result.stderr
     assert not (tmp_path / "user-bin" / "normflow").exists()
+
+
+def test_install_sh_discards_a_runtime_that_fails_smoke_testing(tmp_path: Path):
+    environment, _record = _installer_environment(tmp_path)
+    environment["NORMFLOW_TEST_FAIL_SMOKE"] = "1"
+
+    failed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    runtime = tmp_path / "data" / "normflow" / "releases" / "0.1.0"
+    assert failed.returncode != 0
+    assert not runtime.exists()
+
+    environment.pop("NORMFLOW_TEST_FAIL_SMOKE")
+    retried = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert retried.returncode == 0, retried.stderr
+    assert (tmp_path / "user-bin" / "normflow").is_symlink()

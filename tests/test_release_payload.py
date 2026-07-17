@@ -179,11 +179,21 @@ def test_release_payload_command_emits_one_versioned_payload(tmp_path: Path):
     models = list(output.glob("normflow-*-model-*.tar.gz"))
     assert len(wheels) == len(constraints) == len(models) == 1
     manifest = json.loads((output / f"normflow-{VERSION}-payload.json").read_text())
+    installer_manifests = {
+        "normflow-payload-linux-x86_64-py313.json",
+        "normflow-payload-macos-aarch64-py313.json",
+    }
     assert {path.name for path in output.iterdir()} == {
         f"normflow-{VERSION}-payload.json",
-        "normflow-payload-macos-aarch64-py313.json",
+        *installer_manifests,
         *(asset["filename"] for asset in manifest["assets"]),
     }
+    for filename in installer_manifests:
+        installer_manifest = json.loads((output / filename).read_text())
+        assert installer_manifest["platform"] == filename.removeprefix(
+            "normflow-payload-"
+        ).removesuffix(".json")
+        assert installer_manifest["assets"] == manifest["assets"]
     assert manifest["version"] == VERSION
     assert manifest["model"]["revision"] == REVISION
     assert manifest["model"]["bundle"] == MODEL_BUNDLE
@@ -218,6 +228,7 @@ def test_release_payload_command_has_a_nonconflicting_default_output(tmp_path: P
     manifest = json.loads((output / f"normflow-{VERSION}-payload.json").read_text())
     assert {path.name for path in output.iterdir()} == {
         f"normflow-{VERSION}-payload.json",
+        "normflow-payload-linux-x86_64-py313.json",
         "normflow-payload-macos-aarch64-py313.json",
         *(asset["filename"] for asset in manifest["assets"]),
     }

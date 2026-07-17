@@ -181,7 +181,8 @@ main() {
     model=$(download_verified_asset model)
     install_uv
 
-    RUNTIME="$APP_HOME/releases/$version"
+    release_runtime="$APP_HOME/releases/$version"
+    RUNTIME=$release_runtime
     if [ ! -x "$RUNTIME/bin/normflow" ]; then
         staging="$TEMP_DIR/runtime"
         UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" python install "$PYTHON_VERSION"
@@ -189,10 +190,14 @@ main() {
         "$UV" pip install --python "$staging/bin/python" --constraint "$constraints" --torch-backend cpu "$wheel"
         mkdir -p "$staging/share/normflow/models"
         tar -xzf "$model" -C "$staging/share/normflow/models"
-        mkdir -p "$(dirname "$RUNTIME")"
-        mv "$staging" "$RUNTIME"
+        RUNTIME=$staging
+        smoke_test
+        mkdir -p "$(dirname "$release_runtime")"
+        mv "$staging" "$release_runtime"
+        RUNTIME=$release_runtime
+    else
+        smoke_test
     fi
-    smoke_test
     mkdir -p "$BIN_DIR"
     ln -sfn "$RUNTIME/bin/normflow" "$BIN_DIR/normflow"
     NEW_TERMINAL=0

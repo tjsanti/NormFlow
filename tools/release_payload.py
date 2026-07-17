@@ -46,6 +46,10 @@ FORBIDDEN_GPU_TERMS = (
     "xpu",
     "/whl/cu",
 )
+INSTALLER_PLATFORMS = (
+    "linux-x86_64-py313",
+    "macos-aarch64-py313",
+)
 
 
 class PayloadError(RuntimeError):
@@ -514,12 +518,20 @@ def build(output: Path) -> None:
         (staging / f"normflow-{identity.version}-payload.json").write_text(
             manifest_text, encoding="utf-8"
         )
-        # The installer can choose its platform before it knows the release
-        # version. This stable, per-platform entry point contains the same
-        # versioned manifest and the checksums for every executable payload.
-        (staging / f"normflow-payload-{platform_tag}.json").write_text(
-            manifest_text, encoding="utf-8"
-        )
+        # The locked constraints carry markers for both supported platforms, so
+        # either installer can select the same checksummed release assets.
+        # Per-platform manifests let it do so before it knows the version.
+        for installer_platform in INSTALLER_PLATFORMS:
+            installer_manifest = PayloadManifest(
+                identity=identity,
+                platform=installer_platform,
+                assets=tuple(assets),
+            )
+            (staging / f"normflow-payload-{installer_platform}.json").write_text(
+                json.dumps(installer_manifest.as_dict(), indent=2, sort_keys=True)
+                + "\n",
+                encoding="utf-8",
+            )
         shutil.rmtree(staging / "model-tree")
         download = staging / "model-download"
         if download.exists():
