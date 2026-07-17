@@ -24,6 +24,7 @@ dependencies = [
     "python-multipart>=0.0.0",
     "sentence-transformers>=3.0.0",
     "sqlmodel>=0.0.24",
+    "torch>=2.11.0",
     "typer>=0.15.1",
     "uvicorn>=0.30.0",
 ]
@@ -47,3 +48,17 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/normflow"]
 artifacts = ["src/normflow/static"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[tool.uv]
+environments = [
+    "sys_platform == 'darwin'",
+    "sys_platform == 'linux'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
