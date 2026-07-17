@@ -1,0 +1,68 @@
+name: Release validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  release-validation:
+    name: Release validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13.14
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.14"
+
+      - name: Set up Node 22.23.1
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.23.1"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up uv 0.11.29
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Test frontend
+        run: npm test
+
+      - name: Typecheck frontend
+        run: npm run typecheck
+
+      - name: Build frontend from clean output
+        run: |
+          rm -rf src/normflow/static
+          npm run build
+
+      - name: Run Python suite
+        env:
+          _TYPER_FORCE_DISABLE_TERMINAL: "1"
+        run: uv run --frozen --extra test pytest
+
+      - name: Build and inspect release wheel
+        run: ./scripts/build-wheel dist/ci-wheel
+
+      - name: Build and smoke reproducible release payload
+        run: ./scripts/build-release-payload dist/ci-release-payload
