@@ -57,6 +57,15 @@ def test_ci_builds_frontend_before_running_all_application_tests():
     assert positions == sorted(positions)
 
 
+def test_ci_disables_colored_output_for_the_python_suite():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    python_stage = workflow.split("- name: Run Python suite", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+
+    assert 'env:\n          NO_COLOR: "1"' in python_stage
+
+
 def test_ci_builds_the_wheel_and_smokes_the_reproducible_release_payload():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 

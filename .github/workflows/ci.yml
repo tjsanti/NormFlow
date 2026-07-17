@@ -53,6 +53,8 @@ jobs:
           npm run build
 
       - name: Run Python suite
+        env:
+          NO_COLOR: "1"
         run: uv run --frozen --extra test pytest
 
       - name: Build and inspect release wheel
