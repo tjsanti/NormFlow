@@ -16,6 +16,17 @@ def test_ci_runs_for_pull_requests_and_main_pushes_with_read_only_permissions():
     assert "permissions:\n  contents: read" in workflow
 
 
+def test_ci_cancels_only_stale_runs_for_the_same_pull_request_or_branch():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert (
+        "concurrency:\n"
+        "  group: ${{ github.workflow }}-"
+        "${{ github.event.pull_request.number || github.ref }}\n"
+        "  cancel-in-progress: true"
+    ) in workflow
+
+
 def test_ci_pins_supported_toolchains_and_caches_locked_dependencies():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
@@ -94,7 +105,7 @@ def test_ci_never_publishes_or_exposes_credentials_and_failures_stay_visible():
     assert "pull_request_target:" not in workflow
     assert "${{ secrets." not in lowered
     assert "id-token:" not in lowered
-    assert "write" not in lowered
+    assert not re.search(r"\bwrite\b", lowered)
     assert "continue-on-error:" not in lowered
     assert not re.search(r"\b(?:twine|npm)\s+publish\b", lowered)
     assert not re.search(r"\bgh\s+release\b", lowered)
