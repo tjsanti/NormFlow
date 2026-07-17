@@ -455,6 +455,7 @@ def test_install_sh_restores_every_active_link_when_activation_recording_fails(
         )
     else:
         _release_assets(tmp_path / "assets", "linux-x86_64-py313", version="0.2.0")
+    Path(environment["NORMFLOW_TEST_FAIL_LINK_RECORD"]).unlink(missing_ok=True)
     environment["NORMFLOW_TEST_FAIL_LINK"] = failure
     failed = subprocess.run(
         ["sh", str(ROOT / "install.sh")],
