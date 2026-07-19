@@ -39,6 +39,28 @@ sh install.sh
 
 FastAPI, Uvicorn, multipart upload support, and the production browser assets are included in the normal installation. No optional server extra is needed.
 
+### Uninstall the managed application
+
+To remove an installation made by the GitHub Release installer, run:
+
+```bash
+normflow uninstall
+```
+
+The command shows the installed version and location, then requires direct
+interactive confirmation; there is no force or noninteractive confirmation
+option. It refuses to run from a source/development checkout or an executable
+not owned by the managed installer. Entering anything other than `yes` leaves
+the installation in place.
+
+On confirmation it removes the exposed `normflow` executable and the
+installer-owned application data: versioned environments, the private uv
+bootstrap, Python runtime, bundled model, and NormFlow-owned installation
+caches. Projects will be preserved: `normflow uninstall` never searches for or
+deletes Project folders, databases, inputs, outputs, samples, or `.normflow`
+data. It also leaves generic user-bin shell configuration and caches shared
+with unrelated tools untouched.
+
 For development from a clone:
 
 ```bash

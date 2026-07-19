@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -208,6 +209,145 @@ esac
         "NORMFLOW_REAL_MV": real_mv,
     }
     return environment, record
+
+
+def _managed_cli_environment(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
+    """Create the installer-owned runtime layout used by the public CLI seam."""
+    app_home = tmp_path / "data" / "normflow"
+    runtime = app_home / "runtimes" / "0.1.0-test"
+    executable = runtime / "bin" / "normflow"
+    executable.parent.mkdir(parents=True)
+    _executable(
+        executable,
+        """#!/bin/sh
+exec "$NORMFLOW_TEST_PYTHON" -c '
+import sys
+sys.argv = [sys.argv[1], *sys.argv[2:]]
+from normflow.cli import app
+app()
+' "$0" "$@"
+""",
+    )
+    (app_home / "current").symlink_to(runtime)
+    user_bin = tmp_path / "user-bin"
+    user_bin.mkdir()
+    exposed = user_bin / "normflow"
+    exposed.symlink_to(app_home / "current" / "bin" / "normflow")
+    (app_home / "uv" / "0.6.14").mkdir(parents=True)
+    (app_home / "python" / "cpython-3.13").mkdir(parents=True)
+    (app_home / "models").mkdir()
+    (app_home / "cache").mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "normflow.db").write_text("Project data", encoding="utf-8")
+    return (
+        os.environ | {
+            "HOME": str(tmp_path / "home"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+            "XDG_BIN_HOME": str(user_bin),
+            "PYTHONPATH": str(ROOT / "src"),
+            "NORMFLOW_TEST_PYTHON": sys.executable,
+        },
+        exposed,
+        project,
+    )
+
+
+def _run_interactive(
+    command: list[str], environment: dict[str, str], reply: bytes,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command on a Unix terminal so CLI confirmation is genuinely direct."""
+    master, slave = os.openpty()
+    try:
+        process = subprocess.Popen(
+            command,
+            env=environment,
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            text=False,
+        )
+    finally:
+        os.close(slave)
+    os.write(master, reply)
+    output = bytearray()
+    while True:
+        try:
+            part = os.read(master, 4096)
+        except OSError:
+            break
+        if not part:
+            break
+        output.extend(part)
+    os.close(master)
+    return subprocess.CompletedProcess(command, process.wait(), output.decode(), "")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="managed uninstall is supported on Unix only")
+def test_managed_normflow_uninstall_removes_only_installer_owned_files_after_confirmation(
+    tmp_path: Path,
+):
+    environment, executable, project = _managed_cli_environment(tmp_path)
+    generic_shell_config = tmp_path / "home" / ".zshrc"
+    generic_shell_config.parent.mkdir()
+    generic_shell_config.write_text("export PATH=/other/tool:$PATH\n", encoding="utf-8")
+    unrelated_cache = tmp_path / "data" / "other-tool"
+    unrelated_cache.mkdir()
+
+    result = _run_interactive([str(executable), "uninstall"], environment, b"yes\n")
+
+    assert result.returncode == 0, result.stdout
+    assert "NormFlow 0.1.0" in result.stdout
+    assert str(tmp_path / "data" / "normflow") in result.stdout
+    assert "Projects will be preserved" in result.stdout
+    assert not (tmp_path / "data" / "normflow").exists()
+    assert not executable.exists()
+    assert project.joinpath("normflow.db").read_text(encoding="utf-8") == "Project data"
+    assert generic_shell_config.read_text(encoding="utf-8") == "export PATH=/other/tool:$PATH\n"
+    assert unrelated_cache.is_dir()
+
+
+def test_normflow_uninstall_refuses_a_source_or_development_executable(tmp_path: Path):
+    environment = os.environ | {"PYTHONPATH": str(ROOT / "src")}
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from normflow.cli import app; app()",
+            "uninstall",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "source/development" in result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="managed uninstall is supported on Unix only")
+def test_managed_normflow_uninstall_has_stable_cancellation_and_noninteractive_exits(
+    tmp_path: Path,
+):
+    environment, executable, project = _managed_cli_environment(tmp_path)
+
+    cancelled = _run_interactive([str(executable), "uninstall"], environment, b"no\n")
+    noninteractive = subprocess.run(
+        [str(executable), "uninstall"],
+        env=environment,
+        input="yes\n",
+        text=True,
+        capture_output=True,
+    )
+
+    assert cancelled.returncode == 2
+    assert "Uninstall cancelled" in cancelled.stdout
+    assert noninteractive.returncode == 1
+    assert "direct interactive confirmation" in noninteractive.stderr
+    assert executable.is_symlink()
+    assert project.joinpath("normflow.db").is_file()
 
 
 def test_install_sh_installs_a_verified_managed_release_without_ambient_python(
