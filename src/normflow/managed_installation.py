@@ -65,6 +65,17 @@ class ManagedInstallationService:
                 "uninstall refused because this executable is not owned by the managed installer"
             )
 
+        try:
+            installer_marker = app_home / ".managed-installation"
+            if installer_marker.read_text(encoding="utf-8") != "managed-by-normflow-installer-v1\n":
+                raise ManagedInstallationError(
+                    "uninstall refused because this executable is not owned by the managed installer"
+                )
+        except OSError as exc:
+            raise ManagedInstallationError(
+                "uninstall refused because this executable is not owned by the managed installer"
+            ) from exc
+
         return ManagedInstallation(
             version=version,
             app_home=app_home,

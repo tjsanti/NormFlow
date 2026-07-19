@@ -233,6 +233,9 @@ app()
     user_bin.mkdir()
     exposed = user_bin / "normflow"
     exposed.symlink_to(app_home / "current" / "bin" / "normflow")
+    (app_home / ".managed-installation").write_text(
+        "managed-by-normflow-installer-v1\n", encoding="utf-8"
+    )
     (app_home / "uv" / "0.6.14").mkdir(parents=True)
     (app_home / "python" / "cpython-3.13").mkdir(parents=True)
     (app_home / "models").mkdir()
@@ -328,6 +331,22 @@ def test_normflow_uninstall_refuses_a_source_or_development_executable(tmp_path:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="managed uninstall is supported on Unix only")
+def test_managed_normflow_uninstall_refuses_a_layout_without_installer_ownership_marker(
+    tmp_path: Path,
+):
+    environment, executable, project = _managed_cli_environment(tmp_path)
+    marker = tmp_path / "data" / "normflow" / ".managed-installation"
+    marker.unlink()
+
+    result = _run_interactive([str(executable), "uninstall"], environment, b"yes\n")
+
+    assert result.returncode == 1
+    assert "not owned by the managed installer" in result.stdout
+    assert executable.is_symlink()
+    assert project.joinpath("normflow.db").is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="managed uninstall is supported on Unix only")
 def test_managed_normflow_uninstall_has_stable_cancellation_and_noninteractive_exits(
     tmp_path: Path,
 ):
@@ -350,6 +369,24 @@ def test_managed_normflow_uninstall_has_stable_cancellation_and_noninteractive_e
     assert project.joinpath("normflow.db").is_file()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="managed uninstall is supported on Unix only")
+def test_managed_normflow_uninstall_reports_a_real_removal_failure_with_exit_one(
+    tmp_path: Path,
+):
+    environment, executable, project = _managed_cli_environment(tmp_path)
+    user_bin = Path(environment["XDG_BIN_HOME"])
+    user_bin.chmod(0o500)
+    try:
+        result = _run_interactive([str(executable), "uninstall"], environment, b"yes\n")
+    finally:
+        user_bin.chmod(0o700)
+
+    assert result.returncode == 1
+    assert "could not remove managed NormFlow" in result.stdout
+    assert executable.is_symlink()
+    assert project.joinpath("normflow.db").is_file()
+
+
 def test_install_sh_installs_a_verified_managed_release_without_ambient_python(
     tmp_path: Path,
 ):
@@ -366,6 +403,9 @@ def test_install_sh_installs_a_verified_managed_release_without_ambient_python(
     executable = tmp_path / "user-bin" / "normflow"
     assert executable.is_symlink()
     assert executable.resolve().parent.name == "bin"
+    assert (tmp_path / "data" / "normflow" / ".managed-installation").read_text(
+        encoding="utf-8"
+    ) == "managed-by-normflow-installer-v1\n"
     assert "python install 3.13" in record.read_text(encoding="utf-8")
     assert "pip install" in record.read_text(encoding="utf-8")
     assert "-c" in record.read_text(encoding="utf-8")
