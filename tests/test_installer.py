@@ -310,6 +310,23 @@ def test_managed_normflow_uninstall_removes_only_installer_owned_files_after_con
     assert unrelated_cache.is_dir()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="managed uninstall is supported on Unix only")
+def test_managed_normflow_uninstall_accepts_a_symlinked_data_home(
+    tmp_path: Path,
+):
+    data_home = tmp_path / "data"
+    actual_data_home = tmp_path / "actual-data"
+    actual_data_home.mkdir()
+    data_home.symlink_to(actual_data_home, target_is_directory=True)
+    environment, executable, project = _managed_cli_environment(tmp_path)
+
+    result = _run_interactive([str(executable), "uninstall"], environment, b"yes\n")
+
+    assert result.returncode == 0, result.stdout
+    assert not data_home.joinpath("normflow").exists()
+    assert project.joinpath("normflow.db").read_text(encoding="utf-8") == "Project data"
+
+
 def test_normflow_uninstall_refuses_a_source_or_development_executable(tmp_path: Path):
     environment = os.environ | {"PYTHONPATH": str(ROOT / "src")}
 

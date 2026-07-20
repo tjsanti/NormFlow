@@ -31,6 +31,7 @@ class ManagedInstallationService:
     def inspect(self, *, version: str) -> ManagedInstallation:
         """Return the current managed layout, or refuse to touch an unowned one."""
         app_home = self._app_home()
+        raw_app_home = self._raw_app_home()
         exposed_executable = self._bin_dir() / "normflow"
         executable = Path(self._invocation_path).expanduser().resolve()
 
@@ -54,7 +55,7 @@ class ManagedInstallationService:
             )
 
         current = app_home / "current"
-        expected_exposed_target = current / "bin" / "normflow"
+        expected_exposed_target = raw_app_home / "current" / "bin" / "normflow"
         if (
             not current.is_symlink()
             or current.resolve() != runtime
@@ -92,10 +93,13 @@ class ManagedInstallationService:
             raise ManagedInstallationError(f"could not remove managed NormFlow: {exc}") from exc
 
     def _app_home(self) -> Path:
+        return self._raw_app_home().resolve()
+
+    def _raw_app_home(self) -> Path:
         data_home = self._environment.get("XDG_DATA_HOME")
         if data_home is None:
             data_home = str(self._home() / ".local" / "share")
-        return (Path(data_home).expanduser() / "normflow").resolve()
+        return Path(data_home).expanduser() / "normflow"
 
     def _bin_dir(self) -> Path:
         bin_home = self._environment.get("XDG_BIN_HOME")
