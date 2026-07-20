@@ -323,6 +323,11 @@ activation_points_to() {
     [ -x "$BIN_DIR/normflow" ]
 }
 
+record_managed_installation() {
+    printf '%s\n' 'managed-by-normflow-installer-v1' > "$APP_HOME/.managed-installation" || \
+        fail "could not record managed installation ownership"
+}
+
 activate_runtime() {
     candidate=$1
     durable_runtime="$APP_HOME/runtimes/$version-$MODEL_SHA256-$$"
@@ -395,6 +400,7 @@ main() {
             return
         fi
         activate_durable_runtime "$durable_runtime"
+        record_managed_installation
         NEW_TERMINAL=0
         update_path
         printf 'NormFlow %s activated at %s\n' "$version" "$RUNTIME"
@@ -431,6 +437,7 @@ main() {
         mv -f "$model" "$MODEL_CACHE"
     fi
     activate_runtime "$staging"
+    record_managed_installation
     NEW_TERMINAL=0
     update_path
     printf 'NormFlow %s installed at %s\n' "$version" "$RUNTIME"

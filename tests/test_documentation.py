@@ -41,6 +41,15 @@ def test_release_docs_define_the_public_distribution_contract():
     assert re.search(r"migrate safely.*refuse clearly", decision, re.IGNORECASE | re.DOTALL)
 
 
+def test_release_docs_explain_managed_uninstall_and_preserved_user_data():
+    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+
+    assert "normflow uninstall" in readme
+    assert "Projects will be preserved" in readme
+    assert "private uv bootstrap, Python runtime, bundled model, and NormFlow-owned installation caches" in readme
+    assert "shell configuration" in readme
+
+
 def test_readme_documents_safe_ui_automation_and_project_switching():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 

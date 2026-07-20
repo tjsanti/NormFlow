@@ -211,6 +211,47 @@ def info() -> None:
     print(f"Semantic index: {statistics['semantic_index_status']}")
 
 
+@app.command()
+def uninstall() -> None:
+    """Remove this managed NormFlow installation after direct confirmation."""
+    import os
+
+    from .managed_installation import (
+        ManagedInstallationError,
+        ManagedInstallationService,
+    )
+
+    service = ManagedInstallationService(
+        environment=dict(os.environ),
+        invocation_path=sys.argv[0],
+    )
+    try:
+        installation = service.inspect(version=__version__)
+    except ManagedInstallationError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        typer.echo("Error: uninstall requires direct interactive confirmation.", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"NormFlow {installation.version} is installed at {installation.app_home}")
+    typer.echo(
+        "Projects will be preserved. No Project folders or Project data will be removed."
+    )
+    response = input("Remove this managed NormFlow installation? [y/N]: ").strip().lower()
+    if response not in {"y", "yes"}:
+        typer.echo("Uninstall cancelled.")
+        raise typer.Exit(2)
+
+    try:
+        service.remove(installation)
+    except ManagedInstallationError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from None
+    typer.echo("Managed NormFlow installation removed.")
+
+
 @app.command(name="import")
 def import_cmd(
     csv_path: str = typer.Argument(..., help="Path to the CSV file to import."),
