@@ -7,7 +7,7 @@ import re
 WORKFLOW = Path(__file__).parents[1] / ".github/workflows/release-draft.yml"
 
 
-def _parse_workflow() -> dict:
+def _parse_workflow() -> str:
     """Return raw workflow YAML text."""
     return WORKFLOW.read_text(encoding="utf-8")
 
@@ -85,8 +85,8 @@ def test_release_draft_has_macos_and_linux_build_jobs():
 def test_release_draft_jobs_require_validation():
     """Build jobs must depend on the validation job."""
     text = _parse_workflow()
-    macos_section = text.split("build-payload-macos:", 1)[1].split("\nbuild-payload-linux:", 1)[0]
-    linux_section = text.split("build-payload-linux:", 1)[1].split("\ncreate-draft-release:", 1)[0]
+    macos_section = text.split("  build-payload-macos:\n", 1)[1].split("\n  build-payload-linux:", 1)[0]
+    linux_section = text.split("  build-payload-linux:\n", 1)[1].split("\n  create-draft-release:", 1)[0]
 
     assert "needs: validate-version-and-tag" in macos_section
     assert "needs: validate-version-and-tag" in linux_section
@@ -96,8 +96,10 @@ def test_release_draft_verifies_cli_version_flags():
     """Build jobs must verify --version and -V output match the target version."""
     text = _parse_workflow()
     assert "Verify CLI version flags match" in text
-    assert "normflow --version" in text
-    assert "normflow -V" in text
+    # Version check is extracted to scripts/release_version_check.sh
+    scripts_text = (Path(__file__).parents[1] / "scripts" / "release_version_check.sh").read_text()
+    assert "normflow --version" in scripts_text
+    assert "normflow -V" in scripts_text
 
 
 def test_release_draft_runs_install_sh_integration_smoke_test():
@@ -111,11 +113,25 @@ def test_release_draft_runs_install_sh_integration_smoke_test():
 def test_release_draft_smoke_test_tests_offline_model_and_api():
     """The smoke test must verify offline API and model usage."""
     text = _parse_workflow()
-    assert "HF_HUB_OFFLINE=1" in text
-    assert "TRANSFORMERS_OFFLINE=1" in text
-    assert "NORMFLOW_DISABLE_NETWORK=1" in text
-    assert "create_app" in text
-    assert "load_embedding_model" in text
+    assert "Install.sh integration smoke test" in text
+    # Smoke test is extracted to scripts/release_smoke_test.sh
+    smoke_text = (Path(__file__).parents[1] / "scripts" / "release_smoke_test.sh").read_text()
+    assert "HF_HUB_OFFLINE=1" in smoke_text
+    assert "TRANSFORMERS_OFFLINE=1" in smoke_text
+    assert "NORMFLOW_DISABLE_NETWORK=1" in smoke_text
+    assert "create_app" in smoke_text
+    assert "load_embedding_model" in smoke_text
+
+
+def test_release_draft_workflow_has_valid_yaml_structure():
+    """The workflow YAML must parse without errors (catches broken block scalars)."""
+    import yaml
+
+    text = _parse_workflow()
+    # yaml.safe_load raises on malformed YAML (e.g., broken indentation, unquoted strings)
+    data = yaml.safe_load(text)
+    assert isinstance(data, dict), "workflow must be a YAML mapping"
+    assert "jobs" in data, "workflow must have a jobs key"
 
 
 def test_release_draft_uploads_payload_artifacts():
@@ -186,6 +202,6 @@ def test_release_draft_refuses_existing_tag_or_release():
 def test_release_draft_workflow_is_not_triggered_by_push_or_pr():
     """The workflow should not run on push or pull_request events."""
     text = _parse_workflow()
-    on_section = text.split("on:", 1)[1].split("\n", 1)[0]
+    on_section = text.split("on:\n", 1)[1].split("\n", 1)[0]
     assert "pull_request:" not in on_section
     assert "push:" not in on_section
