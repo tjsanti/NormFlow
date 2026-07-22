@@ -91,7 +91,11 @@ UV_VERSION=0.6.14
 case "$PLATFORM" in
     macos-aarch64-py313)
         UV_TARGET=aarch64-apple-darwin
-        EXPECTED_SHA=4ea4731010fbd1bc8e790e07f1989755a5c7c2c732e9b77f85e302b0bee61b756
+        EXPECTED_SHA=4ea4731010fbd1bc8e790e07f199f55a5c7c2c732e9b77f85e302b0bee61b756
+        ;;
+    linux-x86_64-py313)
+        UV_TARGET=x86_64-unknown-linux-gnu
+        EXPECTED_SHA=0aaf451c391d3913823bfb8ed354b446dcfd0553a32ed8266611e4181c61fd51
         ;;
     *)
         fail "unsupported platform for smoke test"

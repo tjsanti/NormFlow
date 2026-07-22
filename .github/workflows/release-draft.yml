@@ -24,6 +24,8 @@ jobs:
   validate-version-and-tag:
     name: Validate version and tag availability
     runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.resolve-sha.outputs.sha }}
     steps:
       - name: Check version format
         run: |
@@ -39,6 +41,13 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+
+      - name: Resolve ref to SHA
+        id: resolve-sha
+        run: |
+          sha=$(git rev-parse HEAD)
+          echo "Resolved ${{ inputs.ref }} to $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Verify no tag exists for this version
         run: |
@@ -68,7 +77,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.validate-version-and-tag.outputs.sha }}
 
       - name: Set up Python 3.13.14
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -118,97 +127,12 @@ jobs:
           rm -rf "$staging"
           scripts/release_version_check.sh "$wheel" "$expected_version"
 
-      - name: Install.sh integration smoke test (clean install)
+      - name: Install.sh integration smoke test
         run: |
-          payload_dir="$(ls -d dist/release-payload/)"
           mkdir -p "$HOME/nf-test"
           export APP_HOME="$HOME/nf-test/data/normflow"
           export BIN_DIR="$HOME/nf-test/bin"
-          export PATH="$BIN_DIR:$PATH"
-
-          # Create a temporary install.sh with modified paths to avoid touching system
-
           scripts/test-install.sh
-        env:
-          RELEASE_URL: "file:///${{ github.workspace }}/dist/release-payload"
-          PLATFORM: "macos-aarch64-py313"
-      - name: Install.sh integration smoke test (repeated install)
-        run: |
-          payload_dir="$(ls -d dist/release-payload/)"
-          install_home=$(mktemp -d)
-          export APP_HOME="$install_home/data/normflow"
-          export BIN_DIR="$install_home/bin"
-          export PATH="$BIN_DIR:$PATH"
-
-          # Use the same install logic but run it twice
-          bash <<'SCRIPT'
-          set -eu
-          APP_HOME="${APP_HOME}"
-          BIN_DIR="${BIN_DIR}"
-          RELEASE_URL="${RELEASE_URL}"
-          PLATFORM="${PLATFORM}"
-
-          TEMP_DIR=$(mktemp -d)
-          trap 'rm -rf "$TEMP_DIR"' EXIT
-
-          MANIFEST="$TEMP_DIR/manifest.json"
-          curl --fail --silent --show-error --location --output "$MANIFEST" "$RELEASE_URL/normflow-payload-$PLATFORM.json"
-          VERSION=$(awk -F '"' '/"version"[[:space:]]*:/ { print $4; exit }' "$MANIFEST")
-
-          mkdir -p "$APP_HOME/bin"
-          cd "$TEMP_DIR"
-          for asset in wheel constraints model; do
-              fname=$(awk -v kind="$asset" '
-                  /^[[:space:]]*\{/ { f=""; k="" }
-                  /"filename"[[:space:]]*:/ { value=$0; sub(/.*"filename"[[:space:]]*:[[:space:]]*"/, "", value); sub(/".*/, "", value); f=value }
-                  /"kind"[[:space:]]*:/ { value=$0; sub(/.*"kind"[[:space:]]*:[[:space:]]*"/, "", value); sub(/".*/, "", value); k=value }
-                  /^[[:space:]]*\}/ { if (k == kind) print f }
-              ' "$MANIFEST")
-              curl --fail --silent --show-error --location --output "$fname" "$RELEASE_URL/$fname"
-          done
-
-          # First install
-          echo "First install (clean)..."
-          UV="$APP_HOME/bin/uv"
-          UV_VERSION=0.6.14
-          UV_TARGET=aarch64-apple-darwin
-          mkdir -p "$(dirname "$UV")"
-          curl -sL "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$UV_TARGET.tar.gz" > uv.tar.gz
-          tar -xzf uv.tar.gz -C "$TEMP_DIR"
-          mv "$TEMP_DIR/uv-$UV_TARGET/uv" "$UV"
-          chmod 755 "$UV"
-
-          STAGING="$TEMP_DIR/runtime"
-          "$UV" python install 3.13
-          "$UV" venv --python 3.13 "$STAGING"
-          "$UV" pip install --python "$STAGING/bin/python" \
-              --constraint "$TEMP_DIR/normflow-${VERSION}-constraints-macos-aarch64-py313.txt" \
-              "$TEMP_DIR/normflow-${VERSION}-py3-none-any.whl"
-          
-          MODEL_TAR=$(ls normflow-*-model-*.tar.gz)
-          mkdir -p "$STAGING/share/normflow/models"
-          tar -xzf "$MODEL_TAR" -C "$STAGING/share/normflow/models"
-          printf '%s\n' "$(basename "$MODEL_TAR" .tar.gz)" > "$STAGING/share/normflow/model-identity"
-
-          $GITHUB_WORKSPACE/scripts/release_smoke_test.sh "$STAGING/bin/python" "repeated"
-
-          INSTALLED_VERSION=$("$STAGING/bin/normflow" --version)
-          echo "Installed version: $INSTALLED_VERSION"
-
-          # Second install (repeated) - should be fast, detect current
-          echo "Second install (repeated)..."
-          "$UV" pip install --python "$STAGING/bin/python" \
-              --constraint "$TEMP_DIR/normflow-${VERSION}-constraints-macos-aarch64-py313.txt" \
-              "$TEMP_DIR/normflow-${VERSION}-py3-none-any.whl"
-          
-          SECOND_VERSION=$("$STAGING/bin/normflow" --version)
-          [ "$INSTALLED_VERSION" = "$SECOND_VERSION" ] || {
-              echo "error: version changed between installs" >&2
-              exit 1
-          }
-          echo "Repeated install: version consistent ($INSTALLED_VERSION)"
-          rm -rf "$(dirname "$APP_HOME")"
-          SCRIPT
         env:
           RELEASE_URL: "file:///${{ github.workspace }}/dist/release-payload"
           PLATFORM: "macos-aarch64-py313"
@@ -229,7 +153,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.validate-version-and-tag.outputs.sha }}
 
       - name: Set up Python 3.13.14
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -274,159 +198,12 @@ jobs:
           wheel=$(find dist/release-wheel -name 'normflow-*.whl' | head -1)
           scripts/release_version_check.sh "$wheel" "${{ inputs.version }}"
 
-      - name: Install.sh integration smoke test (clean install)
+      - name: Install.sh integration smoke test
         run: |
-          payload_dir="$(ls -d dist/release-payload/)"
-          mkdir -p "$HOME/nf-test"
           export APP_HOME="$HOME/nf-test/data/normflow"
           export BIN_DIR="$HOME/nf-test/bin"
-          export PATH="$BIN_DIR:$PATH"
-
-          bash <<'SCRIPT'
-          set -eu
-          APP_HOME="${APP_HOME}"
-          BIN_DIR="${BIN_DIR}"
-          RELEASE_URL="${RELEASE_URL}"
-          PLATFORM="${PLATFORM}"
-
-          TEMP_DIR=$(mktemp -d)
-          trap 'rm -rf "$TEMP_DIR"' EXIT
-
-          require_command() {
-              command -v "$1" >/dev/null 2>&1 || exit 1
-          }
-          require_command curl
-          require_command awk
-          require_command sha256sum
-
-          MANIFEST="$TEMP_DIR/manifest.json"
-          curl --fail --silent --show-error --location --output "$MANIFEST" "$RELEASE_URL/normflow-payload-$PLATFORM.json"
-
-          VERSION=$(awk -F '"' '/"version"[[:space:]]*:/ { print $4; exit }' "$MANIFEST")
-          PLATFORM_ACTUAL=$(awk -F '"' '/"platform"[[:space:]]*:/ { print $4; exit }' "$MANIFEST")
-          [ "$PLATFORM_ACTUAL" = "$PLATFORM" ] || exit 1
-
           mkdir -p "$APP_HOME" "$BIN_DIR"
-          cd "$TEMP_DIR"
-
-          # Download assets
-          for asset_kind in wheel constraints model; do
-              fname=$(awk -v kind="$asset_kind" '
-                  /^[[:space:]]*\{/ { f=""; k="" }
-                  /"filename"[[:space:]]*:/ { value=$0; sub(/.*"filename"[[:space:]]*:[[:space:]]*"/, "", value); sub(/".*/, "", value); f=value }
-                  /"kind"[[:space:]]*:/ { value=$0; sub(/.*"kind"[[:space:]]*:[[:space:]]*"/, "", value); sub(/".*/, "", value); k=value }
-                  /^[[:space:]]*\}/ { if (k == kind) print f }
-              ' "$MANIFEST")
-              curl --fail --silent --show-error --location --output "$fname" "$RELEASE_URL/$fname"
-          done
-
-          # Install uv
-          UV="$APP_HOME/bin/uv"
-          UV_VERSION=0.6.14
-          UV_TARGET=x86_64-unknown-linux-gnu
-          mkdir -p "$(dirname "$UV")"
-          curl -sL "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$UV_TARGET.tar.gz" > uv.tar.gz
-          EXPECTED_SHA=0aaf451c391d3913823bfb8ed354b446dcfd0553a32ed8266611e4181c61fd51
-          ACTUAL_SHA=$(sha256sum uv.tar.gz | awk '{print $1}')
-          [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ] || { echo "uv checksum mismatch"; exit 1; }
-          tar -xzf uv.tar.gz -C "$TEMP_DIR"
-          mv "$TEMP_DIR/uv-$UV_TARGET/uv" "$UV"
-          chmod 755 "$UV"
-
-          # Create venv and install
-          STAGING="$TEMP_DIR/runtime"
-          UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" python install 3.13
-          UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" venv --python 3.13 "$STAGING"
-          "$UV" pip install --python "$STAGING/bin/python" \
-              --constraint "$TEMP_DIR/normflow-${VERSION}-constraints-linux-x86_64-py313.txt" \
-              "$TEMP_DIR/normflow-${VERSION}-py3-none-any.whl"
-
-          # Extract model
-          MODEL_TAR=$(ls normflow-*-model-*.tar.gz)
-          mkdir -p "$STAGING/share/normflow/models"
-          tar -xzf "$MODEL_TAR" -C "$STAGING/share/normflow/models"
-          printf '%s\n' "$(basename "$MODEL_TAR" .tar.gz)" > "$STAGING/share/normflow/model-identity"
-
-          # Smoke test
-          $GITHUB_WORKSPACE/scripts/release_smoke_test.sh "$STAGING/bin/python" "linux smoke test"
-
-          echo "Installed version: $(cat "$STAGING/share/normflow/model-identity")"
-          echo "Linux smoke test passed"
-          rm -rf "$HOME/nf-test"
-          SCRIPT
-        env:
-          RELEASE_URL: "file:///${{ github.workspace }}/dist/release-payload"
-          PLATFORM: "linux-x86_64-py313"
-
-      - name: Install.sh integration smoke test (repeated install)
-        run: |
-          payload_dir="$(ls -d dist/release-payload/)"
-          install_home=$(mktemp -d)
-          export APP_HOME="$install_home/data/normflow"
-          export BIN_DIR="$install_home/bin"
-          export PATH="$BIN_DIR:$PATH"
-
-          bash <<'SCRIPT'
-          set -eu
-          APP_HOME="${APP_HOME}"
-          RELEASE_URL="${RELEASE_URL}"
-          PLATFORM="${PLATFORM}"
-
-          TEMP_DIR=$(mktemp -d)
-          trap 'rm -rf "$TEMP_DIR"' EXIT
-
-          MANIFEST="$TEMP_DIR/manifest.json"
-          curl --fail --silent --show-error --location --output "$MANIFEST" "$RELEASE_URL/normflow-payload-$PLATFORM.json"
-          VERSION=$(awk -F '"' '/"version"[[:space:]]*:/ { print $4; exit }' "$MANIFEST")
-
-          cd "$TEMP_DIR"
-          for asset_kind in wheel constraints model; do
-              fname=$(awk -v kind="$asset_kind" '
-                  /^[[:space:]]*\{/ { f=""; k="" }
-                  /"filename"[[:space:]]*:/ { value=$0; sub(/.*"filename"[[:space:]]*:[[:space:]]*"/, "", value); sub(/".*/, "", value); f=value }
-                  /"kind"[[:space:]]*:/ { value=$0; sub(/.*"kind"[[:space:]]*:[[:space:]]*"/, "", value); sub(/".*/, "", value); k=value }
-                  /^[[:space:]]*\}/ { if (k == kind) print f }
-              ' "$MANIFEST")
-              curl --fail --silent --show-error --location --output "$fname" "$RELEASE_URL/$fname"
-          done
-
-          UV="$APP_HOME/bin/uv"
-          UV_VERSION=0.6.14
-          UV_TARGET=x86_64-unknown-linux-gnu
-          mkdir -p "$(dirname "$UV")"
-          curl -sL "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$UV_TARGET.tar.gz" > uv.tar.gz
-          tar -xzf uv.tar.gz -C "$TEMP_DIR"
-          mv "$TEMP_DIR/uv-$UV_TARGET/uv" "$UV"
-          chmod 755 "$UV"
-
-          STAGING="$TEMP_DIR/runtime"
-          "$UV" python install 3.13
-          "$UV" venv --python 3.13 "$STAGING"
-          "$UV" pip install --python "$STAGING/bin/python" \
-              --constraint "$TEMP_DIR/normflow-${VERSION}-constraints-linux-x86_64-py313.txt" \
-              "$TEMP_DIR/normflow-${VERSION}-py3-none-any.whl"
-
-          MODEL_TAR=$(ls normflow-*-model-*.tar.gz)
-          mkdir -p "$STAGING/share/normflow/models"
-          tar -xzf "$MODEL_TAR" -C "$STAGING/share/normflow/models"
-          printf '%s\n' "$(basename "$MODEL_TAR" .tar.gz)" > "$STAGING/share/normflow/model-identity"
-
-          $GITHUB_WORKSPACE/scripts/release_smoke_test.sh "$STAGING/bin/python" "repeated"
-
-          INSTALLED=$("$STAGING/bin/normflow" --version)
-          echo "First install version: $INSTALLED"
-
-          # Second install
-          echo "Repeated install..."
-          "$UV" pip install --python "$STAGING/bin/python" \
-              --constraint "$TEMP_DIR/normflow-${VERSION}-constraints-linux-x86_64-py313.txt" \
-              "$TEMP_DIR/normflow-${VERSION}-py3-none-any.whl"
-
-          SECOND=$("$STAGING/bin/normflow" --version)
-          [ "$INSTALLED" = "$SECOND" ] || { echo "version drifted between installs"; exit 1; }
-          echo "Repeated install consistent: $INSTALLED"
-          rm -rf "$(dirname "$APP_HOME")"
-          SCRIPT
+          scripts/test-install.sh
         env:
           RELEASE_URL: "file:///${{ github.workspace }}/dist/release-payload"
           PLATFORM: "linux-x86_64-py313"
@@ -440,7 +217,7 @@ jobs:
 
   create-draft-release:
     name: Create draft release
-    needs: [build-payload-macos, build-payload-linux]
+    needs: [build-payload-macos, build-payload-linux, validate-version-and-tag]
     runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch'
     steps:
@@ -460,7 +237,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: true
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.validate-version-and-tag.outputs.sha }}
           sparse-checkout: |
             install.sh
 
@@ -505,11 +282,8 @@ jobs:
           tag="v${{ inputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$tag" "$REF"
+          git tag "$tag" "${{ needs.validate-version-and-tag.outputs.sha }}"
           git push origin "$tag"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REF: "${{ inputs.ref || 'main' }}"
 
       - name: Create draft release
         uses: softprops/action-gh-release@26800dc1aca4bf6f8d4b0e67a50776bf00d14073 # v2.2.2

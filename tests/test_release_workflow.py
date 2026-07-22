@@ -105,8 +105,8 @@ def test_release_draft_verifies_cli_version_flags():
 def test_release_draft_runs_install_sh_integration_smoke_test():
     """Build jobs must run install.sh integration smoke tests."""
     text = _parse_workflow()
-    assert "Install.sh integration smoke test (clean install)" in text
-    assert "Install.sh integration smoke test (repeated install)" in text
+    # Each platform has one step that exercises clean and repeated installs.
+    assert text.count("Install.sh integration smoke test") == 2
     assert "smoke test" in text.lower()
 
 
@@ -163,6 +163,16 @@ def test_release_draft_verifies_release_after_creation():
     text = _parse_workflow()
     assert "Verify release assets" in text
     assert "isDraft" in text
+
+
+def test_release_version_check_sh_uses_venv_not_checkout():
+    """The version check script must install the wheel into a venv, not run against the checkout."""
+    scripts_text = (
+        Path(__file__).parents[1] / "scripts" / "release_version_check.sh"
+    ).read_text()
+    assert "uv venv" in scripts_text
+    assert "uv pip install" in scripts_text
+    assert "uv run" not in scripts_text
 
 
 def test_release_draft_never_exposes_secrets_or_credentials():
