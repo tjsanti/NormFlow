@@ -44,9 +44,11 @@ jobs:
 
       - name: Resolve ref to SHA
         id: resolve-sha
+        env:
+          INPUT_REF: ${{ inputs.ref }}
         run: |
           sha=$(git rev-parse HEAD)
-          echo "Resolved ${{ inputs.ref }} to $sha"
+          echo "Resolved $INPUT_REF to $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Verify no tag exists for this version
@@ -119,12 +121,8 @@ jobs:
 
       - name: Verify CLI version flags match
         run: |
-          wheel_dir="$(ls dist/release-wheel)"
           wheel=$(find dist/release-wheel -name 'normflow-*.whl' | head -1)
-          staging=$(mktemp -d)
-          python3 -m zipfile -e "$wheel" "$staging"
           expected_version="${{ inputs.version }}"
-          rm -rf "$staging"
           scripts/release_version_check.sh "$wheel" "$expected_version"
 
       - name: Install.sh integration smoke test

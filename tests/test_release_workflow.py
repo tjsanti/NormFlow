@@ -73,6 +73,17 @@ def test_release_draft_has_validate_job():
     assert "Verify no draft release exists" in text
 
 
+def test_release_draft_resolves_ref_from_step_environment():
+    """SHA resolution must pass the ref safely through the step environment."""
+    text = _parse_workflow()
+    resolve_step = text.split("      - name: Resolve ref to SHA\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "INPUT_REF: ${{ inputs.ref }}" in resolve_step
+    assert 'echo "Resolved $INPUT_REF to $sha"' in resolve_step
+    assert "${{ inputs.ref }}" not in resolve_step.split("env:", 1)[0]
+
+
 def test_release_draft_has_macos_and_linux_build_jobs():
     """There must be parallel payload build jobs for macOS and Linux."""
     text = _parse_workflow()
@@ -100,6 +111,29 @@ def test_release_draft_verifies_cli_version_flags():
     scripts_text = (Path(__file__).parents[1] / "scripts" / "release_version_check.sh").read_text()
     assert "normflow --version" in scripts_text
     assert "normflow -V" in scripts_text
+
+
+def test_release_version_check_captures_cli_version_output():
+    """Both version invocations must be command substitutions, not assignments."""
+    scripts_text = (Path(__file__).parents[1] / "scripts" / "release_version_check.sh").read_text()
+    assert 'cli_version=$("$temp_dir/venv/bin/normflow" --version 2>/dev/null || true)' in scripts_text
+    assert 'cli_version_long=$("$temp_dir/venv/bin/normflow" -V 2>/dev/null || true)' in scripts_text
+
+
+def test_release_draft_macos_version_check_matches_linux_setup():
+    """Both platform checks should only discover the wheel and invoke the checker."""
+    text = _parse_workflow()
+    macos_section = text.split("  build-payload-macos:\n", 1)[1].split(
+        "\n  build-payload-linux:", 1
+    )[0]
+    version_step = macos_section.split("      - name: Verify CLI version flags match\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "wheel=$(find dist/release-wheel" in version_step
+    assert 'expected_version="${{ inputs.version }}"' in version_step
+    assert 'scripts/release_version_check.sh "$wheel" "$expected_version"' in version_step
+    for unused_setup in ("wheel_dir=", "staging=", "python3 -m zipfile", "rm -rf"):
+        assert unused_setup not in version_step
 
 
 def test_release_draft_runs_install_sh_integration_smoke_test():

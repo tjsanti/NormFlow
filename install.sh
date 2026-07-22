@@ -20,7 +20,7 @@ cleanup() {
 
 trap cleanup EXIT HUP INT TERM
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR=$(CDPATH= cd -P "$(dirname "$0")" && pwd)
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "requires $1; install it and try again"

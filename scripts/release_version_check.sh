@@ -29,8 +29,8 @@ temp_dir=$(mktemp -d)
 trap 'rm -rf "$temp_dir"' EXIT
 uv venv "$temp_dir/venv" --python 3.13
 uv pip install -p "$temp_dir/venv/bin/python" "$wheel"
-cli_version="$temp_dir/venv/bin/normflow" --version 2>/dev/null || true
-cli_version_long="$temp_dir/venv/bin/normflow" -V 2>/dev/null || true
+cli_version=$("$temp_dir/venv/bin/normflow" --version 2>/dev/null || true)
+cli_version_long=$("$temp_dir/venv/bin/normflow" -V 2>/dev/null || true)
 if [ "$cli_version" != "$expected_version" ]; then
     echo "error: normflow --version reports $cli_version, expected $expected_version" >&2
     exit 1
