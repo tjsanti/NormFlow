@@ -128,9 +128,10 @@ jobs:
 
           # Create a temporary install.sh with modified paths to avoid touching system
 
-          scripts/test-install.sh --
-            RELEASE_URL="file:///Users/trevor/github/normflow/"
-            PLATFORM="macos-aarch64-py313"
+          scripts/test-install.sh
+        env:
+          RELEASE_URL: "file:///${{ github.workspace }}/dist/release-payload"
+          PLATFORM: "macos-aarch64-py313"
       - name: Install.sh integration smoke test (repeated install)
         run: |
           payload_dir="$(ls -d dist/release-payload/)"
@@ -189,7 +190,7 @@ jobs:
           tar -xzf "$MODEL_TAR" -C "$STAGING/share/normflow/models"
           printf '%s\n' "$(basename "$MODEL_TAR" .tar.gz)" > "$STAGING/share/normflow/model-identity"
 
-          scripts/release_smoke_test.sh "$STAGING/bin/python" "repeated"
+          $GITHUB_WORKSPACE/scripts/release_smoke_test.sh "$STAGING/bin/python" "repeated"
 
           INSTALLED_VERSION=$("$STAGING/bin/normflow" --version)
           echo "Installed version: $INSTALLED_VERSION"
@@ -347,7 +348,7 @@ jobs:
           printf '%s\n' "$(basename "$MODEL_TAR" .tar.gz)" > "$STAGING/share/normflow/model-identity"
 
           # Smoke test
-          scripts/release_smoke_test.sh "$STAGING/bin/python" "linux smoke test"
+          $GITHUB_WORKSPACE/scripts/release_smoke_test.sh "$STAGING/bin/python" "linux smoke test"
 
           echo "Installed version: $(cat "$STAGING/share/normflow/model-identity")"
           echo "Linux smoke test passed"
@@ -410,7 +411,7 @@ jobs:
           tar -xzf "$MODEL_TAR" -C "$STAGING/share/normflow/models"
           printf '%s\n' "$(basename "$MODEL_TAR" .tar.gz)" > "$STAGING/share/normflow/model-identity"
 
-          scripts/release_smoke_test.sh "$STAGING/bin/python" "repeated"
+          $GITHUB_WORKSPACE/scripts/release_smoke_test.sh "$STAGING/bin/python" "repeated"
 
           INSTALLED=$("$STAGING/bin/normflow" --version)
           echo "First install version: $INSTALLED"
@@ -504,10 +505,11 @@ jobs:
           tag="v${{ inputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$tag" "${{ inputs.ref }}"
+          git tag "$tag" "$REF"
           git push origin "$tag"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: "${{ inputs.ref || 'main' }}"
 
       - name: Create draft release
         uses: softprops/action-gh-release@26800dc1aca4bf6f8d4b0e67a50776bf00d14073 # v2.2.2

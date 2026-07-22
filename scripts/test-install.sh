@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -eu
 
 APP_HOME=${APP_HOME:-"$HOME/.local/share/normflow"}
@@ -56,18 +56,15 @@ PLATFORM_ACTUAL=$(awk -F '"' '/"platform"[[:space:]]*:/ { print $4; exit }' "$MA
 
 mkdir -p "$APP_HOME" "$BIN_DIR"
 
-# Download wheel
-WHEEL_FILE=$(awk -F '"' '/"filename"[[:space:]]*:/{for(i=1;i<=NF;i++)if($(i)=="kind"&&$(i+2)=="wheel"){gsub(/"/,"",$(i+2));} }' "$MANIFEST" 2>/dev/null || true)
-
 # Parse assets from manifest
 assets=()
 while IFS= read -r line; do
     assets+=("$line")
 done < <(awk -v platform="$PLATFORM" '
     /^[[:space:]]*\{/ { filename=""; kind=""; digest="" }
-    /"filename"[[:space:]]*:/ { gsub(/.*"filename"[[:space:]]*:[[:space:]]*"/, ""); gsub(/".*/, "", filename); }
-    /"kind"[[:space:]]*:/ { gsub(/.*"kind"[[:space:]]*:[[:space:]]*"/, ""); gsub(/".*/, "", kind); }
-    /"sha256"[[:space:]]*:/ { gsub(/.*"sha256"[[:space:]]*:[[:space:]]*"/, ""); gsub(/".*/, "", digest); }
+    /"filename"[[:space:]]*:/ { filename=$0; sub(/.*"filename"[[:space:]]*:[[:space:]]*"/, "", filename); sub(/".*/, "", filename); }
+    /"kind"[[:space:]]*:/ { kind=$0; sub(/.*"kind"[[:space:]]*:[[:space:]]*"/, "", kind); sub(/".*/, "", kind); }
+    /"sha256"[[:space:]]*:/ { digest=$0; sub(/.*"sha256"[[:space:]]*:[[:space:]]*"/, "", digest); sub(/".*/, "", digest); }
     /^[[:space:]]*\}[,]?[[:space:]]*$/ {
         if (kind == "wheel" || kind == "model" || kind == "constraints") {
             print filename "|" digest "|" kind

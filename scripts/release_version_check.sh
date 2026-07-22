@@ -6,13 +6,8 @@ set -eu
 wheel="$1"
 expected_version="$2"
 
-staging=$(mktemp -d)
-python3 -m zipfile -e "$wheel" "$staging"
 actual_version=$(python3 -c "
-import importlib.metadata
-print(importlib.metadata.version('normflow'))
-" 2>/dev/null || python3 -c "
-import zipfile, re
+import zipfile
 with zipfile.ZipFile('$wheel') as zf:
     for name in zf.namelist():
         if name.endswith('.dist-info/METADATA'):
@@ -23,7 +18,6 @@ with zipfile.ZipFile('$wheel') as zf:
                     break
             break
 ")
-rm -rf "$staging"
 
 if [ "$actual_version" != "$expected_version" ]; then
     echo "error: wheel reports version $actual_version, expected $expected_version" >&2
