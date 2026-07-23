@@ -28,8 +28,10 @@ jobs:
       sha: ${{ steps.resolve-sha.outputs.sha }}
     steps:
       - name: Check version format
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          version="${{ inputs.version }}"
+          version="$INPUT_VERSION"
           if ! printf '%s\n' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9.]+)?$'; then
             echo "error: version must be a valid semver (e.g. 0.1.0, 1.2.3-alpha.1)" >&2
             exit 1
@@ -52,16 +54,20 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Verify no tag exists for this version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          tag="v${{ inputs.version }}"
+          tag="v$INPUT_VERSION"
           if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
             echo "error: tag $tag already exists" >&2
             exit 1
           fi
 
       - name: Verify no draft release exists for this version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          tag="v${{ inputs.version }}"
+          tag="v$INPUT_VERSION"
           release_id=$(gh release view "$tag" --json id --jq '.id' 2>/dev/null || true)
           if [ -n "$release_id" ]; then
             echo "error: draft release $tag already exists" >&2
@@ -120,9 +126,11 @@ jobs:
         run: ./scripts/build-release-payload dist/release-payload
 
       - name: Verify CLI version flags match
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           wheel=$(find dist/release-wheel -name 'normflow-*.whl' | head -1)
-          expected_version="${{ inputs.version }}"
+          expected_version="$INPUT_VERSION"
           scripts/release_version_check.sh "$wheel" "$expected_version"
 
       - name: Install.sh integration smoke test
@@ -192,9 +200,11 @@ jobs:
         run: ./scripts/build-release-payload dist/release-payload
 
       - name: Verify CLI version flags match
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           wheel=$(find dist/release-wheel -name 'normflow-*.whl' | head -1)
-          expected_version="${{ inputs.version }}"
+          expected_version="$INPUT_VERSION"
           scripts/release_version_check.sh "$wheel" "$expected_version"
 
       - name: Install.sh integration smoke test
@@ -241,8 +251,10 @@ jobs:
             install.sh
 
       - name: Prepare release assets
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          version="${{ inputs.version }}"
+          version="$INPUT_VERSION"
           mkdir -p release-assets
 
           # Extract assets from macOS payload (wheel, constraints, model are the same content)
@@ -277,8 +289,10 @@ jobs:
           ls -la release-assets/
 
       - name: Create version tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          tag="v${{ inputs.version }}"
+          tag="v$INPUT_VERSION"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "$tag" "${{ needs.validate-version-and-tag.outputs.sha }}"
@@ -298,8 +312,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify release assets
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v${{ inputs.version }}"
+          tag="v$INPUT_VERSION"
           release_id=$(gh release view "$tag" --json id --jq '.id')
           if [ -z "$release_id" ]; then
               echo "error: could not find release $tag" >&2
@@ -326,5 +343,3 @@ jobs:
               exit 1
           fi
           echo "Release verification passed"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

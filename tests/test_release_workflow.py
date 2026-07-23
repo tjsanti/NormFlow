@@ -139,10 +139,37 @@ def test_release_draft_platform_version_checks_are_consistent():
             "      - name: Verify CLI version flags match\n", 1
         )[1].split("\n      - name:", 1)[0]
         assert "wheel=$(find dist/release-wheel" in version_step
-        assert 'expected_version="${{ inputs.version }}"' in version_step
+        assert "INPUT_VERSION: ${{ inputs.version }}" in version_step
+        assert 'expected_version="$INPUT_VERSION"' in version_step
+        assert "${{ inputs.version }}" not in version_step.split("        run: |", 1)[1]
         assert 'scripts/release_version_check.sh "$wheel" "$expected_version"' in version_step
         for unused_setup in ("wheel_dir=", "staging=", "python3 -m zipfile", "rm -rf"):
             assert unused_setup not in version_step
+
+
+def test_release_draft_shell_version_uses_step_environment():
+    """Shell commands must receive the version through the step environment."""
+    text = _parse_workflow()
+    shell_blocks = []
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line == "        run: |":
+            block = []
+            for run_line in lines[index + 1 :]:
+                if run_line.startswith("          "):
+                    block.append(run_line)
+                else:
+                    break
+            shell_blocks.append("\n".join(block))
+
+    assert shell_blocks
+    assert all("${{ inputs.version }}" not in block for block in shell_blocks)
+
+    validator = text.split("  validate-version-and-tag:\n", 1)[1].split(
+        "\n  build-payload-macos:", 1
+    )[0]
+    assert validator.count("INPUT_VERSION: ${{ inputs.version }}") == 3
+    assert validator.count("$INPUT_VERSION") >= 3
 
 
 def test_release_draft_runs_install_sh_integration_smoke_test():
