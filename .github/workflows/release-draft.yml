@@ -1,0 +1,345 @@
+name: Release draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g., 0.1.0)"
+        required: true
+        type: string
+      ref:
+        description: "Git ref to build from (e.g., main, a SHA, or a tag)"
+        required: false
+        type: string
+        default: main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate-version-and-tag:
+    name: Validate version and tag availability
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.resolve-sha.outputs.sha }}
+    steps:
+      - name: Check version format
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="$INPUT_VERSION"
+          if ! printf '%s\n' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9.]+)?$'; then
+            echo "error: version must be a valid semver (e.g. 0.1.0, 1.2.3-alpha.1)" >&2
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Resolve ref to SHA
+        id: resolve-sha
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          echo "Resolved $INPUT_REF to $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Verify no tag exists for this version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          tag="v$INPUT_VERSION"
+          if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "error: tag $tag already exists" >&2
+            exit 1
+          fi
+
+      - name: Verify no draft release exists for this version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          tag="v$INPUT_VERSION"
+          release_id=$(gh release view "$tag" --json id --jq '.id' 2>/dev/null || true)
+          if [ -n "$release_id" ]; then
+            echo "error: draft release $tag already exists" >&2
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-payload-macos:
+    name: Build payload (macOS ARM64)
+    needs: validate-version-and-tag
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate-version-and-tag.outputs.sha }}
+
+      - name: Set up Python 3.13.14
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.14"
+
+      - name: Set up Node 22.23.1
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.23.1"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up uv 0.11.29
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Build frontend
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          rm -rf src/normflow/static
+          npm run build
+
+      - name: Run Python test suite
+        env:
+          _TYPER_FORCE_DISABLE_TERMINAL: "1"
+        run: uv run --frozen --extra test pytest
+
+      - name: Build release wheel
+        run: ./scripts/build-wheel dist/release-wheel
+
+      - name: Build release payload
+        run: ./scripts/build-release-payload dist/release-payload
+
+      - name: Verify CLI version flags match
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          wheel=$(find dist/release-wheel -name 'normflow-*.whl' | head -1)
+          expected_version="$INPUT_VERSION"
+          scripts/release_version_check.sh "$wheel" "$expected_version"
+
+      - name: Install.sh integration smoke test
+        run: |
+          mkdir -p "$HOME/nf-test"
+          export APP_HOME="$HOME/nf-test/data/normflow"
+          export BIN_DIR="$HOME/nf-test/bin"
+          scripts/test-install.sh
+        env:
+          RELEASE_URL: "file:///${{ github.workspace }}/dist/release-payload"
+          PLATFORM: "macos-aarch64-py313"
+
+      - name: Upload macOS payload
+        uses: actions/upload-artifact@65c4c4a1ddeeccb6ccea134142ec5dc8ec01217c # v4.7.0
+        with:
+          name: release-payload-macos-aarch64-py313
+          path: dist/release-payload/
+          retention-days: 5
+
+  build-payload-linux:
+    name: Build payload (Linux x86_64)
+    needs: validate-version-and-tag
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate-version-and-tag.outputs.sha }}
+
+      - name: Set up Python 3.13.14
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.14"
+
+      - name: Set up Node 22.23.1
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.23.1"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up uv 0.11.29
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Build frontend
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          rm -rf src/normflow/static
+          npm run build
+
+      - name: Run Python test suite
+        env:
+          _TYPER_FORCE_DISABLE_TERMINAL: "1"
+        run: uv run --frozen --extra test pytest
+
+      - name: Build release wheel
+        run: ./scripts/build-wheel dist/release-wheel
+
+      - name: Build release payload
+        run: ./scripts/build-release-payload dist/release-payload
+
+      - name: Verify CLI version flags match
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          wheel=$(find dist/release-wheel -name 'normflow-*.whl' | head -1)
+          expected_version="$INPUT_VERSION"
+          scripts/release_version_check.sh "$wheel" "$expected_version"
+
+      - name: Install.sh integration smoke test
+        run: |
+          export APP_HOME="$HOME/nf-test/data/normflow"
+          export BIN_DIR="$HOME/nf-test/bin"
+          mkdir -p "$APP_HOME" "$BIN_DIR"
+          scripts/test-install.sh
+        env:
+          RELEASE_URL: "file:///${{ github.workspace }}/dist/release-payload"
+          PLATFORM: "linux-x86_64-py313"
+
+      - name: Upload Linux payload
+        uses: actions/upload-artifact@65c4c4a1ddeeccb6ccea134142ec5dc8ec01217c # v4.7.0
+        with:
+          name: release-payload-linux-x86_64-py313
+          path: dist/release-payload/
+          retention-days: 5
+
+  create-draft-release:
+    name: Create draft release
+    needs: [build-payload-macos, build-payload-linux, validate-version-and-tag]
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Download macOS payload
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: release-payload-macos-aarch64-py313
+          path: payload-macos/
+
+      - name: Download Linux payload
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: release-payload-linux-x86_64-py313
+          path: payload-linux/
+
+      - name: Download install.sh
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: true
+          ref: ${{ needs.validate-version-and-tag.outputs.sha }}
+          sparse-checkout: |
+            install.sh
+
+      - name: Prepare release assets
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="$INPUT_VERSION"
+          mkdir -p release-assets
+
+          # Extract assets from macOS payload (wheel, constraints, model are the same content)
+          macos_manifest="payload-macos/normflow-payload-macos-aarch64-py313.json"
+          linux_manifest="payload-linux/normflow-payload-linux-x86_64-py313.json"
+
+          if [ ! -f "$macos_manifest" ] || [ ! -f "$linux_manifest" ]; then
+              echo "error: payload manifests missing" >&2
+              ls -la payload-macos/ payload-linux/ >&2
+              exit 1
+          fi
+
+          # Copy install.sh
+          cp install.sh release-assets/install.sh
+
+          # The payload payloads contain their own directories with actual files
+          # We need to extract the wheel, constraints, and model from both payloads
+          # and also create the platform-specific manifest files
+
+          # Copy all files from macOS payload
+          cp payload-macos/* release-assets/
+
+          # Copy Linux manifest (may have different naming)
+          for f in payload-linux/*; do
+              basename_f=$(basename "$f")
+              # Skip if already exists from macOS
+              [ -f "release-assets/$basename_f" ] && continue
+              cp "$f" release-assets/
+          done
+
+          echo "Release assets:"
+          ls -la release-assets/
+
+      - name: Create version tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          tag="v$INPUT_VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$tag" "${{ needs.validate-version-and-tag.outputs.sha }}"
+          git push origin "$tag"
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@26800dc1aca4bf6f8d4b0e67a50776bf00d14073 # v2.2.2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: NormFlow ${{ inputs.version }}
+          draft: true
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify release assets
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v$INPUT_VERSION"
+          release_id=$(gh release view "$tag" --json id --jq '.id')
+          if [ -z "$release_id" ]; then
+              echo "error: could not find release $tag" >&2
+              exit 1
+          fi
+
+          # List and verify assets
+          echo "Release assets:"
+          gh release view "$tag" --json assets --jq '.assets[] | "\(.name) (\(.sizeFormatted))"'
+          
+          # Verify required assets exist
+          required=("install.sh")
+          for asset_name in "${required[@]}"; do
+              if ! gh release view "$tag" --json assets --jq ".assets[].name" | grep -q "^${asset_name}$"; then
+                  echo "error: required asset missing: $asset_name" >&2
+                  exit 1
+              fi
+          done
+
+          # Verify release is still a draft
+          is_draft=$(gh release view "$tag" --json isDraft --jq '.isDraft')
+          if [ "$is_draft" != "true" ]; then
+              echo "error: release should be a draft but is not" >&2
+              exit 1
+          fi
+          echo "Release verification passed"

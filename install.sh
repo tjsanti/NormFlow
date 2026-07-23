@@ -20,6 +20,8 @@ cleanup() {
 
 trap cleanup EXIT HUP INT TERM
 
+SCRIPT_DIR=$(CDPATH= cd -P "$(dirname "$0")" && pwd)
+
 require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "requires $1; install it and try again"
 }
@@ -154,8 +156,14 @@ update_path() {
 }
 
 smoke_test() {
-    "$RUNTIME/bin/normflow" --version >/dev/null || return 1
-    "$RUNTIME/bin/normflow" -V >/dev/null || return 1
+    local shared="$SCRIPT_DIR/scripts/release_smoke_test.sh"
+    if [ -x "$shared" ]; then
+        "$shared" "$RUNTIME/bin/python" "smoke test"
+        return $?
+    fi
+    # Inline fallback for standalone deployment (no scripts/ directory available).
+    "$RUNTIME/bin/normflow" --version > /dev/null 2>&1 || return 1
+    "$RUNTIME/bin/normflow" -V > /dev/null 2>&1 || return 1
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 NORMFLOW_DISABLE_NETWORK=1 \
         "$RUNTIME/bin/python" -c '
 from fastapi.testclient import TestClient

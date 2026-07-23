@@ -24,6 +24,13 @@ UV_ARCHIVE_SHA256 = {
 }
 
 
+def test_install_sh_uses_posix_script_path_resolution():
+    """The /bin/sh installer must not rely on Bash's BASH_SOURCE."""
+    installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert 'BASH_SOURCE' not in installer
+    assert 'SCRIPT_DIR=$(CDPATH= cd -P "$(dirname "$0")" && pwd)' in installer
+
+
 def _executable(path: Path, source: str) -> None:
     path.write_text(source, encoding="utf-8")
     path.chmod(0o755)
