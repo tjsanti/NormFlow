@@ -194,7 +194,8 @@ jobs:
       - name: Verify CLI version flags match
         run: |
           wheel=$(find dist/release-wheel -name 'normflow-*.whl' | head -1)
-          scripts/release_version_check.sh "$wheel" "${{ inputs.version }}"
+          expected_version="${{ inputs.version }}"
+          scripts/release_version_check.sh "$wheel" "$expected_version"
 
       - name: Install.sh integration smoke test
         run: |
