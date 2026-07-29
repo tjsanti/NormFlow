@@ -328,11 +328,40 @@ record_managed_installation() {
         fail "could not record managed installation ownership"
 }
 
+relocate_cli_launcher() {
+    candidate=$1
+    durable_runtime=$2
+    launcher="$durable_runtime/bin/normflow"
+    staging_shebang="#!$candidate/bin/python"
+    [ "$(sed -n '1p' "$launcher")" = "$staging_shebang" ] || return 0
+
+    python_launcher="$launcher.py"
+    mv "$launcher" "$python_launcher" || return 1
+    {
+        printf '%s\n' '#!/bin/sh'
+        printf '%s\n' 'launcher=$0'
+        printf '%s\n' 'while [ -L "$launcher" ]; do'
+        printf '%s\n' '    target=$(readlink "$launcher")'
+        printf '%s\n' '    case "$target" in /*) launcher=$target ;; *) launcher=$(dirname "$launcher")/$target ;; esac'
+        printf '%s\n' 'done'
+        printf '%s\n' 'runtime_bin=$(CDPATH= cd "$(dirname "$launcher")" && pwd)'
+        printf '%s\n' 'exec "$runtime_bin/python" "$runtime_bin/normflow.py" "$@"'
+    } > "$launcher" || return 1
+    chmod 755 "$launcher" || return 1
+}
+
 activate_runtime() {
     candidate=$1
     durable_runtime="$APP_HOME/runtimes/$version-$MODEL_SHA256-$$"
     mkdir -p "$(dirname "$durable_runtime")"
     mv "$candidate" "$durable_runtime" || fail "could not preserve the verified release"
+    relocate_cli_launcher "$candidate" "$durable_runtime" || \
+        fail "could not make the installed command durable"
+    RUNTIME=$durable_runtime
+    if ! smoke_test; then
+        rm -rf "$durable_runtime"
+        fail "the installed release failed final verification"
+    fi
 
     previous_current=$(readlink "$APP_HOME/current" 2>/dev/null || true)
     previous_cli=$(readlink "$BIN_DIR/normflow" 2>/dev/null || true)
