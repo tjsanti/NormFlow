@@ -283,7 +283,7 @@ class TestSuggestSemanticFallback:
             service.import_mappings(str(csv_path), "raw", "clean")
 
             with patch(
-                "normflow.semantic_index.faiss.write_index",
+                "normflow.semantic_index.np.save",
                 side_effect=RuntimeError("disk full"),
             ):
                 suggestions = service.lookup(
@@ -342,7 +342,7 @@ class TestSuggestSemanticFallback:
             index_dir = project_path / ".normflow" / "faiss_index"
             generation = (index_dir / "current").read_text(encoding="utf-8").strip()
             active_dir = index_dir / "generations" / generation
-            shutil.copy2(active_dir / "index.faiss", index_dir / "index.faiss")
+            shutil.copy2(active_dir / "embeddings.npy", index_dir / "index.faiss")
             (index_dir / "mapping_table.pkl").write_bytes(b"legacy pickle must not be loaded")
             (index_dir / "current").unlink()
             assert not (index_dir / "model_identity").exists()
@@ -577,7 +577,9 @@ class TestSuggestCLI:
     @patch(_INDEX_PATCH)
     def test_dirty_index_progress_uses_stderr_and_preserves_json(self, mock_ensure):
         mock_model = MagicMock()
-        mock_model.encode.return_value = [[1.0, 0.0, 0.0]]
+        mock_model.encode.side_effect = lambda texts, **kw: [
+            [1.0, 0.0, 0.0] for _ in texts
+        ]
         mock_model.get_sentence_embedding_dimension.return_value = 3
         mock_ensure.return_value = mock_model
 
@@ -615,7 +617,7 @@ class TestSuggestCLI:
             service.import_mappings(str(csv_path), "raw", "clean")
 
             with patch(
-                "normflow.semantic_index.faiss.write_index",
+                "normflow.semantic_index.np.save",
                 side_effect=RuntimeError("disk full"),
             ):
                 result = runner.invoke(app, ["suggest", "colr", "--no-llm"])

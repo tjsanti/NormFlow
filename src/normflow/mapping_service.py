@@ -1,7 +1,7 @@
 """MappingService — single seam over all NormFlow domain operations.
 
 Consolidates CSV import/export, suggest (exact + semantic), review,
-Project info, and FAISS index build/clear. SQLModel, sessions, and
+Project info, and semantic index build/clear. SQLModel, sessions, and
 model imports are internal.
 """
 

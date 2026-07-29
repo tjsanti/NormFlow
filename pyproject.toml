@@ -14,7 +14,6 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
 ]
 dependencies = [
-    "faiss-cpu>=1.9.0",
     "fastapi>=0.115.0",
     "numpy>=1.26.0",
     "openai>=1.0.0",

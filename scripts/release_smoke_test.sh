@@ -20,17 +20,19 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 NORMFLOW_DISABLE_NETWORK=1 \
     "$staging_python" -c "
 from fastapi.testclient import TestClient
 from normflow.api import create_app
-from normflow.embedding_model import load_embedding_model
 from normflow.project import project_at
 from normflow.project_service import init_project
+from normflow.semantic_index import SemanticIndex
 from pathlib import Path
 import tempfile
 with tempfile.TemporaryDirectory(prefix='normflow-smoke-') as tmp:
     project = init_project(Path(tmp) / 'project')
     with TestClient(create_app(project_at(project))) as client:
         assert client.get('/').status_code == 200
-    result = load_embedding_model().encode(['${label}'], normalize_embeddings=True)
-    assert len(result) == 1
+    index = SemanticIndex(str(project))
+    assert index.build([('${label}', 'smoke result')]) == 1
+    results = index.search('${label}', threshold=0.0)
+    assert results[0]['normalized_text'] == 'smoke result'
 "
 
 echo "smoke test passed"

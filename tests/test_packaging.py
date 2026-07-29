@@ -77,6 +77,10 @@ def test_wheel_declares_the_public_release_identity(release_wheel: Path):
         "Repository, https://github.com/tjsanti/NormFlow",
         "Issues, https://github.com/tjsanti/NormFlow/issues",
     ]
+    assert not any(
+        requirement.lower().startswith("faiss-cpu")
+        for requirement in metadata.get_all("Requires-Dist", [])
+    )
     classifiers = metadata.get_all("Classifier")
     assert "Operating System :: MacOS" in classifiers
     assert "Operating System :: POSIX :: Linux" in classifiers

@@ -1,4 +1,4 @@
-"""Semantic search index — FAISS + SentenceTransformer."""
+"""Persisted exact semantic search over local sentence embeddings."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Callable, Literal
 from uuid import uuid4
 
-import faiss
 import numpy as np
 
 from .embedding_model import (
@@ -22,6 +21,8 @@ from .embedding_model import (
 
 
 SemanticIndexStatus = Literal["fresh", "refresh_required", "unverified", "missing"]
+_INDEX_FILENAME = "embeddings.npy"
+_LEGACY_INDEX_FILENAME = "index.faiss"
 
 
 @cache
@@ -30,7 +31,7 @@ def _ensure_model() -> EmbeddingModel:
 
 
 class SemanticIndex:
-    """Build, persist, and query a FAISS index over Project Mappings."""
+    """Build, persist, and query an embedding index over Project Mappings."""
 
     def __init__(self, project_path: str) -> None:
         self._project_path = Path(project_path).expanduser().resolve()
@@ -49,7 +50,11 @@ class SemanticIndex:
     # ------------------------------------------------------------------
 
     def exists(self) -> bool:
-        return (self._active_index_dir() / "index.faiss").exists()
+        active_dir = self._active_index_dir()
+        return any(
+            (active_dir / filename).exists()
+            for filename in (_INDEX_FILENAME, _LEGACY_INDEX_FILENAME)
+        )
 
     def _current_generation(self) -> str | None:
         try:
@@ -80,6 +85,8 @@ class SemanticIndex:
         if not self.exists():
             return "missing"
         active_dir = self._active_index_dir()
+        if not (active_dir / _INDEX_FILENAME).exists():
+            return "unverified"
         if (active_dir / "mapping_table.pkl").exists():
             return "unverified"
         if not (active_dir / "mapping_table.json").exists():
@@ -171,18 +178,14 @@ class SemanticIndex:
 
         if not raw_texts:
             dim = _ensure_model().get_sentence_embedding_dimension()
-            index = faiss.IndexFlatIP(dim)
-            self._save(index, table, mapping_revision, current_mapping_revision)
+            embeddings = np.empty((0, dim), dtype="float32")
+            self._save(embeddings, table, mapping_revision, current_mapping_revision)
             return 0
 
         embeddings = _ensure_model().encode(raw_texts, normalize_embeddings=True)
         embeddings = np.asarray(embeddings, dtype="float32")
 
-        dim = embeddings.shape[1]
-        index = faiss.IndexFlatIP(dim)
-        index.add(embeddings)
-
-        self._save(index, table, mapping_revision, current_mapping_revision)
+        self._save(embeddings, table, mapping_revision, current_mapping_revision)
         return len(table)
 
     def search(
@@ -196,20 +199,22 @@ class SemanticIndex:
         if loaded is None:
             return []
 
-        index, table = loaded
+        embeddings, table = loaded
 
-        if index.ntotal == 0 or limit <= 0:
+        if len(embeddings) == 0 or limit <= 0:
             return []
 
         query_embedding = _ensure_model().encode([query_text], normalize_embeddings=True)
         query_vec = np.asarray(query_embedding, dtype="float32")
 
-        scores, faiss_ids = index.search(query_vec, min(limit, index.ntotal))
+        if query_vec.ndim != 2 or query_vec.shape != (1, embeddings.shape[1]):
+            raise ValueError("Invalid semantic query embedding")
+        scores = embeddings @ query_vec[0]
+        match_ids = np.argsort(-scores, kind="stable")[:min(limit, len(embeddings))]
 
         results: list[dict[str, object]] = []
-        for score, fid in zip(scores[0], faiss_ids[0]):
-            if fid < 0:
-                continue
+        for fid in match_ids:
+            score = scores[fid]
             if float(score) < threshold:
                 continue
             raw_text, normalized_text = table[fid]
@@ -253,7 +258,10 @@ class SemanticIndex:
                 saved_generation = candidate
         except (FileNotFoundError, OSError):
             pass
-        if saved_generation is None and (saved_index / "index.faiss").exists():
+        if saved_generation is None and any(
+            (saved_index / filename).exists()
+            for filename in (_INDEX_FILENAME, _LEGACY_INDEX_FILENAME)
+        ):
             saved_generation = saved_index
 
         self._generations_dir.mkdir(parents=True, exist_ok=True)
@@ -297,7 +305,8 @@ class SemanticIndex:
                 )
             if previous_generation is not None:
                 for legacy_name in (
-                    "index.faiss", "mapping_table.json", "mapping_table.pkl",
+                    _INDEX_FILENAME, _LEGACY_INDEX_FILENAME,
+                    "mapping_table.json", "mapping_table.pkl",
                     "mapping_revision", "model_identity", "freshness",
                 ):
                     (self._index_dir / legacy_name).unlink(missing_ok=True)
@@ -312,16 +321,23 @@ class SemanticIndex:
     # Internal: persistence
     # ------------------------------------------------------------------
 
-    def load(self) -> tuple[faiss.Index, list[tuple[str, str]]] | None:
+    def load(self) -> tuple[np.ndarray, list[tuple[str, str]]] | None:
         active_dir = self._active_index_dir()
-        if not (active_dir / "index.faiss").exists():
+        embeddings_path = active_dir / _INDEX_FILENAME
+        if not embeddings_path.exists():
             return None
         if not self._has_current_model_identity(active_dir):
             return None
         mapping_table_path = active_dir / "mapping_table.json"
         if not mapping_table_path.exists():
             return None
-        index = faiss.read_index(str(active_dir / "index.faiss"))
+        embeddings = np.load(embeddings_path, allow_pickle=False)
+        if (
+            not isinstance(embeddings, np.ndarray)
+            or embeddings.ndim != 2
+            or not np.issubdtype(embeddings.dtype, np.number)
+        ):
+            raise ValueError("Invalid semantic index embeddings")
         with open(mapping_table_path, encoding="utf-8") as f:
             serialized_table = json.load(f)
         if not isinstance(serialized_table, list) or any(
@@ -332,11 +348,13 @@ class SemanticIndex:
         ):
             raise ValueError("Invalid semantic index mapping table")
         mapping_table = [(pair[0], pair[1]) for pair in serialized_table]
-        return index, mapping_table
+        if len(embeddings) != len(mapping_table):
+            raise ValueError("Invalid semantic index embedding count")
+        return embeddings, mapping_table
 
     def _save(
         self,
-        index: faiss.Index,
+        embeddings: np.ndarray,
         mapping_table: list[tuple[str, str]],
         mapping_revision: int | None,
         current_mapping_revision: Callable[[], int] | None,
@@ -355,7 +373,7 @@ class SemanticIndex:
         published = False
 
         try:
-            faiss.write_index(index, str(temporary_dir / "index.faiss"))
+            np.save(temporary_dir / _INDEX_FILENAME, embeddings, allow_pickle=False)
             with open(temporary_dir / "mapping_table.json", "w", encoding="utf-8") as f:
                 json.dump(mapping_table, f)
             if mapping_revision is not None:

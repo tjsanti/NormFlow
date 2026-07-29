@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import MagicMock, patch
 
-import faiss
+import numpy as np
 import pytest
 
 from normflow.embedding_model import EMBEDDING_MODEL_IDENTITY
@@ -69,6 +69,8 @@ class TestSemanticIndexBuild:
 
         index_dir = project / ".normflow" / "faiss_index"
         assert index_dir.exists()
+        generation = (index_dir / "current").read_text(encoding="utf-8").strip()
+        assert (index_dir / "generations" / generation / "embeddings.npy").exists()
 
     @patch(_INDEX_PATCH)
     def test_build_persists_the_embedding_model_identity(self, mock_ensure, project):
@@ -168,6 +170,22 @@ class TestSemanticIndexLoad:
         assert not (active_dir / "mapping_table.pkl").exists()
         assert idx.load()[1] == SEED_PAIRS
 
+    @patch(_INDEX_PATCH)
+    def test_load_rejects_an_embedding_count_that_does_not_match_the_table(
+        self, mock_ensure, project
+    ):
+        model = MagicMock()
+        model.encode.return_value = [[1.0, 0.0, 0.0] for _ in SEED_PAIRS]
+        mock_ensure.return_value = model
+        index = SemanticIndex(str(project))
+        index.build(SEED_PAIRS)
+        index_dir = project / ".normflow" / "faiss_index"
+        generation = (index_dir / "current").read_text(encoding="utf-8").strip()
+        np.save(index_dir / "generations" / generation / "embeddings.npy", np.zeros((1, 3)))
+
+        with pytest.raises(ValueError, match="embedding count"):
+            index.load()
+
 
 class TestSemanticIndexMarkers:
     """Freshness markers publish atomically without sharing temporary files."""
@@ -207,6 +225,22 @@ class TestSemanticIndexMarkers:
 
 class TestSemanticIndexIdentity:
     """Only generations built by the current embedding model are verified."""
+
+    @patch(_INDEX_PATCH)
+    def test_legacy_faiss_generation_with_fresh_markers_is_unverified(
+        self, mock_ensure, project
+    ):
+        model = MagicMock()
+        model.encode.return_value = [[1.0, 0.0, 0.0] for _ in SEED_PAIRS]
+        mock_ensure.return_value = model
+        index = SemanticIndex(str(project))
+        index.build(SEED_PAIRS, mapping_revision=7)
+        index_dir = project / ".normflow" / "faiss_index"
+        generation = (index_dir / "current").read_text(encoding="utf-8").strip()
+        active_dir = index_dir / "generations" / generation
+        (active_dir / "embeddings.npy").rename(active_dir / "index.faiss")
+
+        assert index.status(current_mapping_revision=7) == "unverified"
 
     @pytest.mark.parametrize("persisted_identity", [None, "different-model@revision"])
     @patch(_INDEX_PATCH)
@@ -266,15 +300,15 @@ class TestSemanticIndexRecovery:
         index.snapshot(snapshot)
         reader_started = Event()
         continue_reader = Event()
-        read_index = faiss.read_index
+        read_embeddings = np.load
 
-        def delayed_read_index(path):
+        def delayed_read_embeddings(path, *args, **kwargs):
             reader_started.set()
             assert continue_reader.wait(timeout=5)
-            return read_index(path)
+            return read_embeddings(path, *args, **kwargs)
 
         with (
-            patch("normflow.semantic_index.faiss.read_index", side_effect=delayed_read_index),
+            patch("normflow.semantic_index.np.load", side_effect=delayed_read_embeddings),
             ThreadPoolExecutor(max_workers=1) as executor,
         ):
             loaded = executor.submit(index.load)
@@ -326,9 +360,11 @@ class TestSemanticIndexSearch:
     def test_search_filters_by_threshold(self, mock_ensure, project):
         mock = MagicMock()
         # Query vector [1,0,0], stored vectors [0,1,0] -- cosine = 0
-        mock.encode.side_effect = lambda texts, **kw: [
-            [1.0, 0.0, 0.0] if len(texts) == 1 else [0.0, 1.0, 0.0]
-        ]
+        mock.encode.side_effect = lambda texts, **kw: (
+            [[1.0, 0.0, 0.0] for _ in texts]
+            if len(texts) == 1
+            else [[0.0, 1.0, 0.0] for _ in texts]
+        )
         mock_ensure.return_value = mock
 
         idx = SemanticIndex(str(project))

@@ -26,6 +26,22 @@ HEAVY_MODULE_ROOTS = (
 )
 
 
+def test_semantic_index_does_not_load_faiss():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import normflow.semantic_index, sys; assert 'faiss' not in sys.modules",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def _run_fresh_cli(arguments: list[str]) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     script = f"""
 import json

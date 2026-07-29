@@ -24,11 +24,10 @@ UV_ARCHIVE_SHA256 = {
 }
 
 
-def test_install_sh_uses_posix_script_path_resolution():
+def test_install_sh_does_not_depend_on_bash_source():
     """The /bin/sh installer must not rely on Bash's BASH_SOURCE."""
     installer = (ROOT / "install.sh").read_text(encoding="utf-8")
     assert 'BASH_SOURCE' not in installer
-    assert 'SCRIPT_DIR=$(CDPATH= cd -P "$(dirname "$0")" && pwd)' in installer
 
 
 def _executable(path: Path, source: str) -> None:
@@ -437,6 +436,35 @@ def test_install_sh_installs_a_verified_managed_release_without_ambient_python(
         "--version",
         "-V",
     ]
+
+
+def test_piped_install_never_executes_a_smoke_script_from_the_caller_directory(
+    tmp_path: Path,
+):
+    environment, _record = _installer_environment(tmp_path)
+    caller = tmp_path / "caller"
+    hostile_record = tmp_path / "hostile-smoke-record"
+    hostile_smoke = caller / "scripts" / "release_smoke_test.sh"
+    hostile_smoke.parent.mkdir(parents=True)
+    _executable(
+        hostile_smoke,
+        "#!/bin/sh\n"
+        'printf executed > "$NORMFLOW_TEST_HOSTILE_SMOKE_RECORD"\n'
+        "exit 88\n",
+    )
+    environment["NORMFLOW_TEST_HOSTILE_SMOKE_RECORD"] = str(hostile_record)
+
+    result = subprocess.run(
+        ["sh"],
+        cwd=caller,
+        env=environment,
+        input=(ROOT / "install.sh").read_text(encoding="utf-8"),
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not hostile_record.exists()
 
 
 def test_install_sh_reports_a_healthy_target_release_as_current_without_reinstalling(

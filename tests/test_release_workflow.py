@@ -55,6 +55,15 @@ def test_release_draft_pins_checkout_action():
         )
 
 
+def test_release_draft_pins_action_gh_release_v2_2_2():
+    """Draft creation must use the immutable commit behind v2.2.2."""
+    text = _parse_workflow()
+    assert (
+        "softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 "
+        "# v2.2.2"
+    ) in text
+
+
 def test_release_draft_uses_same_toolchain_as_ci():
     """The release workflow should use the same pinned toolchain as CI."""
     text = _parse_workflow()
@@ -190,7 +199,9 @@ def test_release_draft_smoke_test_tests_offline_model_and_api():
     assert "TRANSFORMERS_OFFLINE=1" in smoke_text
     assert "NORMFLOW_DISABLE_NETWORK=1" in smoke_text
     assert "create_app" in smoke_text
-    assert "load_embedding_model" in smoke_text
+    assert "SemanticIndex" in smoke_text
+    assert ".build(" in smoke_text
+    assert ".search(" in smoke_text
 
 
 def test_release_draft_workflow_has_valid_yaml_structure():

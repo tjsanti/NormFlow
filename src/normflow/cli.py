@@ -524,7 +524,7 @@ index_app = typer.Typer(
 
 @index_app.command(name="build")
 def index_build() -> None:
-    """Build or rebuild the FAISS semantic search index from current Mappings."""
+    """Build or rebuild the semantic search index from current Mappings."""
     try:
         count = _project_service().build_index()
         print(f"Index built with {count} entries.")
@@ -535,7 +535,7 @@ def index_build() -> None:
 
 @index_app.command(name="clear")
 def index_clear() -> None:
-    """Remove the persisted FAISS index."""
+    """Remove the persisted semantic index."""
     try:
         _project_service().clear_index()
         print("Index cleared.")

@@ -118,7 +118,7 @@ fi
 STAGING="$TEMP_DIR/runtime"
 UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" python install 3.13
 UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" venv --python 3.13 "$STAGING"
-"$UV" pip install --python "$STAGING/bin/python" --constraint "$TEMP_DIR/normflow-${version}-constraints-${PLATFORM}.txt" "$TEMP_DIR/normflow-${version}-py3-none-any.whl"
+"$UV" pip install --python "$STAGING/bin/python" --constraint "$TEMP_DIR/normflow-${version}-constraints-${PLATFORM}.txt" --torch-backend cpu "$TEMP_DIR/normflow-${version}-py3-none-any.whl"
 
 # Extract model
 MODEL_TAR=$(ls "$TEMP_DIR"/normflow-*-model-*.tar.gz | head -1)
@@ -137,5 +137,5 @@ echo "${PLATFORM} smoke test passed"
 
 # Repeated install - should detect current
 echo "--- Repeated install test ---"
-UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" pip install --python "$STAGING/bin/python" --constraint "$TEMP_DIR/normflow-${version}-constraints-${PLATFORM}.txt" "$TEMP_DIR/normflow-${version}-py3-none-any.whl"
+UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" pip install --python "$STAGING/bin/python" --constraint "$TEMP_DIR/normflow-${version}-constraints-${PLATFORM}.txt" --torch-backend cpu "$TEMP_DIR/normflow-${version}-py3-none-any.whl"
 echo "repeated install succeeded (idempotent)"

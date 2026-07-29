@@ -298,7 +298,7 @@ jobs:
           git push origin "$tag"
 
       - name: Create draft release
-        uses: softprops/action-gh-release@26800dc1aca4bf6f8d4b0e67a50776bf00d14073 # v2.2.2
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
           tag_name: v${{ inputs.version }}
           name: NormFlow ${{ inputs.version }}
