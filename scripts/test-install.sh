@@ -104,6 +104,7 @@ esac
 
 UV="$APP_HOME/uv/$UV_VERSION/bin/uv"
 if [ ! -x "$UV" ]; then
+    mkdir -p "$(dirname "$UV")"
     archive="$TEMP_DIR/uv.tar.gz"
     download "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$UV_TARGET.tar.gz" "$archive"
     ACTUAL_SHA=$(sha256 "$archive")
