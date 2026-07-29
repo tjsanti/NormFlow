@@ -66,6 +66,7 @@ jobs:
       - name: Verify no draft release exists for this version
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="v$INPUT_VERSION"
           release_id=$(gh release view "$tag" --json id --jq '.id' 2>/dev/null || true)
@@ -73,8 +74,6 @@ jobs:
             echo "error: draft release $tag already exists" >&2
             exit 1
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-payload-macos:
     name: Build payload (macOS ARM64)
