@@ -273,6 +273,18 @@ def test_release_draft_create_job_depends_on_both_platforms():
     assert "build-payload-linux" in create_section
 
 
+def test_release_draft_checks_out_before_downloading_payloads():
+    """Checkout cleanup must not remove already-downloaded payload artifacts."""
+    create_section = _parse_workflow().split("  create-draft-release:\n", 1)[1]
+
+    assert create_section.index("      - name: Download install.sh\n") < create_section.index(
+        "      - name: Download macOS payload\n"
+    )
+    assert create_section.index("      - name: Download install.sh\n") < create_section.index(
+        "      - name: Download Linux payload\n"
+    )
+
+
 def test_release_draft_verifies_release_after_creation():
     """The create job must verify the release was created correctly."""
     text = _parse_workflow()

@@ -229,6 +229,14 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch'
     steps:
+      - name: Download install.sh
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: true
+          ref: ${{ needs.validate-version-and-tag.outputs.sha }}
+          sparse-checkout: |
+            install.sh
+
       - name: Download macOS payload
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -240,14 +248,6 @@ jobs:
         with:
           name: release-payload-linux-x86_64-py313
           path: payload-linux/
-
-      - name: Download install.sh
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: true
-          ref: ${{ needs.validate-version-and-tag.outputs.sha }}
-          sparse-checkout: |
-            install.sh
 
       - name: Prepare release assets
         env:
