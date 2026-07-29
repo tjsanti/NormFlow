@@ -335,7 +335,7 @@ class SemanticIndex:
         if (
             not isinstance(embeddings, np.ndarray)
             or embeddings.ndim != 2
-            or not np.issubdtype(embeddings.dtype, np.number)
+            or not np.issubdtype(embeddings.dtype, np.floating)
         ):
             raise ValueError("Invalid semantic index embeddings")
         with open(mapping_table_path, encoding="utf-8") as f:
@@ -359,6 +359,10 @@ class SemanticIndex:
         mapping_revision: int | None,
         current_mapping_revision: Callable[[], int] | None,
     ) -> None:
+        if embeddings.ndim != 2:
+            raise ValueError("Invalid semantic index embeddings")
+        if len(embeddings) != len(mapping_table):
+            raise ValueError("Invalid semantic index embedding count")
         self._generations_dir.mkdir(parents=True, exist_ok=True)
         previous_generation = self._current_generation()
         existing_generations = {

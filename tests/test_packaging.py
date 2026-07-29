@@ -9,6 +9,8 @@ import subprocess
 import sys
 import zipfile
 
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 import pytest
 
 
@@ -77,8 +79,9 @@ def test_wheel_declares_the_public_release_identity(release_wheel: Path):
         "Repository, https://github.com/tjsanti/NormFlow",
         "Issues, https://github.com/tjsanti/NormFlow/issues",
     ]
-    assert not any(
-        requirement.lower().startswith("faiss-cpu")
+    assert all(
+        canonicalize_name(Requirement(requirement).name)
+        != canonicalize_name("faiss-cpu")
         for requirement in metadata.get_all("Requires-Dist", [])
     )
     classifiers = metadata.get_all("Classifier")

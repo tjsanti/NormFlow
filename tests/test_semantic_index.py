@@ -106,6 +106,28 @@ class TestSemanticIndexBuild:
         # Only 5 valid mappings indexed (not the 2 blank ones)
         assert count == 5
 
+    @pytest.mark.parametrize(
+        ("embeddings", "message"),
+        [
+            ([1.0, 0.0, 0.0], "embeddings"),
+            ([[1.0, 0.0, 0.0] for _ in SEED_PAIRS[:-1]], "embedding count"),
+        ],
+    )
+    @patch(_INDEX_PATCH)
+    def test_build_rejects_malformed_embeddings_before_publication(
+        self, mock_ensure, project, embeddings, message
+    ):
+        model = MagicMock()
+        model.encode.return_value = embeddings
+        mock_ensure.return_value = model
+        index = SemanticIndex(str(project))
+
+        with pytest.raises(ValueError, match=message):
+            index.build(SEED_PAIRS)
+
+        assert not index.exists()
+        assert not (project / ".normflow" / "faiss_index").exists()
+
     @patch(_INDEX_PATCH)
     def test_rebuild_keeps_only_current_and_previous_generation(self, mock_ensure, project):
         mock = MagicMock()
@@ -185,6 +207,28 @@ class TestSemanticIndexLoad:
 
         with pytest.raises(ValueError, match="embedding count"):
             index.load()
+
+    @patch(_INDEX_PATCH)
+    def test_search_rejects_complex_persisted_embeddings_before_encoding_query(
+        self, mock_ensure, project
+    ):
+        model = MagicMock()
+        model.encode.return_value = [[1.0, 0.0, 0.0] for _ in SEED_PAIRS]
+        mock_ensure.return_value = model
+        index = SemanticIndex(str(project))
+        index.build(SEED_PAIRS)
+        index_dir = project / ".normflow" / "faiss_index"
+        generation = (index_dir / "current").read_text(encoding="utf-8").strip()
+        np.save(
+            index_dir / "generations" / generation / "embeddings.npy",
+            np.ones((len(SEED_PAIRS), 3), dtype="complex64"),
+        )
+        model.reset_mock()
+
+        with pytest.raises(ValueError, match="Invalid semantic index embeddings"):
+            index.search("query")
+
+        model.encode.assert_not_called()
 
 
 class TestSemanticIndexMarkers:

@@ -1,7 +1,9 @@
 """Contract tests for the release-draft GitHub Actions workflow."""
 
 from pathlib import Path
+import os
 import re
+import subprocess
 
 
 WORKFLOW = Path(__file__).parents[1] / ".github/workflows/release-draft.yml"
@@ -202,6 +204,38 @@ def test_release_draft_smoke_test_tests_offline_model_and_api():
     assert "SemanticIndex" in smoke_text
     assert ".build(" in smoke_text
     assert ".search(" in smoke_text
+
+
+def test_release_smoke_passes_the_label_as_runtime_data(tmp_path: Path):
+    runtime_bin = tmp_path / "runtime" / "bin"
+    runtime_bin.mkdir(parents=True)
+    python = runtime_bin / "python"
+    normflow = runtime_bin / "normflow"
+    label_record = tmp_path / "label-record"
+    python.write_text(
+        "#!/bin/sh\n"
+        'printf %s "$3" > "$NORMFLOW_TEST_LABEL_RECORD"\n',
+        encoding="utf-8",
+    )
+    normflow.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+    normflow.chmod(0o755)
+    label = "quoted' label\nsecond line"
+
+    result = subprocess.run(
+        [
+            str(Path(__file__).parents[1] / "scripts" / "release_smoke_test.sh"),
+            str(python),
+            label,
+        ],
+        env={**os.environ, "NORMFLOW_TEST_LABEL_RECORD": str(label_record)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert label_record.read_text(encoding="utf-8") == label
 
 
 def test_release_draft_workflow_has_valid_yaml_structure():

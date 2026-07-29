@@ -453,9 +453,11 @@ def test_piped_install_never_executes_a_smoke_script_from_the_caller_directory(
         "exit 88\n",
     )
     environment["NORMFLOW_TEST_HOSTILE_SMOKE_RECORD"] = str(hostile_record)
+    shell = shutil.which("sh", path=environment["PATH"])
+    assert shell is not None
 
     result = subprocess.run(
-        ["sh"],
+        [shell],
         cwd=caller,
         env=environment,
         input=(ROOT / "install.sh").read_text(encoding="utf-8"),
