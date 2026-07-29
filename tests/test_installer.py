@@ -175,6 +175,9 @@ exec "$NORMFLOW_REAL_MV" "$@"
 set -eu
 printf '%s\\n' "$*" >> "$NORMFLOW_TEST_RECORD"
 case "$1" in
+  */bin/normflow|*/bin/normflow.py)
+       printf '%s\n' "${2:-}" >> "$NORMFLOW_TEST_NORMFLOW_RECORD"
+       case "${2:-}" in --version|-V) echo "$(sed -n '2s/^# normflow version: //p' "$1")" ;; ui) exit 0 ;; esac ;;
   python) exit 0 ;;
   venv) for environment do :; done; mkdir -p "$environment/bin"; cp "$0" "$environment/bin/python" ;;
   pip) python=; expect_python=0; for argument do
@@ -184,13 +187,7 @@ case "$1" in
        environment=$(dirname "$(dirname "$python")")
        for argument do case "$argument" in *.whl) wheel=$argument ;; esac; done
        version=$(basename "$wheel" | sed 's/^normflow-//; s/-py3-none-any.whl$//')
-       cat > "$environment/bin/normflow" <<'COMMAND'
-#!/bin/sh
-printf '%s\n' "$*" >> "$NORMFLOW_TEST_NORMFLOW_RECORD"
-case "$1" in --version|-V) echo "VERSION" ;; ui) exit 0 ;; esac
-COMMAND
-       sed -i.bak "s/VERSION/$version/" "$environment/bin/normflow"
-       rm "$environment/bin/normflow.bak"
+       printf '#!%s\n# normflow version: %s\n' "$python" "$version" > "$environment/bin/normflow"
       chmod +x "$environment/bin/normflow" ;;
   -c) [ "${NORMFLOW_TEST_FAIL_SMOKE:-}" != 1 ] || exit 1; exit 0 ;;
 esac
@@ -432,7 +429,22 @@ def test_install_sh_installs_a_verified_managed_release_without_ambient_python(
     assert "python install 3.13" in record.read_text(encoding="utf-8")
     assert "pip install" in record.read_text(encoding="utf-8")
     assert "-c" in record.read_text(encoding="utf-8")
+    version = subprocess.run(
+        [executable, "--version"], env=environment, text=True, capture_output=True
+    )
+    short_version = subprocess.run(
+        [executable, "-V"], env=environment, text=True, capture_output=True
+    )
+    assert version.returncode == 0, version.stderr
+    assert version.stdout.strip() == "0.1.0"
+    assert short_version.returncode == 0, short_version.stderr
+    assert short_version.stdout.strip() == "0.1.0"
+    assert not executable.resolve().read_text(encoding="utf-8").splitlines()[0].startswith(
+        f"#!{tmp_path}/"
+    )
     assert (tmp_path / "normflow-record").read_text(encoding="utf-8").splitlines() == [
+        "--version",
+        "-V",
         "--version",
         "-V",
     ]
@@ -497,7 +509,7 @@ def test_install_sh_reports_a_healthy_target_release_as_current_without_reinstal
     assert rerun.returncode == 0, rerun.stderr
     assert "already current" in rerun.stdout
     assert executable.readlink() == original_target
-    assert record.read_text(encoding="utf-8").startswith("-c ")
+    assert "\n-c " in record.read_text(encoding="utf-8")
     assert "pip install" not in record.read_text(encoding="utf-8")
     assert (tmp_path / "curl-record").read_text(encoding="utf-8").splitlines() == [
         "normflow-payload-linux-x86_64-py313.json"
