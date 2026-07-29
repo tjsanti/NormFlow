@@ -191,6 +191,22 @@ def test_release_draft_runs_install_sh_integration_smoke_test():
     assert "smoke test" in text.lower()
 
 
+def test_release_install_smoke_uses_the_public_installer_and_durable_runtime():
+    """The release gate must exercise the installed runtime after installer cleanup."""
+    helper = (Path(__file__).parents[1] / "scripts" / "test-install.sh").read_text()
+
+    assert helper.count('sh "$installer"') == 2
+    assert "NORMFLOW_RELEASE_URL" in helper
+    assert "XDG_DATA_HOME" in helper
+    assert "XDG_BIN_HOME" in helper
+    assert 'runtime="$XDG_DATA_HOME/normflow/current"' in helper
+    assert 'runtime_python="$runtime/bin/python"' in helper
+    assert "scripts/release_smoke_test.sh" in helper
+    assert '"$runtime_python"' in helper
+    assert "uv pip install" not in helper
+    assert 'STAGING="$TEMP_DIR/runtime"' not in helper
+
+
 def test_release_draft_smoke_test_tests_offline_model_and_api():
     """The smoke test must verify offline API and model usage."""
     text = _parse_workflow()
@@ -201,6 +217,8 @@ def test_release_draft_smoke_test_tests_offline_model_and_api():
     assert "TRANSFORMERS_OFFLINE=1" in smoke_text
     assert "NORMFLOW_DISABLE_NETWORK=1" in smoke_text
     assert "create_app" in smoke_text
+    assert "load_embedding_model" in smoke_text
+    assert ".encode(" in smoke_text
     assert "SemanticIndex" in smoke_text
     assert ".build(" in smoke_text
     assert ".search(" in smoke_text

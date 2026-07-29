@@ -133,11 +133,7 @@ jobs:
           scripts/release_version_check.sh "$wheel" "$expected_version"
 
       - name: Install.sh integration smoke test
-        run: |
-          mkdir -p "$HOME/nf-test"
-          export APP_HOME="$HOME/nf-test/data/normflow"
-          export BIN_DIR="$HOME/nf-test/bin"
-          scripts/test-install.sh
+        run: scripts/test-install.sh
         env:
           RELEASE_URL: "file:///${{ github.workspace }}/dist/release-payload"
           PLATFORM: "macos-aarch64-py313"
@@ -207,11 +203,7 @@ jobs:
           scripts/release_version_check.sh "$wheel" "$expected_version"
 
       - name: Install.sh integration smoke test
-        run: |
-          export APP_HOME="$HOME/nf-test/data/normflow"
-          export BIN_DIR="$HOME/nf-test/bin"
-          mkdir -p "$APP_HOME" "$BIN_DIR"
-          scripts/test-install.sh
+        run: scripts/test-install.sh
         env:
           RELEASE_URL: "file:///${{ github.workspace }}/dist/release-payload"
           PLATFORM: "linux-x86_64-py313"
