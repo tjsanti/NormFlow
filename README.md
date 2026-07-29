@@ -137,7 +137,7 @@ Initialization creates:
 | `input/` | Raw text records awaiting normalization |
 | `output/` | Results after normalization |
 | `samples/` | Portable flat files for demos, seed data, and evaluation fixtures |
-| `.normflow/` | Internal data (FAISS semantic index) |
+| `.normflow/` | Internal semantic-index data |
 
 Existing Project databases remain compatible and are opened in place; no Project marker or schema migration is required for this workflow.
 
@@ -220,13 +220,13 @@ The original columns and row order are preserved. Rows without an approved Mappi
 normflow index build
 ```
 
-Builds a FAISS semantic index from the current Mappings. NormFlow normally builds or refreshes it automatically before the next semantic or LLM Suggestion after Mappings change. Use this command to prewarm the index or retry after an automatic refresh warning.
+Builds a semantic index from the current Mappings. NormFlow normally builds or refreshes it automatically before the next semantic or LLM Suggestion after Mappings change. Use this command to prewarm the index or retry after an automatic refresh warning.
 
 ```bash
 normflow index clear
 ```
 
-Removes the persisted FAISS index.
+Removes the persisted semantic index.
 
 ### Get normalization suggestions
 
@@ -317,7 +317,7 @@ src/normflow/
 ├── mapping_service.py    # Mapping, Suggestion, Review Item, Batch, export, and index workflows
 ├── project.py            # Current-directory Project discovery and validation
 ├── project_service.py    # Project initialization
-├── semantic_index.py     # FAISS + SentenceTransformer index (build, persist, query)
+├── semantic_index.py     # Embedding index (build, persist, query)
 ├── static/               # Built browser UI served by FastAPI
 └── suggestion_lookup.py  # Exact, semantic, and LLM fallback chain
 frontend/                 # Framework-free TypeScript UI, Vite build, and Vitest tests
@@ -330,7 +330,7 @@ tests/                    # Pytest unit, adapter, workflow, recovery, and packag
 - [x] Import/export mappings (CSV)
 - [x] Exact matching suggestions
 - [x] Batch CSV suggestions
-- [x] Semantic search with embeddings (FAISS + sentence-transformers)
+- [x] Semantic search with embeddings (NumPy + sentence-transformers)
 - [x] LLM fallback
 - [x] Unified Review Item acceptance
 - [x] Atomic, durable Batch Import Runs with status and explicit retry

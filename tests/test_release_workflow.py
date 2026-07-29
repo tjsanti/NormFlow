@@ -1,7 +1,9 @@
 """Contract tests for the release-draft GitHub Actions workflow."""
 
 from pathlib import Path
+import os
 import re
+import subprocess
 
 
 WORKFLOW = Path(__file__).parents[1] / ".github/workflows/release-draft.yml"
@@ -53,6 +55,15 @@ def test_release_draft_pins_checkout_action():
         assert re.fullmatch(r"[0-9a-f]{40}", sha_ref), (
             f"Action {org_repo}@{sha_ref} is not pinned to a 40-char SHA"
         )
+
+
+def test_release_draft_pins_action_gh_release_v2_2_2():
+    """Draft creation must use the immutable commit behind v2.2.2."""
+    text = _parse_workflow()
+    assert (
+        "softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 "
+        "# v2.2.2"
+    ) in text
 
 
 def test_release_draft_uses_same_toolchain_as_ci():
@@ -190,7 +201,41 @@ def test_release_draft_smoke_test_tests_offline_model_and_api():
     assert "TRANSFORMERS_OFFLINE=1" in smoke_text
     assert "NORMFLOW_DISABLE_NETWORK=1" in smoke_text
     assert "create_app" in smoke_text
-    assert "load_embedding_model" in smoke_text
+    assert "SemanticIndex" in smoke_text
+    assert ".build(" in smoke_text
+    assert ".search(" in smoke_text
+
+
+def test_release_smoke_passes_the_label_as_runtime_data(tmp_path: Path):
+    runtime_bin = tmp_path / "runtime" / "bin"
+    runtime_bin.mkdir(parents=True)
+    python = runtime_bin / "python"
+    normflow = runtime_bin / "normflow"
+    label_record = tmp_path / "label-record"
+    python.write_text(
+        "#!/bin/sh\n"
+        'printf %s "$3" > "$NORMFLOW_TEST_LABEL_RECORD"\n',
+        encoding="utf-8",
+    )
+    normflow.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+    normflow.chmod(0o755)
+    label = "quoted' label\nsecond line"
+
+    result = subprocess.run(
+        [
+            str(Path(__file__).parents[1] / "scripts" / "release_smoke_test.sh"),
+            str(python),
+            label,
+        ],
+        env={**os.environ, "NORMFLOW_TEST_LABEL_RECORD": str(label_record)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert label_record.read_text(encoding="utf-8") == label
 
 
 def test_release_draft_workflow_has_valid_yaml_structure():
