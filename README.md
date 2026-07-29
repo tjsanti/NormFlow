@@ -16,8 +16,7 @@ the bundled local embedding model; no existing Python or uv configuration is
 changed.
 
 ```bash
-curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-  https://github.com/tjsanti/NormFlow/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/tjsanti/NormFlow/releases/latest/download/install.sh | sh
 ```
 
 Do not install the package named `normflow` from PyPI. That name belongs to an
