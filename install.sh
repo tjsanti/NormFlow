@@ -355,8 +355,10 @@ activate_runtime() {
     durable_runtime="$APP_HOME/runtimes/$version-$MODEL_SHA256-$$"
     mkdir -p "$(dirname "$durable_runtime")"
     mv "$candidate" "$durable_runtime" || fail "could not preserve the verified release"
-    relocate_cli_launcher "$candidate" "$durable_runtime" || \
+    if ! relocate_cli_launcher "$candidate" "$durable_runtime"; then
+        rm -rf "$durable_runtime"
         fail "could not make the installed command durable"
+    fi
     RUNTIME=$durable_runtime
     if ! smoke_test; then
         rm -rf "$durable_runtime"

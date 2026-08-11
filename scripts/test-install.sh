@@ -41,7 +41,7 @@ printf '%s\n' "$version" "$short_version"
 
 runtime="$XDG_DATA_HOME/normflow/current"
 runtime_python="$runtime/bin/python"
-durable_runtime=$(readlink "$runtime")
+durable_runtime=$(readlink "$runtime" 2>/dev/null || true)
 case "$durable_runtime" in
     "$XDG_DATA_HOME/normflow/runtimes/"*) ;;
     *) fail "installer did not activate a durable runtime for $PLATFORM" ;;

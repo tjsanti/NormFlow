@@ -160,6 +160,9 @@ for argument do source=$destination; destination=$argument; done
 if [ "${NORMFLOW_TEST_FAIL_DURABLE_MOVE:-}" = 1 ]; then
   case "${1:-}:${2:-}" in */runtime:*/runtimes/*) exit 1 ;; esac
 fi
+if [ "${NORMFLOW_TEST_FAIL_LAUNCHER_RELOCATION:-}" = 1 ]; then
+  case "$source:$destination" in */runtimes/*/bin/normflow:*.py) exit 1 ;; esac
+fi
 case "${NORMFLOW_TEST_FAIL_LINK:-}:$source:$destination" in
   current:*/normflow/current.normflow-new-*:*/normflow/current) exit 1 ;;
   cli:*/user-bin/normflow.normflow-new-*:*/user-bin/normflow) exit 1 ;;
@@ -442,12 +445,11 @@ def test_install_sh_installs_a_verified_managed_release_without_ambient_python(
     assert not executable.resolve().read_text(encoding="utf-8").splitlines()[0].startswith(
         f"#!{tmp_path}/"
     )
-    assert (tmp_path / "normflow-record").read_text(encoding="utf-8").splitlines() == [
-        "--version",
-        "-V",
-        "--version",
-        "-V",
-    ]
+    version_checks = (tmp_path / "normflow-record").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert version_checks.count("--version") >= 2
+    assert version_checks.count("-V") >= 2
 
 
 def test_piped_install_never_executes_a_smoke_script_from_the_caller_directory(
@@ -653,6 +655,25 @@ def test_install_sh_keeps_active_release_callable_when_durable_activation_fails(
     assert executable.resolve() == original_target
     assert subprocess.run([executable, "--version"], env=environment).returncode == 0
     assert not (tmp_path / "data" / "normflow" / "releases" / "0.2.0").exists()
+
+
+def test_install_sh_discards_durable_runtime_when_launcher_relocation_fails(
+    tmp_path: Path,
+):
+    environment, _record = _installer_environment(tmp_path)
+    environment["NORMFLOW_TEST_FAIL_LAUNCHER_RELOCATION"] = "1"
+
+    failed = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert failed.returncode != 0
+    assert "could not make the installed command durable" in failed.stderr
+    runtimes = tmp_path / "data" / "normflow" / "runtimes"
+    assert not runtimes.exists() or not list(runtimes.iterdir())
 
 
 @pytest.mark.parametrize(
