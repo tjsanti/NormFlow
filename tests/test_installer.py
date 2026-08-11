@@ -194,6 +194,7 @@ case "$1" in
          if [ "$expect_python" = 1 ]; then python=$argument; expect_python=0
          elif [ "$argument" = --python ]; then expect_python=1; fi
        done
+       python=$(CDPATH= cd "$(dirname "$python")" && pwd)/$(basename "$python")
        environment=$(dirname "$(dirname "$python")")
        for argument do case "$argument" in *.whl) wheel=$argument ;; esac; done
        version=$(basename "$wheel" | sed 's/^normflow-//; s/-py3-none-any.whl$//')
@@ -317,7 +318,7 @@ def test_managed_normflow_uninstall_removes_only_installer_owned_files_after_con
     result = _run_interactive([str(executable), "uninstall"], environment, b"yes\n")
 
     assert result.returncode == 0, result.stdout
-    assert "NormFlow 0.1.1" in result.stdout
+    assert "NormFlow 0.1.2" in result.stdout
     assert str(tmp_path / "data" / "normflow") in result.stdout
     assert "Projects will be preserved" in result.stdout
     assert not (tmp_path / "data" / "normflow").exists()
@@ -512,6 +513,28 @@ def test_install_sh_relocates_a_shell_wrapped_python_launcher(tmp_path: Path):
         [executable, "--version"], env=environment, text=True, capture_output=True
     ).stdout.strip() == "0.1.0"
     assert executable.resolve().with_name("normflow-cli.py").is_file()
+
+
+def test_install_sh_relocates_a_launcher_when_tmpdir_has_a_trailing_slash(
+    tmp_path: Path,
+):
+    environment, _record = _installer_environment(tmp_path)
+    temporary_root = tmp_path / "temporary"
+    temporary_root.mkdir()
+    environment["TMPDIR"] = f"{temporary_root}/"
+
+    result = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    executable = tmp_path / "user-bin" / "normflow"
+    assert result.returncode == 0, result.stderr
+    assert subprocess.run(
+        [executable, "--version"], env=environment, text=True, capture_output=True
+    ).stdout.strip() == "0.1.0"
 
 
 def test_install_sh_reports_a_healthy_target_release_as_current_without_reinstalling(

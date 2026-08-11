@@ -70,7 +70,7 @@ def test_wheel_declares_the_public_release_identity(release_wheel: Path):
         metadata = BytesParser(policy=default).parsebytes(archive.read(metadata_name))
 
     assert metadata["Name"] == "normflow"
-    assert metadata["Version"] == "0.1.1"
+    assert metadata["Version"] == "0.1.2"
     assert metadata["Author-Email"] == (
         "Trevor Santiago <69698117+tjsanti@users.noreply.github.com>"
     )
@@ -93,7 +93,7 @@ import sys
 sys.path.insert(0, sys.argv[1])
 from importlib.metadata import version
 import normflow
-assert normflow.__version__ == version("normflow") == "0.1.1"
+assert normflow.__version__ == version("normflow") == "0.1.2"
 """
     subprocess.run([sys.executable, "-c", check, str(release_wheel)], check=True)
 

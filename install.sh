@@ -409,6 +409,7 @@ main() {
     require_command awk
     select_sha256
     TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/normflow-install.XXXXXX") || fail "could not create a temporary directory"
+    TEMP_DIR=$(CDPATH= cd "$TEMP_DIR" && pwd) || fail "could not resolve temporary directory"
     MANIFEST="$TEMP_DIR/normflow-payload-$PLATFORM.json"
     download "$RELEASE_URL/normflow-payload-$PLATFORM.json" "$MANIFEST"
     version=$(awk -F '"' '/"version"[[:space:]]*:/ { print $4; exit }' "$MANIFEST")

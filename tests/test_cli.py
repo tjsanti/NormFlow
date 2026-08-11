@@ -75,7 +75,7 @@ def test_version_is_usable_outside_a_project(
     result = runner.invoke(app, [flag])
 
     assert result.exit_code == 0
-    assert result.stdout == "0.1.1\n"
+    assert result.stdout == "0.1.2\n"
 
 
 def test_version_subcommand_is_absent():
