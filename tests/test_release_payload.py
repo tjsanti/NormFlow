@@ -424,8 +424,8 @@ def test_release_smoke_command_normalizes_smoke_failures(tmp_path: Path):
     assert "Traceback" not in result.stderr
 
 
-def test_installer_smoke_selects_cpu_torch_backend_for_every_install():
-    script = (ROOT / "scripts" / "test-install.sh").read_text(encoding="utf-8")
+def test_public_installer_selects_cpu_torch_backend_for_every_install():
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
     install_commands = [
         line for line in script.splitlines() if '"$UV" pip install' in line
     ]

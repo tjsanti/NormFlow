@@ -191,6 +191,56 @@ def test_release_draft_runs_install_sh_integration_smoke_test():
     assert "smoke test" in text.lower()
 
 
+def test_release_install_smoke_uses_the_public_installer_and_durable_runtime():
+    """The release gate must exercise the installed runtime after installer cleanup."""
+    helper = (Path(__file__).parents[1] / "scripts" / "test-install.sh").read_text()
+
+    assert helper.count('sh "$installer"') == 2
+    assert "NORMFLOW_RELEASE_URL" in helper
+    assert "XDG_DATA_HOME" in helper
+    assert "XDG_BIN_HOME" in helper
+    assert 'runtime="$XDG_DATA_HOME/normflow/current"' in helper
+    assert 'runtime_python="$runtime/bin/python"' in helper
+    assert "scripts/release_smoke_test.sh" in helper
+    assert '"$runtime_python"' in helper
+    assert "uv pip install" not in helper
+    assert 'STAGING="$TEMP_DIR/runtime"' not in helper
+
+
+def test_release_install_smoke_reports_missing_initial_runtime_link(tmp_path: Path):
+    """A missing installer link must reach the helper's actionable failure."""
+    repository = tmp_path / "repository"
+    scripts = repository / "scripts"
+    scripts.mkdir(parents=True)
+    helper = scripts / "test-install.sh"
+    helper.write_text(
+        (Path(__file__).parents[1] / "scripts" / "test-install.sh").read_text(),
+        encoding="utf-8",
+    )
+    installer = repository / "install.sh"
+    installer.write_text(
+        """#!/bin/sh
+mkdir -p "$XDG_BIN_HOME"
+cat > "$XDG_BIN_HOME/normflow" <<'COMMAND'
+#!/bin/sh
+printf '%s\n' 0.1.0
+COMMAND
+chmod 755 "$XDG_BIN_HOME/normflow"
+""",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["sh", str(helper)],
+        env=os.environ | {"RELEASE_URL": "fixture", "PLATFORM": "fixture"},
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "installer did not activate a durable runtime for fixture" in result.stderr
+
+
 def test_release_draft_smoke_test_tests_offline_model_and_api():
     """The smoke test must verify offline API and model usage."""
     text = _parse_workflow()
@@ -201,6 +251,8 @@ def test_release_draft_smoke_test_tests_offline_model_and_api():
     assert "TRANSFORMERS_OFFLINE=1" in smoke_text
     assert "NORMFLOW_DISABLE_NETWORK=1" in smoke_text
     assert "create_app" in smoke_text
+    assert "load_embedding_model" in smoke_text
+    assert ".encode(" in smoke_text
     assert "SemanticIndex" in smoke_text
     assert ".build(" in smoke_text
     assert ".search(" in smoke_text

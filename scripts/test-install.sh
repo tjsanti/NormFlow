@@ -1,10 +1,8 @@
-#!/bin/bash
+#!/bin/sh
 set -eu
 
-APP_HOME=${APP_HOME:-"$HOME/.local/share/normflow"}
-BIN_DIR=${BIN_DIR:-"$HOME/.local/bin"}
-RELEASE_URL=${RELEASE_URL:-""}
-PLATFORM="${PLATFORM:-}"
+RELEASE_URL=${RELEASE_URL:?RELEASE_URL not set}
+PLATFORM=${PLATFORM:?PLATFORM not set}
 TEMP_DIR=
 
 fail() {
@@ -17,125 +15,52 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-require_command() {
-    command -v "$1" >/dev/null 2>&1 || fail "requires $1"
-}
+TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/normflow-release-smoke.XXXXXX") || \
+    fail "could not create an isolated home"
+HOME="$TEMP_DIR/home"
+XDG_DATA_HOME="$TEMP_DIR/data"
+XDG_BIN_HOME="$TEMP_DIR/bin"
+TMPDIR="$TEMP_DIR/tmp"
+NORMFLOW_RELEASE_URL=$RELEASE_URL
+export HOME XDG_DATA_HOME XDG_BIN_HOME TMPDIR NORMFLOW_RELEASE_URL
+mkdir -p "$HOME" "$XDG_DATA_HOME" "$XDG_BIN_HOME" "$TMPDIR"
 
-select_sha256() {
-    if command -v shasum >/dev/null 2>&1; then
-        SHA256='shasum -a 256'
-    elif command -v sha256sum >/dev/null 2>&1; then
-        SHA256=sha256sum
-    else
-        fail "requires shasum or sha256sum"
-    fi
-}
-sha256() {
-    $SHA256 "$1" | awk '{print $1}'
-}
-download() {
-    curl --fail --silent --show-error --location --output "$2" "$1"
-}
+script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
+repository=$(dirname "$script_dir")
+installer="$repository/install.sh"
 
-if [ -z "$RELEASE_URL" ]; then
-    fail "RELEASE_URL not set"
-fi
-require_command curl
-require_command awk
-require_command tar
-select_sha256
+first_install=$(sh "$installer")
+printf '%s\n' "$first_install"
 
-TEMP_DIR=$(mktemp -d) || fail "could not create temp dir"
-MANIFEST="$TEMP_DIR/manifest.json"
-download "$RELEASE_URL/normflow-payload-$PLATFORM.json" "$MANIFEST"
+normflow="$XDG_BIN_HOME/normflow"
+version=$("$normflow" --version)
+short_version=$("$normflow" -V)
+[ -n "$version" ] || fail "normflow --version returned no version"
+[ "$short_version" = "$version" ] || fail "normflow version flags disagree"
+printf '%s\n' "$version" "$short_version"
 
-version=$(awk -F '"' '/"version"[[:space:]]*:/ { print $4; exit }' "$MANIFEST")
-case "$version" in ''|'.'|'..'|*[!0-9A-Za-z.+-]*) fail "invalid version in manifest" ;; esac
-PLATFORM_ACTUAL=$(awk -F '"' '/"platform"[[:space:]]*:/ { print $4; exit }' "$MANIFEST")
-[ "$PLATFORM_ACTUAL" = "$PLATFORM" ] || fail "manifest platform $PLATFORM_ACTUAL != expected $PLATFORM"
-
-mkdir -p "$APP_HOME" "$BIN_DIR"
-
-# Parse assets from manifest
-assets=()
-while IFS= read -r line; do
-    assets+=("$line")
-done < <(awk -v platform="$PLATFORM" '
-    /^[[:space:]]*\{/ { filename=""; kind=""; digest="" }
-    /"filename"[[:space:]]*:/ { filename=$0; sub(/.*"filename"[[:space:]]*:[[:space:]]*"/, "", filename); sub(/".*/, "", filename); }
-    /"kind"[[:space:]]*:/ { kind=$0; sub(/.*"kind"[[:space:]]*:[[:space:]]*"/, "", kind); sub(/".*/, "", kind); }
-    /"sha256"[[:space:]]*:/ { digest=$0; sub(/.*"sha256"[[:space:]]*:[[:space:]]*"/, "", digest); sub(/".*/, "", digest); }
-    /^[[:space:]]*\}[,]?[[:space:]]*$/ {
-        if (kind == "wheel" || kind == "model" || kind == "constraints") {
-            print filename "|" digest "|" kind
-        }
-        filename=""; kind=""; digest=""
-    }
-' "$MANIFEST")
-
-for record in "${assets[@]}"; do
-    fname="${record%%|*}"
-    rest="${record#*|}"
-    digest="${rest%%|*}"
-    kind="${rest#*|}"
-
-    dest="$TEMP_DIR/$fname"
-    download "$RELEASE_URL/$fname" "$dest"
-    actual=$(sha256 "$dest")
-    [ "$actual" = "$digest" ] || fail "$kind checksum mismatch"
-    echo "downloaded and verified: $kind ($fname)"
-done
-
-# Install uv (minimal, same as install.sh)
-UV_VERSION=0.6.14
-case "$PLATFORM" in
-    macos-aarch64-py313)
-        UV_TARGET=aarch64-apple-darwin
-        EXPECTED_SHA=4ea4731010fbd1bc8e790e07f199f55a5c7c2c732e9b77f85e302b0bee61b756
-        ;;
-    linux-x86_64-py313)
-        UV_TARGET=x86_64-unknown-linux-gnu
-        EXPECTED_SHA=0aaf451c391d3913823bfb8ed354b446dcfd0553a32ed8266611e4181c61fd51
-        ;;
-    *)
-        fail "unsupported platform for smoke test"
-        ;;
+runtime="$XDG_DATA_HOME/normflow/current"
+runtime_python="$runtime/bin/python"
+durable_runtime=$(readlink "$runtime" 2>/dev/null || true)
+case "$durable_runtime" in
+    "$XDG_DATA_HOME/normflow/runtimes/"*) ;;
+    *) fail "installer did not activate a durable runtime for $PLATFORM" ;;
 esac
+[ -x "$runtime_python" ] || fail "installed runtime has no Python interpreter"
+[ -z "$(find "$TMPDIR" -name 'normflow-install.*' -print -quit)" ] || \
+    fail "installer staging directory survived cleanup"
 
-UV="$APP_HOME/uv/$UV_VERSION/bin/uv"
-if [ ! -x "$UV" ]; then
-    mkdir -p "$(dirname "$UV")"
-    archive="$TEMP_DIR/uv.tar.gz"
-    download "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$UV_TARGET.tar.gz" "$archive"
-    ACTUAL_SHA=$(sha256 "$archive")
-    [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ] || fail "uv bootstrap checksum mismatch"
-    tar -xzf "$archive" -C "$TEMP_DIR"
-    mv "$TEMP_DIR/uv-$UV_TARGET/uv" "$UV"
-    chmod 755 "$UV"
-fi
+"$repository/scripts/release_smoke_test.sh" "$runtime_python" "${PLATFORM}-smoke"
 
-# Create venv and install
-STAGING="$TEMP_DIR/runtime"
-UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" python install 3.13
-UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" venv --python 3.13 "$STAGING"
-"$UV" pip install --python "$STAGING/bin/python" --constraint "$TEMP_DIR/normflow-${version}-constraints-${PLATFORM}.txt" --torch-backend cpu "$TEMP_DIR/normflow-${version}-py3-none-any.whl"
+second_install=$(sh "$installer")
+printf '%s\n' "$second_install"
+case "$second_install" in
+    *"already current"*) ;;
+    *) fail "repeated installer invocation did not reuse the current release" ;;
+esac
+[ "$(readlink "$runtime")" = "$durable_runtime" ] || \
+    fail "repeated installer invocation replaced the current runtime"
+[ "$("$normflow" --version)" = "$version" ] || \
+    fail "repeated installer invocation changed the installed version"
 
-# Extract model
-MODEL_TAR=$(ls "$TEMP_DIR"/normflow-*-model-*.tar.gz | head -1)
-mkdir -p "$STAGING/share/normflow/models"
-tar -xzf "$MODEL_TAR" -C "$STAGING/share/normflow/models"
-printf '%s\n' "$(basename "$MODEL_TAR" .tar.gz)" > "$STAGING/share/normflow/model-identity"
-
-# Smoke test
-scripts/release_smoke_test.sh "$STAGING/bin/python" "${PLATFORM}-smoke"
-echo ""
-# Test CLI
-"$STAGING/bin/normflow" --version
-"$STAGING/bin/normflow" -V
-
-echo "${PLATFORM} smoke test passed"
-
-# Repeated install - should detect current
-echo "--- Repeated install test ---"
-UV_PYTHON_INSTALL_DIR="$APP_HOME/python" "$UV" pip install --python "$STAGING/bin/python" --constraint "$TEMP_DIR/normflow-${version}-constraints-${PLATFORM}.txt" --torch-backend cpu "$TEMP_DIR/normflow-${version}-py3-none-any.whl"
-echo "repeated install succeeded (idempotent)"
+printf '%s\n' "${PLATFORM} installer smoke test passed"
