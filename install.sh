@@ -333,9 +333,12 @@ relocate_cli_launcher() {
     durable_runtime=$2
     launcher="$durable_runtime/bin/normflow"
     staging_shebang="#!$candidate/bin/python"
-    [ "$(sed -n '1p' "$launcher")" = "$staging_shebang" ] || return 0
+    case "$(sed -n '1p' "$launcher")" in
+        "$staging_shebang"|'#!/bin/sh') ;;
+        *) return 0 ;;
+    esac
 
-    python_launcher="$launcher.py"
+    python_launcher="$launcher-cli.py"
     mv "$launcher" "$python_launcher" || return 1
     {
         printf '%s\n' '#!/bin/sh'
@@ -345,7 +348,7 @@ relocate_cli_launcher() {
         printf '%s\n' '    case "$target" in /*) launcher=$target ;; *) launcher=$(dirname "$launcher")/$target ;; esac'
         printf '%s\n' 'done'
         printf '%s\n' 'runtime_bin=$(CDPATH= cd "$(dirname "$launcher")" && pwd)'
-        printf '%s\n' 'exec "$runtime_bin/python" "$runtime_bin/normflow.py" "$@"'
+        printf '%s\n' 'exec "$runtime_bin/python" "$runtime_bin/normflow-cli.py" "$@"'
     } > "$launcher" || return 1
     chmod 755 "$launcher" || return 1
 }

@@ -30,6 +30,13 @@ def test_install_sh_does_not_depend_on_bash_source():
     assert 'BASH_SOURCE' not in installer
 
 
+def test_install_sh_relocated_launcher_does_not_shadow_the_normflow_package():
+    """The retained console-script source needs a name other than ``normflow.py``."""
+    installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert 'python_launcher="$launcher-cli.py"' in installer
+    assert '"$runtime_bin/normflow-cli.py"' in installer
+
+
 def _executable(path: Path, source: str) -> None:
     path.write_text(source, encoding="utf-8")
     path.chmod(0o755)
@@ -178,7 +185,7 @@ exec "$NORMFLOW_REAL_MV" "$@"
 set -eu
 printf '%s\\n' "$*" >> "$NORMFLOW_TEST_RECORD"
 case "$1" in
-  */bin/normflow|*/bin/normflow.py)
+  */bin/normflow|*/bin/normflow-*.py)
        printf '%s\n' "${2:-}" >> "$NORMFLOW_TEST_NORMFLOW_RECORD"
        case "${2:-}" in --version|-V) echo "$(sed -n '2s/^# normflow version: //p' "$1")" ;; ui) exit 0 ;; esac ;;
   python) exit 0 ;;
@@ -190,7 +197,11 @@ case "$1" in
        environment=$(dirname "$(dirname "$python")")
        for argument do case "$argument" in *.whl) wheel=$argument ;; esac; done
        version=$(basename "$wheel" | sed 's/^normflow-//; s/-py3-none-any.whl$//')
-       printf '#!%s\n# normflow version: %s\n' "$python" "$version" > "$environment/bin/normflow"
+       if [ "${NORMFLOW_TEST_SHELL_LAUNCHER:-}" = 1 ]; then
+         printf '#!/bin/sh\n# normflow version: %s\n' "$version" > "$environment/bin/normflow"
+       else
+         printf '#!%s\n# normflow version: %s\n' "$python" "$version" > "$environment/bin/normflow"
+       fi
       chmod +x "$environment/bin/normflow" ;;
   -c) [ "${NORMFLOW_TEST_FAIL_SMOKE:-}" != 1 ] || exit 1; exit 0 ;;
 esac
@@ -482,6 +493,25 @@ def test_piped_install_never_executes_a_smoke_script_from_the_caller_directory(
 
     assert result.returncode == 0, result.stderr
     assert not hostile_record.exists()
+
+
+def test_install_sh_relocates_a_shell_wrapped_python_launcher(tmp_path: Path):
+    environment, _record = _installer_environment(tmp_path)
+    environment["NORMFLOW_TEST_SHELL_LAUNCHER"] = "1"
+
+    result = subprocess.run(
+        ["sh", str(ROOT / "install.sh")],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    executable = tmp_path / "user-bin" / "normflow"
+    assert result.returncode == 0, result.stderr
+    assert subprocess.run(
+        [executable, "--version"], env=environment, text=True, capture_output=True
+    ).stdout.strip() == "0.1.0"
+    assert executable.resolve().with_name("normflow-cli.py").is_file()
 
 
 def test_install_sh_reports_a_healthy_target_release_as_current_without_reinstalling(
