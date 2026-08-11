@@ -442,8 +442,9 @@ def test_install_sh_installs_a_verified_managed_release_without_ambient_python(
     assert version.stdout.strip() == "0.1.0"
     assert short_version.returncode == 0, short_version.stderr
     assert short_version.stdout.strip() == "0.1.0"
-    assert not executable.resolve().read_text(encoding="utf-8").splitlines()[0].startswith(
-        f"#!{tmp_path}/"
+    assert (
+        executable.resolve().read_text(encoding="utf-8").splitlines()[0]
+        == "#!/bin/sh"
     )
     version_checks = (tmp_path / "normflow-record").read_text(
         encoding="utf-8"
