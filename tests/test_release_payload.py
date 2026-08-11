@@ -15,7 +15,7 @@ import zipfile
 
 
 ROOT = Path(__file__).parents[1]
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
 MODEL_BUNDLE = f"all-MiniLM-L6-v2-{REVISION}"
 TRUSTED_MODEL_SOURCE = Path("release/model/SOURCE.json")

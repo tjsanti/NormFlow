@@ -117,7 +117,7 @@ def test_version_flags_do_not_load_heavy_packages(flag: str):
     completed, loaded = _run_fresh_cli([flag])
 
     assert completed.returncode == 0
-    assert completed.stdout == "0.1.0\n"
+    assert completed.stdout == "0.1.1\n"
     assert completed.stderr == ""
     assert loaded == []
 

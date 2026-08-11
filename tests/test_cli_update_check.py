@@ -122,6 +122,6 @@ def test_interactive_machine_output_and_installer_verification_skip_check(
     assert review.stderr == ""
     assert csv_output.stdout == "text,normalized_text\nvalue,\n"
     assert csv_output.stderr == ""
-    assert version.stdout == "0.1.0\n"
+    assert version.stdout == "0.1.1\n"
     assert version.stderr == ""
     assert check.calls == 0

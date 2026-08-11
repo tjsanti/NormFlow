@@ -306,7 +306,7 @@ def test_managed_normflow_uninstall_removes_only_installer_owned_files_after_con
     result = _run_interactive([str(executable), "uninstall"], environment, b"yes\n")
 
     assert result.returncode == 0, result.stdout
-    assert "NormFlow 0.1.0" in result.stdout
+    assert "NormFlow 0.1.1" in result.stdout
     assert str(tmp_path / "data" / "normflow") in result.stdout
     assert "Projects will be preserved" in result.stdout
     assert not (tmp_path / "data" / "normflow").exists()
