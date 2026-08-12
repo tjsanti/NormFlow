@@ -97,8 +97,8 @@ class ReviewItemInfo(TypedDict):
 
 
 class _BatchImportRecoveryState(TypedDict):
-    mapping_ids: list[int]
-    review_item_ids: list[int]
+    mappings: list[dict[str, object]]
+    review_items: list[dict[str, object]]
     revision: int
     retained: bool
 
@@ -558,6 +558,9 @@ class MappingService:
         mapping_ids: list[int],
         review_item_ids: list[int],
         previous_mapping_revision: int | None,
+        *,
+        removed_review_items: list[_ReviewItem] | None = None,
+        previous_review_suggestions: list[tuple[int, str]] | None = None,
     ) -> None:
         with self._session() as session:
             if mapping_ids:
@@ -574,6 +577,19 @@ class MappingService:
                     .where(_MappingRevision.id == 1)
                     .values(revision=previous_mapping_revision)
                 )
+            for item in removed_review_items or []:
+                session.add(_ReviewItem(
+                    id=item.id,
+                    raw_text=item.raw_text,
+                    suggested_text=item.suggested_text,
+                    created_at=item.created_at,
+                ))
+            for item_id, suggested_text in previous_review_suggestions or []:
+                session.exec(
+                    update(_ReviewItem)
+                    .where(_ReviewItem.id == item_id)
+                    .values(suggested_text=suggested_text)
+                )
             session.commit()
 
     def _validate_batch_import_input(self, csv_path: str, column: str) -> None:
@@ -589,8 +605,23 @@ class MappingService:
             with self._session() as session:
                 revision = session.get(_MappingRevision, 1)
                 state: _BatchImportRecoveryState = {
-                    "mapping_ids": list(session.exec(select(_ExampleMapping.id)).all()),
-                    "review_item_ids": list(session.exec(select(_ReviewItem.id)).all()),
+                    "mappings": [
+                        {
+                            "id": mapping.id,
+                            "raw_text": mapping.raw_text,
+                            "normalized_text": mapping.normalized_text,
+                        }
+                        for mapping in session.exec(select(_ExampleMapping)).all()
+                    ],
+                    "review_items": [
+                        {
+                            "id": item.id,
+                            "raw_text": item.raw_text,
+                            "suggested_text": item.suggested_text,
+                            "created_at": item.created_at.isoformat(),
+                        }
+                        for item in session.exec(select(_ReviewItem)).all()
+                    ],
                     "revision": revision.revision if revision else 0,
                     "retained": (self._batch_csv_dir() / "current.csv").exists(),
                 }
@@ -612,17 +643,27 @@ class MappingService:
             (snapshot / "mapping.json").read_text(encoding="utf-8")
         )
         with self._session() as session:
-            current_mapping_ids = set(
-                session.exec(select(_ExampleMapping.id)).all()
+            session.exec(delete(_ExampleMapping))
+            session.exec(delete(_ReviewItem))
+            for mapping in state["mappings"]:
+                session.add(_ExampleMapping(
+                    id=mapping["id"],
+                    raw_text=str(mapping["raw_text"]),
+                    normalized_text=str(mapping["normalized_text"]),
+                ))
+            for item in state["review_items"]:
+                session.add(_ReviewItem(
+                    id=item["id"],
+                    raw_text=str(item["raw_text"]),
+                    suggested_text=str(item["suggested_text"]),
+                    created_at=datetime.fromisoformat(str(item["created_at"])),
+                ))
+            session.exec(
+                update(_MappingRevision)
+                .where(_MappingRevision.id == 1)
+                .values(revision=state["revision"])
             )
-            current_review_item_ids = set(
-                session.exec(select(_ReviewItem.id)).all()
-            )
-        self._compensate_batch_changes(
-            sorted(current_mapping_ids - set(state["mapping_ids"])),
-            sorted(current_review_item_ids - set(state["review_item_ids"])),
-            state["revision"],
-        )
+            session.commit()
         retained = self._batch_csv_dir() / "current.csv"
         saved_retained = snapshot / "retained.csv"
         if state["retained"] and saved_retained.exists():
@@ -691,15 +732,20 @@ class MappingService:
         mappings_added = False
         added_mappings: list[_ExampleMapping] = []
         added_review_items: list[_ReviewItem] = []
+        removed_review_items: list[_ReviewItem] = []
+        previous_review_suggestions: list[tuple[int, str]] = []
 
         try:
             with self._session() as session:
                 existing_raw = {r for r in session.exec(select(_ExampleMapping.raw_text)).all()}
-                existing_review_items = {r for r in session.exec(select(_ReviewItem.raw_text)).all()}
+                existing_review_items = {
+                    item.raw_text: item for item in session.exec(select(_ReviewItem)).all()
+                }
 
                 for raw_text in unique_values:
-                    # Skip if already awaiting review from a prior import.
-                    if raw_text in existing_review_items:
+                    review_item = existing_review_items.get(raw_text)
+                    # Suggested Review Items are already ready for people to review.
+                    if review_item and review_item.suggested_text:
                         skipped += 1
                         continue
 
@@ -733,22 +779,35 @@ class MappingService:
                                 added_mappings.append(mapping)
                                 existing_raw.add(raw_text)
                                 mappings_added = True
+                            if review_item:
+                                removed_review_items.append(review_item)
+                                session.delete(review_item)
                             auto_committed += 1
                         else:
-                            # LLM suggestion — store it on a Review Item.
-                            review_item = _ReviewItem(
-                                raw_text=raw_text,
-                                suggested_text=result.suggested_text,
-                            )
+                            # Fill an existing no-Suggestion Review Item, or create one.
+                            if review_item:
+                                if review_item.id is not None:
+                                    previous_review_suggestions.append(
+                                        (review_item.id, review_item.suggested_text)
+                                    )
+                                review_item.suggested_text = result.suggested_text
+                            else:
+                                review_item = _ReviewItem(
+                                    raw_text=raw_text,
+                                    suggested_text=result.suggested_text,
+                                )
+                                session.add(review_item)
+                                added_review_items.append(review_item)
+                                review_items += 1
+                    else:
+                        if review_item:
+                            skipped += 1
+                        else:
+                            # No match — create a Review Item for manual entry.
+                            review_item = _ReviewItem(raw_text=raw_text, suggested_text="")
                             session.add(review_item)
                             added_review_items.append(review_item)
                             review_items += 1
-                    else:
-                        # No match — create a Review Item for manual entry.
-                        review_item = _ReviewItem(raw_text=raw_text, suggested_text="")
-                        session.add(review_item)
-                        added_review_items.append(review_item)
-                        review_items += 1
 
                 session.flush()
                 mapping_ids = [
@@ -777,6 +836,7 @@ class MappingService:
                         "auto_committed": auto_committed,
                         "review_items": review_items,
                         "skipped": skipped,
+                        "llm_mode": "enabled" if self._llm_enabled else "disabled",
                         "semantic_index_status": info["semantic_index_status"],
                         "semantic_index_warning": info["semantic_index_warning"],
                     }
@@ -788,6 +848,8 @@ class MappingService:
                             mapping_ids,
                             review_item_ids,
                             previous_mapping_revision,
+                            removed_review_items=removed_review_items,
+                            previous_review_suggestions=previous_review_suggestions,
                         )
                         self._restore_batch_csv(backup)
                     except Exception:

@@ -399,7 +399,9 @@ def test_batch_import_without_llm_settings_completes_exact_matching(
     )
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout)["result"]["auto_committed"] == 1
+    terminal = json.loads(result.stdout)
+    assert terminal["result"]["auto_committed"] == 1
+    assert terminal["result"]["llm_mode"] == "disabled"
 
 
 def test_ui_discovers_project_and_launches_bound_local_server_from_subdirectory(
@@ -589,6 +591,7 @@ def test_batch_import_runs_complete_fallback_chain_and_returns_json(
         "auto_committed": 2,
         "review_items": 1,
         "skipped": 1,
+        "llm_mode": "enabled",
         "semantic_index_status": "refresh_required",
         "semantic_index_warning": (
             "The semantic index will refresh before the next semantic Suggestion."
