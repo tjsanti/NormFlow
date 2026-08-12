@@ -26,6 +26,7 @@ class BatchImportResult(TypedDict):
     auto_committed: int
     review_items: int
     skipped: int
+    llm_mode: Literal["enabled", "disabled"]
     semantic_index_status: SemanticIndexStatus
     semantic_index_warning: str | None
 
