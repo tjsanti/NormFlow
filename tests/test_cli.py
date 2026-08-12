@@ -313,8 +313,9 @@ def test_ui_rejects_invalid_llm_configuration_before_startup(
 ):
     project_root = init_project(str(tmp_path / "project"))
     monkeypatch.chdir(project_root)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "   ")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("NORMFLOW_LLM_MODEL", raising=False)
 
     with (
@@ -333,6 +334,72 @@ def test_ui_rejects_invalid_llm_configuration_before_startup(
     send_http_request.assert_not_called()
     run_server.assert_not_called()
     open_browser.assert_not_called()
+
+
+def test_suggest_without_llm_settings_skips_the_provider(
+    tmp_path: Path, monkeypatch,
+):
+    project_path = init_project(tmp_path / "project")
+    seed_mappings(project_path, [("colour", "color")])
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_MODEL", raising=False)
+
+    encoder = MagicMock()
+    encoder.encode.side_effect = lambda texts, **_kwargs: (
+        [[1.0, 0.0] for _ in texts]
+        if texts == ["colour"]
+        else [[0.0, 1.0] for _ in texts]
+    )
+    encoder.get_sentence_embedding_dimension.return_value = 2
+
+    with (
+        patch("normflow.semantic_index._ensure_model", return_value=encoder),
+        patch("normflow.llm_matcher.build_client") as build_client,
+    ):
+        result = runner.invoke(app, ["suggest", "colr"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["suggestions"] == []
+    build_client.assert_not_called()
+
+
+def test_suggest_rejects_partial_llm_configuration_unless_disabled(
+    tmp_path: Path, monkeypatch,
+):
+    project_path = init_project(tmp_path / "project")
+    monkeypatch.chdir(project_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "   ")
+
+    malformed = runner.invoke(app, ["suggest", "unmatched", "--no-semantic"])
+    disabled = runner.invoke(
+        app,
+        ["suggest", "unmatched", "--no-semantic", "--no-llm"],
+    )
+
+    assert malformed.exit_code == 1
+    assert "OPENAI_API_KEY" in malformed.stdout
+    assert disabled.exit_code == 0
+
+
+def test_batch_import_without_llm_settings_completes_exact_matching(
+    tmp_path: Path, monkeypatch,
+):
+    project_path = init_project(tmp_path / "project")
+    batch_path = project_path / "batch.csv"
+    _write_csv(batch_path, "raw", "colour")
+    seed_mappings(project_path, [("colour", "color")])
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("NORMFLOW_LLM_MODEL", raising=False)
+
+    result = runner.invoke(
+        app,
+        ["batch-import", str(batch_path), "--column", "raw"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["result"]["auto_committed"] == 1
 
 
 def test_ui_discovers_project_and_launches_bound_local_server_from_subdirectory(

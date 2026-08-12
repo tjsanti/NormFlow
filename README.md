@@ -108,13 +108,18 @@ The port must be available on localhost. Without `--port`, NormFlow chooses a fr
 
 ### Configure the LLM
 
-`normflow ui` and `normflow batch-import` require valid server-side LLM configuration before they start the local server or a Batch Import Run:
+LLM fallback is optional. With no LLM settings, lookup commands and Batch
+Imports still complete exact and semantic matching; unmatched values become
+Review Items without an LLM Suggestion. `normflow ui` also starts without LLM
+settings.
+
+Set a complete configuration to enable LLM fallback:
 
 | Variable | Requirement |
 |----------|-------------|
-| `OPENAI_API_KEY` | Required and nonblank. |
-| `OPENAI_BASE_URL` | Optional; when set, it must be a valid HTTP(S) URL. |
-| `NORMFLOW_LLM_MODEL` | Optional; defaults to `gpt-4o-mini`, but cannot be explicitly blank. |
+| `OPENAI_API_KEY` | Required and nonblank when any LLM setting is present. |
+| `NORMFLOW_LLM_BASE_URL` | Optional compatible HTTP(S) endpoint; requires an explicit model. |
+| `NORMFLOW_LLM_MODEL` | Defaults to `gpt-4o-mini` for the default endpoint; required and nonblank with a custom endpoint. |
 
 Set these variables in the shell, or put them in an optional `.env` file at the
 active Project root. NormFlow resolves the active Project first, so its `.env`
@@ -124,8 +129,8 @@ values.
 
 Credentials remain in the NormFlow process: they are not stored in the Project
 database or sent to the browser. Launch validation parses local configuration
-only and makes no provider or network request. Invalid configuration exits with
-an error before the server, browser, or Batch Import starts.
+only and makes no provider or network request. Blank, partial, or malformed
+LLM configuration exits with an actionable error before fallback starts.
 
 ### Project contents
 
@@ -178,7 +183,7 @@ Use the canonical Batch Import when a CSV contains raw records that need to beco
 normflow batch-import records.csv --column name
 ```
 
-For each unique, nonblank value, NormFlow runs the complete exact-match → semantic-match → LLM-Suggestion fallback chain. Exact and semantic matches are auto-committed as Mappings; LLM Suggestions become pending Review Items for human approval. Duplicate values and values already pending review are skipped. A Batch Import also works when the Mapping library is empty.
+For each unique, nonblank value, NormFlow runs exact-match → semantic-match → LLM-Suggestion fallback. The LLM step runs only when LLM configuration is complete. Exact and semantic matches are auto-committed as Mappings; LLM Suggestions become pending Review Items for human approval, while unmatched values become Review Items with no Suggestion. Duplicate values and values already pending review are skipped. A Batch Import also works when the Mapping library is empty.
 
 Each attempt is a durable Batch Import Run with a unique ID and an `active`, `succeeded`, `failed`, or `interrupted` status. The command prints the run ID immediately to stderr, waits synchronously, and writes one terminal JSON document to stdout.
 
@@ -234,7 +239,7 @@ Removes the persisted semantic index.
 normflow suggest "raw text value"
 ```
 
-Queries the Mapping library for an exact match on the raw text, then falls back to semantic search and LLM matching when enabled. If the semantic index needs refreshing, the CLI reports that progress on stderr before rebuilding; JSON remains on stdout. If refresh fails, NormFlow preserves the previous index, warns that Suggestions may use earlier Mappings, and recommends `normflow index build`.
+Queries the Mapping library for an exact match on the raw text, then falls back to semantic search and, when fully configured, LLM matching. With no LLM configuration, exact and semantic matching still run. If the semantic index needs refreshing, the CLI reports that progress on stderr before rebuilding; JSON remains on stdout. If refresh fails, NormFlow preserves the previous index, warns that Suggestions may use earlier Mappings, and recommends `normflow index build`.
 
 ```bash
 normflow suggest "colour" --limit 10
@@ -251,7 +256,7 @@ normflow suggest "colour" --limit 10
 normflow suggest-batch records.csv --column name
 ```
 
-Reads every row from a CSV, looks up exact, semantic, and LLM Suggestions for the specified column, and outputs a CSV with the original columns plus a `normalized_text` column containing the top Suggestion (blank if no match). Unlike `batch-import`, this command does not create Mappings or Review Items and does not retain the CSV in the Project.
+Reads every row from a CSV, looks up exact, semantic, and (when fully configured) LLM Suggestions for the specified column, and outputs a CSV with the original columns plus a `normalized_text` column containing the top Suggestion (blank if no match). Unlike `batch-import`, this command does not create Mappings or Review Items and does not retain the CSV in the Project.
 
 - `--column` is required — the CSV column holding the raw texts to normalize.
 - `--output-column` (default: `normalized_text`) sets the name of the suggestion column in the output.
