@@ -44,6 +44,7 @@ from .suggestion_lookup import (
     SuggestionLookup,
     SuggestionProviderError,
 )
+from .llm_matcher import suggest as default_llm_suggest
 
 
 class ReviewItemNotFoundError(ValueError):
@@ -150,10 +151,18 @@ def _make_engine(db_url: str):
 class MappingService:
     """Single seam over all NormFlow Project operations."""
 
-    def __init__(self, project_path: str | Path):
+    def __init__(
+        self,
+        project_path: str | Path,
+        *,
+        llm_suggest: Callable[[str, list[dict[str, object]]], str] | None = None,
+        llm_enabled: bool = True,
+    ):
         self._path = Path(project_path).expanduser().resolve()
         self._db_path = self._path / "normflow.db"
         self._engine = _make_engine(str(self._db_path))
+        self._llm_suggest = llm_suggest or default_llm_suggest
+        self._llm_enabled = llm_enabled
         self.validate()
         self._migrate_legacy_suggestions()
         self._ensure_mapping_revision()
@@ -405,6 +414,7 @@ class MappingService:
         threshold: float = 0.85,
         limit: int = 1,
     ) -> list[SuggestionItem]:
+        llm = llm and self._llm_enabled
         if semantic or llm:
             self._refresh_semantic_index_if_needed()
         return self._lookup_with_current_index(
@@ -425,6 +435,7 @@ class MappingService:
         return SuggestionLookup(
             exact_lookup=self._find_exact_mapping,
             index=SemanticIndex(str(self._path)),
+            llm_suggest=self._llm_suggest,
         ).lookup(
             raw_text,
             semantic=semantic,
@@ -456,6 +467,7 @@ class MappingService:
         llm: bool = True,
         threshold: float = 0.85,
     ) -> str:
+        llm = llm and self._llm_enabled
         if semantic or llm:
             self._refresh_semantic_index_if_needed()
         available, rows = self._read_csv(csv_path, column)
@@ -629,10 +641,29 @@ class MappingService:
             project=self._path,
             database=self._db_path,
             validate_input=self._validate_batch_import_input,
-            execute=self.import_records_for_review,
+            execute=self._execute_batch_import,
             snapshot_state=self._snapshot_batch_import_state,
             restore_state=self._restore_batch_import_state,
             cleanup_temporaries=self._cleanup_batch_import_temporaries,
+        )
+
+    def _execute_batch_import(
+        self,
+        csv_path: str,
+        column: str,
+        *,
+        semantic: bool,
+        llm: bool,
+        threshold: float,
+        _on_published: Callable[[BatchImportResult], None] | None,
+    ) -> BatchImportResult:
+        return self.import_records_for_review(
+            csv_path,
+            column,
+            semantic=semantic,
+            llm=llm and self._llm_enabled,
+            threshold=threshold,
+            _on_published=_on_published,
         )
 
     @coordinated_writer
