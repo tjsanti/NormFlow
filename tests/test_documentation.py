@@ -63,8 +63,10 @@ def test_readme_documents_server_side_llm_configuration():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "OPENAI_API_KEY" in readme
-    assert "OPENAI_BASE_URL" in readme
+    assert "NORMFLOW_LLM_BASE_URL" in readme
     assert "NORMFLOW_LLM_MODEL" in readme
+    assert "OPENAI_BASE_URL" not in readme
+    assert re.search(r"no LLM.*exact.*semantic", readme, re.IGNORECASE | re.DOTALL)
     assert re.search(r"Project.*\.env", readme, re.IGNORECASE | re.DOTALL)
     assert re.search(r"shell.*(?:precedence|override|preferred)", readme, re.IGNORECASE)
     assert re.search(r"server.side", readme, re.IGNORECASE)
@@ -110,11 +112,7 @@ def test_readme_documents_durable_batch_import_workflow():
     assert re.search(r"exact.*semantic.*LLM", readme, re.IGNORECASE | re.DOTALL)
     assert re.search(r"all.or.nothing|atomic", readme, re.IGNORECASE)
     assert re.search(r"sole retained Batch CSV", readme, re.IGNORECASE)
-    assert re.search(
-        r"(?:ui.*batch-import|batch-import.*ui).*require(?:s)?.*LLM configuration",
-        readme,
-        re.IGNORECASE | re.DOTALL,
-    )
+    assert "With no LLM settings" in readme
 
 
 def test_domain_docs_define_the_batch_import_run_contract():

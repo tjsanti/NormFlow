@@ -14,6 +14,7 @@ import pytest
 from normflow.api import build_index as build_index_endpoint
 from normflow.api import create_app, get_project_service
 from normflow.embedding_model import EmbeddingModelUnavailableError
+from normflow.llm_config import LLMConfig
 from normflow.mapping_service import (
     BulkAcceptError,
     BulkAcceptPersistenceError,
@@ -67,7 +68,35 @@ def test_application_is_bound_to_one_canonical_project():
             "review_items": 0,
             "semantic_index_status": "missing",
             "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
+            "llm_mode": "disabled",
         }
+
+
+def test_project_info_reports_when_llm_fallback_is_enabled():
+    """GET /project/info exposes the Batch Import fallback mode without a provider call."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = init_project(str(Path(tmpdir) / "project"))
+        client = TestClient(create_app(
+            resolve_project(project_root),
+            llm_config=LLMConfig(api_key="test-key", base_url=None, model="test-model"),
+        ))
+
+        response = client.get("/project/info")
+
+        assert response.status_code == 200
+        assert response.json()["llm_mode"] == "enabled"
+
+
+def test_bound_application_does_not_reload_environment_llm_configuration(
+    tmp_path: Path, monkeypatch,
+):
+    project_root = init_project(tmp_path / "project")
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
+    monkeypatch.setenv("NORMFLOW_LLM_MODEL", "environment-model")
+
+    response = TestClient(create_app(resolve_project(project_root))).get("/project/info")
+
+    assert response.json()["llm_mode"] == "disabled"
 
 
 def test_bound_application_imports_and_lists_review_items_without_a_project_selector():
@@ -119,6 +148,28 @@ def test_import_reports_failed_automatic_index_refresh():
         assert run["result"]["semantic_index_status"] == "missing"
         assert "semantic and LLM Suggestions are unavailable" in run["result"]["semantic_index_warning"]
         assert "normflow index build" in run["result"]["semantic_index_warning"]
+
+
+def test_http_batch_import_without_llm_configuration_reports_disabled_mode(
+    tmp_path: Path, monkeypatch,
+):
+    project_root = init_project(tmp_path / "project")
+    for name in ("OPENAI_API_KEY", "NORMFLOW_LLM_BASE_URL", "NORMFLOW_LLM_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    client = TestClient(create_app(resolve_project(project_root)))
+
+    run = _await_batch_import(
+        client,
+        client.post(
+            "/batch-import-runs?column=name",
+            files={"file": ("records.csv", b"name\nunresolved\n", "text/csv")},
+        ),
+    )
+
+    assert run["result"]["llm_mode"] == "disabled"
+    assert client.get("/review-items").json() == [
+        {"id": 1, "raw_text": "unresolved", "suggested_text": ""}
+    ]
 
 
 @pytest.mark.parametrize(
@@ -185,7 +236,9 @@ def test_bound_application_retains_mapping_import_export_and_index_http_contract
                 files={"file": ("records.csv", b"name\no2 sensor\n", "text/csv")},
             )
             run = _await_batch_import(client, records)
-        assert run["result"] == {
+        result = dict(run["result"])
+        assert result.pop("llm_mode") in {"enabled", "disabled"}
+        assert result == {
             "auto_committed": 1,
             "review_items": 0,
             "skipped": 0,

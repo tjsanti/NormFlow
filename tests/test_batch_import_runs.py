@@ -1,5 +1,6 @@
 import csv
 from concurrent.futures import ThreadPoolExecutor
+import os
 from pathlib import Path
 from threading import Event
 from unittest.mock import MagicMock, patch
@@ -12,6 +13,7 @@ from typer.testing import CliRunner
 
 from normflow.batch_import import BatchImportExecutionError, ProjectBusyError
 from normflow.cli import app
+from normflow.llm_config import LLMConfig
 from normflow.mapping_service import MappingService
 from normflow.api import create_app
 from normflow.project import resolve_project
@@ -61,6 +63,144 @@ def test_batch_import_run_is_durable_from_start_through_terminal_status(tmp_path
     assert terminal["status"] == "succeeded"
     assert terminal["result"]["review_items"] == 1
     assert MappingService(project).batch_import_status(terminal["id"]) == terminal
+
+
+def test_offline_batch_import_creates_a_no_suggestion_review_item_and_reports_mode(
+    tmp_path: Path,
+):
+    """An unconfigured Batch Import remains durable without calling an LLM."""
+    project = init_project(tmp_path / "project")
+
+    terminal = MappingService(project, llm_enabled=False).run_batch_import(
+        _csv(tmp_path / "records.csv", "unresolved"), "name"
+    )
+
+    assert terminal["status"] == "succeeded"
+    assert terminal["result"]["llm_mode"] == "disabled"
+    assert MappingService(project).list_review_items() == [
+        {"id": 1, "raw_text": "unresolved", "suggested_text": ""}
+    ]
+
+
+def test_reimport_resolves_a_pending_no_suggestion_review_item_with_an_exact_mapping(
+    tmp_path: Path,
+):
+    """Re-import revisits only no-Suggestion Review Items for automatic resolution."""
+    project = init_project(tmp_path / "project")
+    batch = _csv(tmp_path / "records.csv", "unresolved")
+    offline = MappingService(project, llm_enabled=False)
+    offline.run_batch_import(batch, "name")
+    mappings = tmp_path / "mappings.csv"
+    mappings.write_text("raw,clean\nunresolved,Resolved\n", encoding="utf-8")
+    offline.import_mappings(mappings, "raw", "clean")
+
+    terminal = offline.run_batch_import(batch, "name")
+
+    assert terminal["result"]["auto_committed"] == 1
+    assert terminal["result"]["review_items"] == 0
+    assert MappingService(project).list_review_items() == []
+
+
+def test_reimport_resolution_rolls_back_if_batch_publication_fails(tmp_path: Path):
+    """A failed retained-Batch publication restores the pending Review Item."""
+    project = init_project(tmp_path / "project")
+    batch = _csv(tmp_path / "records.csv", "unresolved")
+    service = MappingService(project, llm_enabled=False)
+    service.run_batch_import(batch, "name")
+    mappings = tmp_path / "mappings.csv"
+    mappings.write_text("raw,clean\nunresolved,Resolved\n", encoding="utf-8")
+    service.import_mappings(mappings, "raw", "clean")
+    replace = os.replace
+
+    def fail_publication(source, destination):
+        if (
+            Path(source).name.startswith(".current-")
+            and Path(destination) == project / ".batches" / "current.csv"
+        ):
+            raise OSError("publication failed")
+        return replace(source, destination)
+
+    with (
+        patch("normflow.mapping_service.os.replace", side_effect=fail_publication),
+        pytest.raises(BatchImportExecutionError, match="publication failed"),
+    ):
+        service.run_batch_import(batch, "name")
+
+    assert service.list_review_items() == [
+        {"id": 1, "raw_text": "unresolved", "suggested_text": ""}
+    ]
+
+
+def test_reimport_fills_only_a_pending_no_suggestion_review_item_with_llm(
+    tmp_path: Path,
+):
+    """An LLM fallback fills a no-Suggestion Review Item without creating another."""
+    project = init_project(tmp_path / "project")
+    batch = _csv(tmp_path / "records.csv", "unresolved")
+    offline = MappingService(project, llm_enabled=False)
+    offline.run_batch_import(batch, "name")
+    mappings = tmp_path / "mappings.csv"
+    mappings.write_text("raw,clean\nknown,Known\n", encoding="utf-8")
+    offline.import_mappings(mappings, "raw", "clean")
+    encoder = MagicMock()
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        [1.0, 0.0] if text == "known" else [0.0, 1.0] for text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 2
+    service = MappingService(
+        project,
+        llm_enabled=True,
+        llm_suggest=lambda _raw, _examples: "Suggested",
+    )
+
+    with patch("normflow.semantic_index._ensure_model", return_value=encoder):
+        service.build_index()
+        terminal = service.run_batch_import(batch, "name")
+
+    assert terminal["result"]["review_items"] == 1
+    assert terminal["result"]["skipped"] == 0
+    assert MappingService(project).list_review_items() == [
+        {"id": 1, "raw_text": "unresolved", "suggested_text": "Suggested"}
+    ]
+
+
+def test_reimport_leaves_suggested_and_still_unresolved_review_items_unchanged(
+    tmp_path: Path,
+):
+    """Only no-Suggestion Review Items are eligible for another fallback chain."""
+    project = init_project(tmp_path / "project")
+    batch = _csv(tmp_path / "records.csv", "unresolved")
+    service = MappingService(project, llm_enabled=False)
+    service.run_batch_import(batch, "name")
+
+    still_unresolved = service.run_batch_import(batch, "name")
+    assert still_unresolved["result"]["skipped"] == 1
+
+    mappings = tmp_path / "mappings.csv"
+    mappings.write_text("raw,clean\nknown,Known\n", encoding="utf-8")
+    service.import_mappings(mappings, "raw", "clean")
+    encoder = MagicMock()
+    encoder.encode.side_effect = lambda texts, **_kwargs: [
+        [1.0, 0.0] if text == "known" else [0.0, 1.0] for text in texts
+    ]
+    encoder.get_sentence_embedding_dimension.return_value = 2
+    credentialed = MappingService(
+        project,
+        llm_enabled=True,
+        llm_suggest=lambda _raw, _examples: "Keep this",
+    )
+    with patch("normflow.semantic_index._ensure_model", return_value=encoder):
+        credentialed.build_index()
+        credentialed.run_batch_import(batch, "name")
+
+    mappings.write_text("raw,clean\nunresolved,Resolved\n", encoding="utf-8")
+    credentialed.import_mappings(mappings, "raw", "clean")
+
+    suggested = credentialed.run_batch_import(batch, "name")
+    assert suggested["result"]["skipped"] == 1
+    assert MappingService(project).list_review_items() == [
+        {"id": 1, "raw_text": "unresolved", "suggested_text": "Keep this"}
+    ]
 
 
 def test_started_callback_failure_marks_the_durable_run_failed(tmp_path: Path):
@@ -508,7 +648,10 @@ def test_http_observer_disconnect_does_not_stop_provider_backed_run(tmp_path: Pa
     mappings = tmp_path / "mappings.csv"
     mappings.write_text("raw,clean\noxygen,Oxygen\n", encoding="utf-8")
     MappingService(project).import_mappings(mappings, "raw", "clean")
-    app_instance = create_app(resolve_project(project))
+    app_instance = create_app(
+        resolve_project(project),
+        llm_config=LLMConfig(api_key="test-key", base_url=None, model="test-model"),
+    )
     provider_started, release_provider = Event(), Event()
     encoder = MagicMock()
     encoder.encode.side_effect = lambda texts, **_kwargs: [

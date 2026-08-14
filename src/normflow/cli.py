@@ -101,13 +101,18 @@ def main(
     _notify_cli_update(ctx)
 
 
-def _project_service() -> MappingService:
+def _project_service(*, llm_enabled: bool = True) -> MappingService:
     """Return the service for the Project selected by the process directory."""
-    from .mapping_service import MappingService
+    import os
+
     from .project import resolve_project
+    from .service_factory import build_mapping_service
 
     project = resolve_project(Path.cwd())
-    return MappingService(str(project.root))
+    return build_mapping_service(
+        project,
+        environment=os.environ if llm_enabled else None,
+    )
 
 
 def _notify_semantic_refresh(service: MappingService, *, enabled: bool) -> bool:
@@ -156,7 +161,7 @@ def ui(
 
     try:
         project = resolve_project(Path.cwd())
-        load_llm_config(project, os.environ)
+        config = load_llm_config(project, os.environ)
     except ValueError as exc:
         print(f"Error: {exc}")
         raise typer.Exit(1) from None
@@ -175,7 +180,9 @@ def ui(
     print(url)
     if not no_open:
         webbrowser.open(url)
-    uvicorn.run(create_app(project), host="127.0.0.1", port=selected_port)
+    uvicorn.run(
+        create_app(project, llm_config=config), host="127.0.0.1", port=selected_port,
+    )
 
 
 @app.command()
@@ -280,17 +287,12 @@ def batch_import_cmd(
 ) -> None:
     """Run the canonical Batch Import for the active Project."""
     import json
-    import os
-
     from .batch_import import BatchImportExecutionError, ProjectBusyError
-    from .llm_config import load_llm_config
-    from .mapping_service import BatchImportError, MappingService
-    from .project import resolve_project
+    from .mapping_service import BatchImportError
 
     try:
-        project = resolve_project(Path.cwd())
-        load_llm_config(project, os.environ)
-        result = MappingService(str(project.root)).run_batch_import(
+        service = _project_service()
+        result = service.run_batch_import(
             csv_path,
             column,
             on_started=lambda run: typer.echo(run["id"], err=True),
@@ -333,21 +335,14 @@ def batch_import_retry_cmd(
 ) -> None:
     """Explicitly retry a failed or interrupted Batch Import Run."""
     import json
-    import os
-
     from .batch_import import (
         BatchImportExecutionError,
         BatchImportRunNotFoundError,
         ProjectBusyError,
     )
-    from .llm_config import load_llm_config
-    from .mapping_service import MappingService
-    from .project import resolve_project
-
     try:
-        project = resolve_project(Path.cwd())
-        load_llm_config(project, os.environ)
-        run = MappingService(project.root).retry_batch_import(
+        service = _project_service()
+        run = service.retry_batch_import(
             run_id, csv_path, column,
             on_started=lambda active: typer.echo(active["id"], err=True),
         )
@@ -412,7 +407,7 @@ def suggest_cmd(
 ) -> None:
     """Return Suggestions for a single raw text value."""
     try:
-        service = _project_service()
+        service = _project_service(llm_enabled=not no_llm)
         refresh_attempted = _notify_semantic_refresh(
             service, enabled=not no_semantic or not no_llm,
         )
@@ -439,7 +434,7 @@ def suggest_batch_cmd(
 ) -> None:
     """Suggest normalized text for every row in a CSV file."""
     try:
-        service = _project_service()
+        service = _project_service(llm_enabled=not no_llm)
         refresh_attempted = _notify_semantic_refresh(
             service, enabled=not no_semantic or not no_llm,
         )
