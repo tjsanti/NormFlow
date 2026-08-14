@@ -52,6 +52,7 @@ class ProjectInfoResponse(BaseModel):
     review_items: int
     semantic_index_status: SemanticIndexStatus
     semantic_index_warning: str | None
+    llm_mode: Literal["enabled", "disabled"]
 
 
 class ImportMappingsResponse(BaseModel):

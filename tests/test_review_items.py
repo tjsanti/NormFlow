@@ -93,6 +93,7 @@ def test_accept_trims_mapping_text_and_removes_review_item():
             "review_items": 0,
             "semantic_index_status": "refresh_required",
             "semantic_index_warning": "The semantic index will refresh before the next semantic Suggestion.",
+            "llm_mode": "enabled",
         }
 
 

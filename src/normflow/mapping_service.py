@@ -14,7 +14,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, TypedDict, Unpack
+from typing import Callable, Literal, TypedDict, Unpack
 
 from .batch_import import (
     BatchImportRun,
@@ -83,6 +83,7 @@ class ProjectInfo(TypedDict):
     review_items: int
     semantic_index_status: SemanticIndexStatus
     semantic_index_warning: str | None
+    llm_mode: Literal["enabled", "disabled"]
 
 
 ImportRecordsResult = BatchImportResult
@@ -295,6 +296,7 @@ class MappingService:
             "review_items": review_item_count,
             "semantic_index_status": index.status(revision.revision),
             "semantic_index_warning": index.warning(revision.revision),
+            "llm_mode": "enabled" if self._llm_enabled else "disabled",
         }
 
     # ------------------------------------------------------------------
