@@ -103,11 +103,16 @@ def main(
 
 def _project_service(*, llm_enabled: bool = True) -> MappingService:
     """Return the service for the Project selected by the process directory."""
+    import os
+
     from .project import resolve_project
     from .service_factory import build_mapping_service
 
     project = resolve_project(Path.cwd())
-    return build_mapping_service(project, llm_enabled=llm_enabled)
+    return build_mapping_service(
+        project,
+        environment=os.environ if llm_enabled else None,
+    )
 
 
 def _notify_semantic_refresh(service: MappingService, *, enabled: bool) -> bool:

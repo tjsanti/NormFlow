@@ -87,6 +87,18 @@ def test_project_info_reports_when_llm_fallback_is_enabled():
         assert response.json()["llm_mode"] == "enabled"
 
 
+def test_bound_application_does_not_reload_environment_llm_configuration(
+    tmp_path: Path, monkeypatch,
+):
+    project_root = init_project(tmp_path / "project")
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
+    monkeypatch.setenv("NORMFLOW_LLM_MODEL", "environment-model")
+
+    response = TestClient(create_app(resolve_project(project_root))).get("/project/info")
+
+    assert response.json()["llm_mode"] == "disabled"
+
+
 def test_bound_application_imports_and_lists_review_items_without_a_project_selector():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = init_project(str(Path(tmpdir) / "project"))

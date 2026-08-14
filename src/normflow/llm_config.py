@@ -1,6 +1,6 @@
 """Server-side LLM configuration for a NormFlow Project."""
 
-from collections.abc import MutableMapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -28,28 +28,34 @@ class LLMConfig:
 
 def load_llm_config(
     project: Project,
-    environment: MutableMapping[str, str],
+    environment: Mapping[str, str],
 ) -> LLMConfig | None:
     """Load shell-first LLM settings with a Project ``.env`` fallback."""
     dotenv = dotenv_values(project.root / ".env")
-    for name in _LLM_ENVIRONMENT_VARIABLES:
-        value = dotenv.get(name)
-        if name not in environment and value is not None:
-            environment[name] = value
+    values = {
+        name: str(dotenv[name])
+        for name in _LLM_ENVIRONMENT_VARIABLES
+        if dotenv.get(name) is not None
+    }
+    values.update({
+        name: environment[name]
+        for name in _LLM_ENVIRONMENT_VARIABLES
+        if name in environment
+    })
 
-    if not any(name in environment for name in _LLM_ENVIRONMENT_VARIABLES):
+    if not values:
         return None
 
-    api_key = environment.get("OPENAI_API_KEY", "").strip()
+    api_key = values.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise ValueError("OPENAI_API_KEY is required and must not be blank.")
 
-    model_value = environment.get("NORMFLOW_LLM_MODEL")
+    model_value = values.get("NORMFLOW_LLM_MODEL")
     model = (DEFAULT_LLM_MODEL if model_value is None else model_value).strip()
     if not model:
         raise ValueError("NORMFLOW_LLM_MODEL must not be blank when configured.")
 
-    base_url = environment.get("NORMFLOW_LLM_BASE_URL")
+    base_url = values.get("NORMFLOW_LLM_BASE_URL")
     if base_url is not None:
         base_url = base_url.strip()
         try:

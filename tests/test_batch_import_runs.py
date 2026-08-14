@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 from normflow.batch_import import BatchImportExecutionError, ProjectBusyError
 from normflow.cli import app
+from normflow.llm_config import LLMConfig
 from normflow.mapping_service import MappingService
 from normflow.api import create_app
 from normflow.project import resolve_project
@@ -156,7 +157,7 @@ def test_reimport_fills_only_a_pending_no_suggestion_review_item_with_llm(
         service.build_index()
         terminal = service.run_batch_import(batch, "name")
 
-    assert terminal["result"]["review_items"] == 0
+    assert terminal["result"]["review_items"] == 1
     assert terminal["result"]["skipped"] == 0
     assert MappingService(project).list_review_items() == [
         {"id": 1, "raw_text": "unresolved", "suggested_text": "Suggested"}
@@ -647,7 +648,10 @@ def test_http_observer_disconnect_does_not_stop_provider_backed_run(tmp_path: Pa
     mappings = tmp_path / "mappings.csv"
     mappings.write_text("raw,clean\noxygen,Oxygen\n", encoding="utf-8")
     MappingService(project).import_mappings(mappings, "raw", "clean")
-    app_instance = create_app(resolve_project(project))
+    app_instance = create_app(
+        resolve_project(project),
+        llm_config=LLMConfig(api_key="test-key", base_url=None, model="test-model"),
+    )
     provider_started, release_provider = Event(), Event()
     encoder = MagicMock()
     encoder.encode.side_effect = lambda texts, **_kwargs: [

@@ -340,6 +340,7 @@ def test_suggest_without_llm_settings_skips_the_provider(
     tmp_path: Path, monkeypatch,
 ):
     project_path = init_project(tmp_path / "project")
+    monkeypatch.chdir(project_path)
     seed_mappings(project_path, [("colour", "color")])
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("NORMFLOW_LLM_BASE_URL", raising=False)
@@ -386,6 +387,7 @@ def test_batch_import_without_llm_settings_completes_exact_matching(
     tmp_path: Path, monkeypatch,
 ):
     project_path = init_project(tmp_path / "project")
+    monkeypatch.chdir(project_path)
     batch_path = project_path / "batch.csv"
     _write_csv(batch_path, "raw", "colour")
     seed_mappings(project_path, [("colour", "color")])

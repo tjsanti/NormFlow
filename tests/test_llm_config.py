@@ -19,7 +19,15 @@ def test_load_llm_config_disables_llm_when_no_settings_are_present(tmp_path):
 def test_service_factory_binds_a_project_without_llm_fallback(tmp_path):
     project = resolve_project(init_project(tmp_path / "project"))
 
-    assert build_mapping_service(project, llm_enabled=False).project_info()["llm_mode"] == "disabled"
+    assert build_mapping_service(project).project_info()["llm_mode"] == "disabled"
+
+
+def test_service_factory_defaults_to_disabled_when_no_llm_configuration_is_resolved(tmp_path):
+    project = resolve_project(init_project(tmp_path / "project"))
+
+    service = build_mapping_service(project, environment={})
+
+    assert service.project_info()["llm_mode"] == "disabled"
 
 
 def test_service_factory_uses_supplied_validated_llm_configuration(tmp_path):
@@ -47,7 +55,7 @@ def test_load_llm_config_uses_project_dotenv_with_default_model(tmp_path):
         base_url=None,
         model=DEFAULT_LLM_MODEL,
     )
-    assert environment["OPENAI_API_KEY"] == "project-key"
+    assert environment == {}
 
 
 def test_load_llm_config_preserves_shell_values_over_project_dotenv(tmp_path):

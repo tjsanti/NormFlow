@@ -621,7 +621,7 @@ class MappingService:
         review_item_ids: list[int],
         previous_mapping_revision: int | None,
         *,
-        removed_review_items: list[_ReviewItem] | None = None,
+        removed_review_items: list[_ReviewItemSnapshot] | None = None,
         previous_review_suggestions: list[tuple[int, str]] | None = None,
     ) -> None:
         with self._session() as session:
@@ -641,10 +641,10 @@ class MappingService:
                 )
             for item in removed_review_items or []:
                 session.add(_ReviewItem(
-                    id=item.id,
-                    raw_text=item.raw_text,
-                    suggested_text=item.suggested_text,
-                    created_at=item.created_at,
+                    id=item["id"],
+                    raw_text=item["raw_text"],
+                    suggested_text=item["suggested_text"],
+                    created_at=datetime.fromisoformat(item["created_at"]),
                 ))
             for item_id, suggested_text in previous_review_suggestions or []:
                 session.exec(
@@ -758,7 +758,7 @@ class MappingService:
             csv_path,
             column,
             semantic=semantic,
-            llm=llm and self._llm_enabled,
+            llm=llm,
             threshold=threshold,
             _on_published=_on_published,
         )
@@ -774,6 +774,7 @@ class MappingService:
         threshold: float = 0.85,
         _on_published: Callable[[BatchImportResult], None] | None = None,
     ) -> ImportRecordsResult:
+        llm = llm and self._llm_enabled
         if semantic or llm:
             self._refresh_semantic_index_if_needed()
         _, rows = self._read_csv(csv_path, column)
@@ -788,7 +789,7 @@ class MappingService:
         mappings_added = False
         added_mappings: list[_ExampleMapping] = []
         added_review_items: list[_ReviewItem] = []
-        removed_review_items: list[_ReviewItem] = []
+        removed_review_items: list[_ReviewItemSnapshot] = []
         previous_review_suggestions: list[tuple[int, str]] = []
 
         try:
@@ -836,7 +837,14 @@ class MappingService:
                                 existing_raw.add(raw_text)
                                 mappings_added = True
                             if review_item:
-                                removed_review_items.append(review_item)
+                                if review_item.id is None:
+                                    raise RuntimeError("Persisted Review Item is missing an id")
+                                removed_review_items.append({
+                                    "id": review_item.id,
+                                    "raw_text": review_item.raw_text,
+                                    "suggested_text": review_item.suggested_text,
+                                    "created_at": review_item.created_at.isoformat(),
+                                })
                                 session.delete(review_item)
                             auto_committed += 1
                         else:
@@ -847,6 +855,7 @@ class MappingService:
                                         (review_item.id, review_item.suggested_text)
                                     )
                                 review_item.suggested_text = result.suggested_text
+                                review_items += 1
                             else:
                                 review_item = _ReviewItem(
                                     raw_text=raw_text,

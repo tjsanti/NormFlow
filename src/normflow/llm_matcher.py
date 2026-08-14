@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from functools import partial
 from functools import cache
 from collections.abc import Callable
 
 from openai import OpenAI
 
-from .llm_config import LLMConfig
+from .llm_config import DEFAULT_LLM_MODEL, LLMConfig
 
 
 _SYSTEM_PROMPT = (
@@ -35,9 +34,7 @@ def suggest(
     config: LLMConfig | None = None,
 ) -> str:
     """Ask an LLM to normalize raw_text using examples as few-shot context."""
-    model = config.model if config is not None else os.environ.get(
-        "NORMFLOW_LLM_MODEL", "gpt-4o-mini",
-    )
+    model = config.model if config is not None else DEFAULT_LLM_MODEL
 
     few_shot = "\n".join(
         f"Input: {e['raw_text']} → Output: {e['normalized_text']}"

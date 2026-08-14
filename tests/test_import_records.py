@@ -79,6 +79,35 @@ def test_import_deduplicates_identical_raw_text():
         assert result["review_items"] == 1
 
 
+def test_direct_import_respects_the_service_llm_disablement():
+    """The core import seam cannot call a provider disabled at composition time."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project = Path(tmpdir)
+        init_project(str(project))
+        provider = MagicMock(return_value="Unexpected")
+        service = MappingService(project, llm_enabled=False, llm_suggest=provider)
+        seed_mappings(project, [("known", "Known")])
+        csv_path = project / "input.csv"
+        _write_csv(csv_path, [{"name": "unresolved"}], ["name"])
+        encoder = MagicMock()
+        encoder.encode.side_effect = lambda texts, **_kwargs: [
+            [1.0, 0.0] if text == "known" else [0.0, 1.0] for text in texts
+        ]
+        encoder.get_sentence_embedding_dimension.return_value = 2
+
+        with patch("normflow.semantic_index._ensure_model", return_value=encoder):
+            service.build_index()
+            result = service.import_records_for_review(
+                str(csv_path), "name", semantic=False,
+            )
+
+        assert result["review_items"] == 1
+        assert service.list_review_items() == [
+            {"id": 1, "raw_text": "unresolved", "suggested_text": ""}
+        ]
+        provider.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("provider_response", "failure_detail"),
     [
