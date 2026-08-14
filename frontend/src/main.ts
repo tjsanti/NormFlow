@@ -8,6 +8,7 @@ interface ProjectInfo {
   review_items: number;
   semantic_index_status: "fresh" | "refresh_required" | "unverified" | "missing";
   semantic_index_warning: string | null;
+  llm_mode: "enabled" | "disabled";
 }
 
 interface UpdateStatus {
@@ -34,6 +35,7 @@ interface ImportRecordsResult {
   auto_committed: number;
   review_items: number;
   skipped: number;
+  llm_mode: "enabled" | "disabled";
   semantic_index_status: ProjectInfo["semantic_index_status"];
   semantic_index_warning: string | null;
 }
@@ -631,10 +633,13 @@ function setupBatchImport(root: HTMLElement, importState: ImportState): void {
       form.reset();
       resetHeaderSelection();
       const reviewLabel = result.review_items === 1 ? "Review Item" : "Review Items";
+      const offlineCompletion = result.llm_mode === "disabled"
+        ? " LLM fallback disabled; unresolved values require manual review."
+        : "";
       showNotice(
         root,
         `Batch Import complete: ${result.auto_committed} auto-committed, `
-          + `${result.review_items} ${reviewLabel}, ${result.skipped} skipped.`,
+          + `${result.review_items} ${reviewLabel}, ${result.skipped} skipped.${offlineCompletion}`,
       );
       await refreshProject(root);
       if (result.review_items > 0) selectProjectTab(root, "review");
@@ -655,6 +660,7 @@ function setupBatchImport(root: HTMLElement, importState: ImportState): void {
 
 function showProject(root: HTMLElement, project: ProjectInfo): void {
   const initialTab: ProjectTab = project.review_items > 0 ? "review" : "import";
+  const fallbackDisabled = project.llm_mode === "disabled";
   root.innerHTML = `
     <header>
       <div>
@@ -668,6 +674,9 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
       </div>
     </header>
     <div id="semantic-index-status" aria-live="polite"></div>
+    ${fallbackDisabled
+      ? '<p id="llm-fallback-status" role="status">LLM fallback disabled — unresolved values require manual review</p>'
+      : ""}
     <main class="review-project">
       <nav class="project-tabs" role="tablist" aria-label="Project workflows">
         <button type="button" role="tab" id="import-tab" data-tab="import"
@@ -712,7 +721,9 @@ function showProject(root: HTMLElement, project: ProjectInfo): void {
               <h2 id="batch-import-heading">Batch Import</h2>
             </div>
           </div>
-          <p>Upload raw records for exact, semantic, and LLM matching.</p>
+          <p>${fallbackDisabled
+            ? "Upload raw records for exact and semantic matching. Unresolved values become Review Items."
+            : "Upload raw records for exact, semantic, and LLM matching."}</p>
           <form id="batch-import-form">
             ${project.mappings === 0 ? `
               <p class="import-note">This Project has no Mappings, so matching has fewer

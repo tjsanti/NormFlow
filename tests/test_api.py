@@ -14,6 +14,7 @@ import pytest
 from normflow.api import build_index as build_index_endpoint
 from normflow.api import create_app, get_project_service
 from normflow.embedding_model import EmbeddingModelUnavailableError
+from normflow.llm_config import LLMConfig
 from normflow.mapping_service import (
     BulkAcceptError,
     BulkAcceptPersistenceError,
@@ -67,7 +68,23 @@ def test_application_is_bound_to_one_canonical_project():
             "review_items": 0,
             "semantic_index_status": "missing",
             "semantic_index_warning": "The semantic index will be built before the next semantic Suggestion.",
+            "llm_mode": "disabled",
         }
+
+
+def test_project_info_reports_when_llm_fallback_is_enabled():
+    """GET /project/info exposes the Batch Import fallback mode without a provider call."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = init_project(str(Path(tmpdir) / "project"))
+        client = TestClient(create_app(
+            resolve_project(project_root),
+            llm_config=LLMConfig(api_key="test-key", base_url=None, model="test-model"),
+        ))
+
+        response = client.get("/project/info")
+
+        assert response.status_code == 200
+        assert response.json()["llm_mode"] == "enabled"
 
 
 def test_bound_application_imports_and_lists_review_items_without_a_project_selector():

@@ -198,6 +198,35 @@ describe("Bound Project launch", () => {
     expect(document.querySelector<HTMLButtonElement>("#refresh-review-items")?.disabled).toBe(false);
   });
 
+  test("persistently explains offline Batch Import without marking enabled mode", async () => {
+    const offlineProject = { ...projectInfo, llm_mode: "disabled" };
+    stubFetch(vi.fn()
+      .mockResolvedValueOnce(okJson(offlineProject))
+      .mockResolvedValueOnce(okJson([])));
+
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#batch-import-form")).not.toBeNull());
+    expect(document.body.textContent)
+      .toContain("LLM fallback disabled — unresolved values require manual review");
+    expect(document.querySelector(".import-workflow:has(#batch-import-form)")?.textContent)
+      .toContain("exact and semantic matching");
+    expect(document.querySelector(".import-workflow:has(#batch-import-form)")?.textContent)
+      .toContain("Unresolved values become Review Items");
+
+    document.body.innerHTML = '<div id="app"></div>';
+    stubFetch(vi.fn()
+      .mockResolvedValueOnce(okJson({ ...projectInfo, llm_mode: "enabled" }))
+      .mockResolvedValueOnce(okJson([])));
+    startApp();
+
+    await vi.waitFor(() => expect(document.querySelector("#batch-import-form")).not.toBeNull());
+    expect(document.body.textContent)
+      .not.toContain("LLM fallback disabled — unresolved values require manual review");
+    expect(document.querySelector(".import-workflow:has(#batch-import-form)")?.textContent)
+      .toContain("exact, semantic, and LLM matching");
+  });
+
   test("shows and dismisses an accessible update banner with the exact installer command", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 6, 16, 12));
@@ -652,6 +681,7 @@ describe("Batch Import", () => {
           auto_committed: 2,
           review_items: 1,
           skipped: 3,
+          llm_mode: "disabled",
           semantic_index_status: "refresh_required",
           semantic_index_warning: warning,
         },
@@ -683,6 +713,8 @@ describe("Batch Import", () => {
     ).toBe("true"));
     expect(document.querySelector("#notices [role=status]")?.textContent)
       .toContain("2 auto-committed, 1 Review Item, 3 skipped");
+    expect(document.querySelector("#notices [role=status]")?.textContent)
+      .toContain("LLM fallback disabled; unresolved values require manual review");
     expect(document.querySelector("header")?.textContent).toContain("14 Mappings");
     expect(document.querySelector("#review-queue")?.textContent).toContain("O2 sensr");
     expect(source.disabled).toBe(true);
@@ -703,6 +735,7 @@ describe("Batch Import", () => {
           auto_committed: 2,
           review_items: 0,
           skipped: 1,
+          llm_mode: "enabled",
           semantic_index_status: "refresh_required",
           semantic_index_warning: null,
         },
@@ -731,6 +764,8 @@ describe("Batch Import", () => {
     expect(document.querySelector("#import-tab")?.getAttribute("aria-selected")).toBe("true");
     expect(document.querySelector("#notices [role=status]")?.textContent)
       .toContain("2 auto-committed, 0 Review Items, 1 skipped");
+    expect(document.querySelector("#notices [role=status]")?.textContent)
+      .not.toContain("LLM fallback disabled");
   });
 
   test("keeps the failed Batch selections on Import and shows the actionable API detail", async () => {
