@@ -97,11 +97,71 @@ class ReviewItemInfo(TypedDict):
     suggested_text: str
 
 
+class _MappingSnapshot(TypedDict):
+    id: int
+    raw_text: str
+    normalized_text: str
+
+
+class _ReviewItemSnapshot(TypedDict):
+    id: int
+    raw_text: str
+    suggested_text: str
+    created_at: str
+
+
 class _BatchImportRecoveryState(TypedDict):
-    mappings: list[dict[str, object]]
-    review_items: list[dict[str, object]]
+    mappings: list[_MappingSnapshot]
+    review_items: list[_ReviewItemSnapshot]
     revision: int
     retained: bool
+
+
+def _snapshot_mapping(record: object) -> _MappingSnapshot:
+    if not isinstance(record, dict):
+        raise ValueError("Batch Import recovery snapshot has an invalid Mapping.")
+    record_id = record.get("id")
+    raw_text = record.get("raw_text")
+    normalized_text = record.get("normalized_text")
+    if not isinstance(record_id, int) or not isinstance(raw_text, str) or not isinstance(normalized_text, str):
+        raise ValueError("Batch Import recovery snapshot has an invalid Mapping.")
+    return {"id": record_id, "raw_text": raw_text, "normalized_text": normalized_text}
+
+
+def _snapshot_review_item(record: object) -> _ReviewItemSnapshot:
+    if not isinstance(record, dict):
+        raise ValueError("Batch Import recovery snapshot has an invalid Review Item.")
+    record_id = record.get("id")
+    raw_text = record.get("raw_text")
+    suggested_text = record.get("suggested_text")
+    created_at = record.get("created_at")
+    if not all(isinstance(value, expected) for value, expected in (
+        (record_id, int), (raw_text, str), (suggested_text, str), (created_at, str),
+    )):
+        raise ValueError("Batch Import recovery snapshot has an invalid Review Item.")
+    return {
+        "id": record_id,
+        "raw_text": raw_text,
+        "suggested_text": suggested_text,
+        "created_at": created_at,
+    }
+
+
+def _decode_batch_import_recovery_state(document: object) -> _BatchImportRecoveryState:
+    if not isinstance(document, dict):
+        raise ValueError("Batch Import recovery snapshot is invalid.")
+    mappings = document.get("mappings")
+    review_items = document.get("review_items")
+    revision = document.get("revision")
+    retained = document.get("retained")
+    if not isinstance(mappings, list) or not isinstance(review_items, list) or not isinstance(revision, int) or not isinstance(retained, bool):
+        raise ValueError("Batch Import recovery snapshot is invalid.")
+    return {
+        "mappings": [_snapshot_mapping(record) for record in mappings],
+        "review_items": [_snapshot_review_item(record) for record in review_items],
+        "revision": revision,
+        "retained": retained,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -607,23 +667,17 @@ class MappingService:
             with self._session() as session:
                 revision = session.get(_MappingRevision, 1)
                 state: _BatchImportRecoveryState = {
-                    "mappings": [
-                        {
-                            "id": mapping.id,
-                            "raw_text": mapping.raw_text,
-                            "normalized_text": mapping.normalized_text,
-                        }
-                        for mapping in session.exec(select(_ExampleMapping)).all()
-                    ],
-                    "review_items": [
-                        {
-                            "id": item.id,
-                            "raw_text": item.raw_text,
-                            "suggested_text": item.suggested_text,
-                            "created_at": item.created_at.isoformat(),
-                        }
-                        for item in session.exec(select(_ReviewItem)).all()
-                    ],
+                    "mappings": [_snapshot_mapping({
+                        "id": mapping.id,
+                        "raw_text": mapping.raw_text,
+                        "normalized_text": mapping.normalized_text,
+                    }) for mapping in session.exec(select(_ExampleMapping)).all()],
+                    "review_items": [_snapshot_review_item({
+                        "id": item.id,
+                        "raw_text": item.raw_text,
+                        "suggested_text": item.suggested_text,
+                        "created_at": item.created_at.isoformat(),
+                    }) for item in session.exec(select(_ReviewItem)).all()],
                     "revision": revision.revision if revision else 0,
                     "retained": (self._batch_csv_dir() / "current.csv").exists(),
                 }
@@ -641,24 +695,24 @@ class MappingService:
 
     def _restore_batch_import_state(self, snapshot: Path) -> None:
         """Restore a snapshot without exposing Mapping or index persistence."""
-        state: _BatchImportRecoveryState = json.loads(
+        state = _decode_batch_import_recovery_state(json.loads(
             (snapshot / "mapping.json").read_text(encoding="utf-8")
-        )
+        ))
         with self._session() as session:
             session.exec(delete(_ExampleMapping))
             session.exec(delete(_ReviewItem))
             for mapping in state["mappings"]:
                 session.add(_ExampleMapping(
                     id=mapping["id"],
-                    raw_text=str(mapping["raw_text"]),
-                    normalized_text=str(mapping["normalized_text"]),
+                    raw_text=mapping["raw_text"],
+                    normalized_text=mapping["normalized_text"],
                 ))
             for item in state["review_items"]:
                 session.add(_ReviewItem(
                     id=item["id"],
-                    raw_text=str(item["raw_text"]),
-                    suggested_text=str(item["suggested_text"]),
-                    created_at=datetime.fromisoformat(str(item["created_at"])),
+                    raw_text=item["raw_text"],
+                    suggested_text=item["suggested_text"],
+                    created_at=datetime.fromisoformat(item["created_at"]),
                 ))
             session.exec(
                 update(_MappingRevision)

@@ -104,25 +104,10 @@ def main(
 def _project_service(*, llm_enabled: bool = True) -> MappingService:
     """Return the service for the Project selected by the process directory."""
     from .project import resolve_project
+    from .service_factory import build_mapping_service
 
     project = resolve_project(Path.cwd())
-    return _llm_project_service(project, llm_enabled)
-
-
-def _llm_project_service(project, llm_enabled: bool) -> MappingService:
-    """Bind the active Project service to optional validated LLM settings."""
-    import os
-
-    from .llm_config import load_llm_config
-    from .llm_matcher import configured_suggest
-    from .mapping_service import MappingService
-
-    config = load_llm_config(project, os.environ) if llm_enabled else None
-    return MappingService(
-        str(project.root),
-        llm_suggest=configured_suggest(config) if config is not None else None,
-        llm_enabled=config is not None,
-    )
+    return build_mapping_service(project, llm_enabled=llm_enabled)
 
 
 def _notify_semantic_refresh(service: MappingService, *, enabled: bool) -> bool:
@@ -297,15 +282,11 @@ def batch_import_cmd(
 ) -> None:
     """Run the canonical Batch Import for the active Project."""
     import json
-    import os
-
     from .batch_import import BatchImportExecutionError, ProjectBusyError
-    from .mapping_service import BatchImportError, MappingService
-    from .project import resolve_project
+    from .mapping_service import BatchImportError
 
     try:
-        project = resolve_project(Path.cwd())
-        service = _llm_project_service(project, llm_enabled=True)
+        service = _project_service()
         result = service.run_batch_import(
             csv_path,
             column,
@@ -349,19 +330,13 @@ def batch_import_retry_cmd(
 ) -> None:
     """Explicitly retry a failed or interrupted Batch Import Run."""
     import json
-    import os
-
     from .batch_import import (
         BatchImportExecutionError,
         BatchImportRunNotFoundError,
         ProjectBusyError,
     )
-    from .mapping_service import MappingService
-    from .project import resolve_project
-
     try:
-        project = resolve_project(Path.cwd())
-        service = _llm_project_service(project, llm_enabled=True)
+        service = _project_service()
         run = service.retry_batch_import(
             run_id, csv_path, column,
             on_started=lambda active: typer.echo(active["id"], err=True),

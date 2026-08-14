@@ -16,8 +16,7 @@ from pydantic import BaseModel, StrictInt
 from . import __version__
 from .batch_import import BatchImportRunNotFoundError, ProjectBusyError, RunStatus
 from .embedding_model import EmbeddingModelUnavailableError
-from .llm_config import LLMConfig, load_llm_config
-from .llm_matcher import configured_suggest
+from .llm_config import LLMConfig
 
 from .mapping_service import (
     BulkAcceptError,
@@ -27,6 +26,7 @@ from .mapping_service import (
     ReviewItemNotFoundError,
 )
 from .project import Project
+from .service_factory import build_mapping_service
 from .semantic_index import SemanticIndexStatus
 from .update_check import UpdateCheckService, default_update_check_service
 
@@ -361,13 +361,10 @@ def ui_index() -> FileResponse:
 
 def create_app(project: Project, *, llm_config: LLMConfig | None = None) -> FastAPI:
     """Construct an HTTP application bound to one canonical Project."""
-    config = llm_config or load_llm_config(project, os.environ)
     project_app = FastAPI(title="NormFlow", redirect_slashes=False)
     project_app.add_exception_handler(ProjectBusyError, _project_busy_response)
-    project_app.state.project_service = MappingService(
-        str(project.root),
-        llm_suggest=configured_suggest(config) if config is not None else None,
-        llm_enabled=config is not None,
+    project_app.state.project_service = build_mapping_service(
+        project, llm_config=llm_config,
     )
     project_app.state.update_check_service = default_update_check_service(
         __version__, environment=os.environ

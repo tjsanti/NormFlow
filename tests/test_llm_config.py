@@ -3,7 +3,9 @@
 import pytest
 
 from normflow.llm_config import DEFAULT_LLM_MODEL, LLMConfig, load_llm_config
-from normflow.project import Project
+from normflow.project import Project, resolve_project
+from normflow.project_service import init_project
+from normflow.service_factory import build_mapping_service
 
 
 def test_load_llm_config_disables_llm_when_no_settings_are_present(tmp_path):
@@ -12,6 +14,23 @@ def test_load_llm_config_disables_llm_when_no_settings_are_present(tmp_path):
     project = Project(root=project_root, database=project_root / "normflow.db")
 
     assert load_llm_config(project, {}) is None
+
+
+def test_service_factory_binds_a_project_without_llm_fallback(tmp_path):
+    project = resolve_project(init_project(tmp_path / "project"))
+
+    assert build_mapping_service(project, llm_enabled=False).project_info()["llm_mode"] == "disabled"
+
+
+def test_service_factory_uses_supplied_validated_llm_configuration(tmp_path):
+    project = resolve_project(init_project(tmp_path / "project"))
+
+    service = build_mapping_service(
+        project,
+        llm_config=LLMConfig(api_key="test-key", base_url=None, model="test-model"),
+    )
+
+    assert service.project_info()["llm_mode"] == "enabled"
 
 
 def test_load_llm_config_uses_project_dotenv_with_default_model(tmp_path):
